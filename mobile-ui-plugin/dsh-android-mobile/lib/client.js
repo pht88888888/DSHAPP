@@ -855,11 +855,11 @@ window.__ModuleLoader__.load({
 
 		// ── 3. 消息 meta 精简：保留 "22:41 · 用时 3秒"，删 " · 首 token … / … tok/s" ──
 		function trimMeta(el) {
-			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			const m = /^(.+?·\s*用时\s*[^·]*?)(\s*·.*)?$/.exec((el.textContent || "").trim());
-			if (!m || !m[2]) return;
-			el.textContent = m[1];
-		}
+      if (!mpIsMobile()) return;
+      const m = /^(.+?·\s*用时\s*[^·]*?)(\s*·.*)?$/.exec((el.textContent || "").trim());
+      if (!m || !m[2]) return;
+      mpMobileText(el, m[1]);
+    }
 
 		// ── 3. composer StatsPills 精简 ──
 		// 官方 .bOPqQW_root 左右内边距 = calc(--dsh-composer-side-clearance + 16px) = 32px，
@@ -978,55 +978,37 @@ window.__ModuleLoader__.load({
 		     就已移入弹层**（点药丸即得），不再参与常驻竞争。
 		     这里的档位只剩「极端数字兜底」：轮→步→纯数字、缓存标签→纯百分比。 */
 		function processStatsLine() {
-			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			const root = document.querySelector("[data-composer-stats] .bOPqQW_root") || document.querySelector(".bOPqQW_root");
-			if (!root) return;
-			const labels = [...root.querySelectorAll(".bOPqQW_label")];
-			if (!labels.length) return;
-
-			// ① 原文快照：只有「当前文本不是我们上次写的那一份」时才认为 React 更新了原文。
-			//    必须带 MP_STATS_APPLIED 判断，否则我们写下的缩短文案会被误当成新原文，
-			//    原文越缩越短、再也回不去。
-			for (const el of labels) {
-				const now = el.textContent || "";
-				if (now !== el.dataset[MP_STATS_APPLIED]) el.dataset[MP_STATS_RAW] = now;
-			}
-
-			// ② 档位表（按 mpStatsRaw 生成，一药丸一组，单调递减）
-			const variants = labels.map((el) => mpStatsVariants(el.dataset[MP_STATS_RAW] || el.textContent || ""));
-			// 放得下？（root 内容溢出 + 每个 label 的内部截断都要看：
-			// label 带 ellipsis 时 root 未必溢出，但 label.scrollWidth 会暴露截断）
-			const fits = mpStatsFits(root, labels);
-
-			// ③ 双不变量（修复 60b 的死循环教训必须继续成立）：
-			//    ① **不写 DOM 的路径必须存在且最先命中** —— 当前文案已在候选表里
-			//       且放得下 ⇒ 一个字节都不写 ⇒ 不触发 observer ⇒ 环被切断；
-			//    ② **只能单调降档**，每次最多降一级 ⇒ 必然终止。
-			//
-			//    ⭐ 修复 63 的实质改动：官方原文（idx < 0）**不再看放不放得下**，
-			//       一律先归一到基准档 v[0]（= 精简常驻文案：轮/步 · 缓存N%）。
-			//       因为方案 A 是「常驻就精简」，不是「挤不下才精简」——
-			//       否则数字短的时候 tok/s 和 token 总量又会回到屏幕上。
-			//       归一后下一轮 idx ≥ 0 且放得下 ⇒ 走不变量①，不再写入。
-			//       已在候选表里（idx ≥ 0）才允许、且只在溢出时降一级。
-			labels.forEach((el, i) => {
-				const v = variants[i];
-				const cur = el.textContent || "";
-				const idx = v.indexOf(cur);
-				let next;
-				if (idx < 0) next = v[0];               // 官方原文 → 归一为精简基准档
-				else if (fits) return;                  // 已是候选档且放得下 → 不写（断环）
-				else next = v[Math.min(idx + 1, v.length - 1)]; // 溢出 → 降一档
-				if (next === cur) return;               // 无变化 ⇒ 不写 ⇒ 不触发 observer
-				el.textContent = next;
-				el.dataset[MP_STATS_APPLIED] = next;
-			});
-		}
+      if (!mpIsMobile()) return;
+      const root = document.querySelector("[data-composer-stats] .bOPqQW_root") || document.querySelector(".bOPqQW_root");
+      if (!root) return;
+      const labels = [...root.querySelectorAll(".bOPqQW_label")];
+      if (!labels.length) return;
+      for (const el of labels) {
+        const now = el.textContent || "";
+        if (now !== el.dataset[MP_STATS_APPLIED]) mpMobileAttr(el, "data-mp-raw", now);
+      }
+      const variants = labels.map((el) => mpStatsVariants(el.dataset[MP_STATS_RAW] || el.textContent || ""));
+      const fits = mpStatsFits(root, labels);
+      labels.forEach((el, i) => {
+        const v = variants[i];
+        const cur = el.textContent || "";
+        const idx = v.indexOf(cur);
+        let next;
+        if (idx < 0) next = v[0];
+        else if (fits) return;
+        else next = v[Math.min(idx + 1, v.length - 1)];
+        if (next === cur) return;
+        mpMobileText(el, next);
+        mpMobileAttr(el, "data-mp-applied", next);
+      });
+    }
 
 		// ── 6. 侧栏点「新会话」或「会话条」后自动收回抽屉 ──
 		function closeDrawerAfterClick() {
-			setTimeout(() => { mpCloseDrawer(); }, 150);
-		}
+      mpMobileLater(() => {
+        mpCloseDrawer();
+      }, 150);
+    }
 		function onNewSessionClick(e) {
 			if (!mpIsMobile()) return; // 修复 40：收抽屉仅移动端有意义
 			// 覆盖两种新建会话按钮（中英文界面）：
@@ -1147,22 +1129,21 @@ window.__ModuleLoader__.load({
 		function closeDrawer() { mpCloseDrawer(); }
 
 		function positionApprovalPanel() {
-			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			// 面板渲染是异步的（React setState → re-render）：轮询等面板出现再定位
-			let tries = 0;
-			const tick = () => {
-				const panel = document.querySelector(".Nqubda_panel");
-				const seat = document.querySelector("[data-composer-seat]");
-				if (panel && seat) {
-					const r = seat.getBoundingClientRect();
-					panel.dataset.mpApproval = "1";
-					panel.style.setProperty("--mp-approval-bottom", Math.max(8, window.innerHeight - r.top + 8) + "px");
-				} else if (tries++ < 10) {
-					setTimeout(tick, 100);
-				}
-			};
-			tick();
-		}
+      if (!mpIsMobile()) return;
+      let tries = 0;
+      const tick = () => {
+        const panel = document.querySelector(".Nqubda_panel");
+        const seat = document.querySelector("[data-composer-seat]");
+        if (panel && seat) {
+          const r = seat.getBoundingClientRect();
+          mpMobileAttr(panel, "data-mp-approval", "1");
+          mpMobileStyle(panel, "--mp-approval-bottom", Math.max(8, window.innerHeight - r.top + 8) + "px");
+        } else if (tries++ < 10) {
+          mpMobileLater(tick, 100);
+        }
+      };
+      tick();
+    }
 
 						// ── 7b. 插件列表分组（官方 / 用户插件），默认折叠、点击展开 ──
 		// 分类规则（用户选定，包名规则）：
@@ -1268,161 +1249,66 @@ window.__ModuleLoader__.load({
 		};
 
 		function setupPluginGrouping(content) {
-			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			if (!content || content.dataset.mpPluginGroup) return;
-			content.dataset.mpPluginGroup = "1";
-			// ── 0.1.5 结构（2026-09-15 重新适配）──
-			// 官方自己已经有**两级**分组：
-			//   SECTION.qSYn7G_group[data-plugin-scope="preset"] 「会话插件」  → 28 个（当前 Agent 预设）
-			//   SECTION.qSYn7G_group[data-plugin-scope="global"] 「全局插件」  → 171 个（系统与所有会话共用）
-			// 我们原来那套「用户插件 / 官方插件」是给旧版 182 个扁平列表用的，
-			// 套在「会话插件」（28 个全官方）上只会得到一个空的「用户插件 0」——纯噪音。
-			// 新规则：**只在「全局插件」这一级内部**再做「用户 / 官方」二分
-			// （171 个里混着 14 个自装 + 155 官方 + 2 内置，混排才是问题）；
-			// 「会话插件」保持官方原样，不再插手。
-			const isOfficial = (moduleName) => {
-				if (!moduleName) return true;
-				if (moduleName === "cordis:include" || moduleName === "dshmarket") return true;
-				return moduleName.startsWith("@deepseek-ai/");
-			};
-			const isNarrow = () => mpIsMobile();
-			// 全局插件里：自装 14 个默认**展开**（这是用户最关心的），官方 155 个默认**折叠**
-			// （否则一屏 171 张卡片，滚半天）。空分组直接隐藏。
-			const expanded = { user: true, official: false };
-			let ul = null;
-			const groupOf = (card) => {
-				if (card.dataset.mpGroup) return card.dataset.mpGroup;
-				const title = card.querySelector(".qSYn7G_cardTitle");
-				const moduleName = (title && (title.getAttribute("title") || title.textContent)) || "";
-				const g = isOfficial(moduleName) ? "official" : "user";
-				card.dataset.mpGroup = g;
-				return g;
-			};
-			const applyVisibility = () => {
-				if (!ul) return;
-				const counts = { user: 0, official: 0 };
-				ul.querySelectorAll(":scope > .qSYn7G_card").forEach((card) => {
-					const g = groupOf(card);
-					counts[g] = (counts[g] || 0) + 1;
-					card.style.display = expanded[g] ? "" : "none";
-				});
-				ul.querySelectorAll(":scope > .mp-plugin-group").forEach((h) => {
-					const g = h.dataset.group;
-					// 空分组隐藏：0.1.5 常出现「用户插件 0」（当前预设未用到自装插件），
-					// 留一个点不开的空标题只是噪音。
-					const empty = (counts[g] || 0) === 0;
-					h.style.display = empty ? "none" : "";
-					h.classList.toggle("mp-plugin-group-open", !!expanded[g]);
-					const btn = h.querySelector(".mp-plugin-group-btn");
-					if (btn) btn.setAttribute("aria-expanded", String(!!expanded[g]));
-				});
-			};
-			const toggle = (g) => {
-				expanded[g] = !expanded[g];
-				applyVisibility();
-			};
-			const mkHeader = (g, label, count) => {
-				const li = document.createElement("li");
-				li.className = "mp-plugin-group";
-				li.dataset.group = g;
-				const btn = document.createElement("button");
-				btn.type = "button";
-				btn.className = "mp-plugin-group-btn";
-				const lab = document.createElement("span");
-				lab.className = "mp-plugin-group-label";
-				lab.textContent = label;
-				const cnt = document.createElement("span");
-				cnt.className = "mp-plugin-group-count";
-				cnt.textContent = String(count);
-				const chev = document.createElement("span");
-				chev.className = "mp-plugin-group-chevron";
-				chev.textContent = "▾";
-				btn.append(lab, cnt, chev);
-				btn.addEventListener("click", () => toggle(g));
-				li.appendChild(btn);
-				return li;
-			};
-			// ⚠️ 修复 24（UI 卡死/渲染进程崩溃）：
-			// 判据必须用 classList.contains，**绝不能用 className 全等**。
-			// 展开分组时 applyVisibility() 会 classList.toggle("mp-plugin-group-open")，
-			// 于是 header 的 className 变成 "mp-plugin-group mp-plugin-group-open"，
-			// 与全等字面量不再匹配 → groupedSignature 永远返回 false → 每次 mutation
-			// 都走 replaceChildren 重建 184 张卡片 → 重建自身又产生 mutation →
-			// 无限微任务循环，主线程锁死、WebView renderer 崩溃（用户表现为点卡片后 UI 卡死、
-			// 必须重新进入 Web）。折叠态恰好全等所以不复现，只有展开分组后点卡片才触发。
-			const isGroupHeader = (el, group) =>
-				!!el && el.classList && el.classList.contains("mp-plugin-group") && el.dataset.group === group;
-			const groupedSignature = (userCards, officialCards) => {
-				const kids = Array.from(ul.children);
-				if (kids.length !== userCards.length + officialCards.length + 2) return false;
-				if (!isGroupHeader(kids[0], "user")) return false;
-				if (!isGroupHeader(kids[1 + userCards.length], "official")) return false;
-				for (let i = 0; i < userCards.length; i++) if (kids[1 + i] !== userCards[i]) return false;
-				for (let i = 0; i < officialCards.length; i++) if (kids[2 + userCards.length + i] !== officialCards[i]) return false;
-				return true;
-			};
-			// ⚠️ 修复 24 加固：自愈型熔断。
-			// 上面"幂等"的成立完全依赖 groupedSignature 判据正确；判据一旦失效
-			// （修复 24 正是 className 全等被 -open 类打破），replaceChildren 自身
-			// 产生的 mutation 会把 normalize 无限重入下去 → 主线程锁死、renderer 崩溃。
-			// 这里做**基于时间窗**的熔断：1 秒内重建超过 10 次即认定不收敛，
-			// 暂停分组 2 秒（期间只做 applyVisibility，不再重建结构），然后自动复位重试。
-			// 效果：即使判据再次失效，最坏也只是"分组短暂不生效"，绝不会拖死页面。
-			let rebuildTimes = [];
-			const rebuildAllowed = () => {
-				const now = Date.now();
-				rebuildTimes = rebuildTimes.filter((t) => now - t < 1000);
-				if (rebuildTimes.length >= 10) return false;
-				rebuildTimes.push(now);
-				return true;
-			};
-			const normalize = () => {
-				if (!isNarrow()) return;
-				// 描述注入对两个分区都要做（会话插件也有卡片）
-				applyPluginDescriptions(content);
-				const section = content.querySelector(".qSYn7G_section");
-				if (!section) return;
-				// ⚠️ 只接管「全局插件」分区（data-plugin-scope="global"）。
-				//     「会话插件」交给官方原样渲染（它只有 28 个官方插件，二分无意义）。
-				const globalGroup = section.querySelector('.qSYn7G_group[data-plugin-scope="global"]');
-				if (!globalGroup) return;
-				const u = globalGroup.querySelector("ul.qSYn7G_cards");
-				if (!u) return;            // 折叠态官方不渲染 ul，等展开后再说
-				if (u !== ul) ul = u;
-				const cards = Array.from(u.querySelectorAll(":scope > .qSYn7G_card"));
-				if (cards.length === 0) return;
-				const search = section.querySelector("input[type=search]");
-				const searching = search && search.value.trim().length > 0;
-				if (searching) {
-					// 搜索时保持官方扁平过滤列表（React 自己渲染）
-					if (u.querySelector(".mp-plugin-group")) {
-						u.querySelectorAll(":scope > .mp-plugin-group").forEach((h) => h.remove());
-						u.querySelectorAll(":scope > .qSYn7G_card").forEach((c) => { c.style.display = ""; });
-					}
-					return;
-				}
-				const userCards = [];
-				const officialCards = [];
-				cards.forEach((card) => {
-					(groupOf(card) === "user" ? userCards : officialCards).push(card);
-				});
-				if (!groupedSignature(userCards, officialCards) && rebuildAllowed()) {
-					u.replaceChildren(
-						mkHeader("user", "自装插件", userCards.length),
-						...userCards,
-						mkHeader("official", "官方插件", officialCards.length),
-						...officialCards,
-					);
-				}
-				applyVisibility();
-			};
-			const observer = new MutationObserver(() => normalize());
-			// 同步 normalize：MutationObserver 回调在微任务阶段运行，先于浏览器绘制，
-			// 因此 React 渲染完扁平列表后、首帧绘制前就完成分组 → 不闪现旧样式。
-			// normalize 幂等：第二次进入时结构已一致，不再改动，不会死循环。
-			observer.observe(content, { childList: true, subtree: true });
-			normalize();
-		}
+      if (!mpIsMobile() || !mpMobileScope || !content || content.dataset.mpPluginGroup) return;
+      const scope = mpMobileScope;
+      const active = () => scope === mpMobileScope && scope.active && mpIsMobile();
+      mpMobileAttr(content, 'data-mp-plugin-group', '1');
+      const expanded = { user: true, official: false }, headings = new Map(), displays = new Map();
+      let normalize;
+      const header = (ul, group) => {
+        let pair = headings.get(ul);
+        if (!pair) headings.set(ul, pair = {});
+        if (!pair[group]) {
+          const li = mpMobileOwn(document.createElement('li'));
+          li.className = 'mp-plugin-group';
+          const button = document.createElement('button');
+          button.type = 'button'; button.className = 'mp-plugin-group-btn';
+          const label = document.createElement('span');
+          label.textContent = group === 'user' ? '自装插件' : '官方插件';
+          const count = document.createElement('span'); count.className = 'mp-plugin-group-count';
+          button.append(label, count); li.appendChild(button);
+          mpMobileListen(button, 'click', () => { expanded[group] = !expanded[group]; normalize(); });
+          pair[group] = { li, button, count };
+        }
+        return pair[group];
+      };
+      normalize = () => {
+        if (!active()) return;
+        const section = content.querySelector('.qSYn7G_section');
+        const ul = section && section.querySelector('.qSYn7G_group[data-plugin-scope="global"] ul.qSYn7G_cards');
+        if (!ul) return;
+        const cards = [...ul.querySelectorAll(':scope > .qSYn7G_card')];
+        const groups = { user: [], official: [] };
+        const search = section.querySelector('input[type=search]');
+        const searching = !!(search && search.value.trim());
+        cards.forEach(card => {
+          const title = card.querySelector('.qSYn7G_cardTitle');
+          const name = title && (title.getAttribute('title') || title.textContent) || '';
+          const official = !name || name === 'cordis:include' || name === 'dshmarket' || name.startsWith('@deepseek-ai/');
+          groups[official ? 'official' : 'user'].push(card);
+        });
+        mpMobileStyles(ul, { display: 'flex', flexDirection: 'column' });
+        for (const group of ['user', 'official']) {
+          const h = header(ul, group), base = group === 'user' ? 0 : cards.length + 1;
+          mpMobileStyles(h.li, { order: String(base), display: searching || !groups[group].length ? 'none' : '' });
+          mpMobileAttr(h.button, 'aria-expanded', String(expanded[group]));
+          const text = String(groups[group].length);
+          if (h.count.textContent !== text) h.count.textContent = text;
+          if (h.li.parentElement !== ul) ul.appendChild(h.li);
+          groups[group].forEach((card, i) => {
+            if (!displays.has(card)) displays.set(card, [card.style.getPropertyValue('display'), card.style.getPropertyPriority('display')]);
+            const original = displays.get(card), visible = searching || expanded[group];
+            mpMobileStyle(card, 'order', String(base + i + 1));
+            mpMobileStyle(card, 'display', visible ? original[0] : 'none', visible ? original[1] : '');
+          });
+        }
+      };
+      const observer = new MutationObserver(() => { if (active()) normalize(); });
+      observer.observe(content, { childList: true, subtree: true, characterData: true });
+      mpMobileCleanup(() => { observer.disconnect(); headings.clear(); displays.clear(); });
+      mpMobileListen(content, 'input', e => { if (e.target.matches('input[type=search]')) normalize(); });
+      normalize();
+    }
 
 
 		// ── 6.5 设置页导航专属图标 ──
@@ -1518,220 +1404,248 @@ window.__ModuleLoader__.load({
 			return svg;
 		};
 		function setupNavIcons(nav) {
-			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			const navList = nav.querySelector(".VOzbGW_navList");
-			if (!navList || navList.dataset.mpIcons === "1") return;
-			navList.dataset.mpIcons = "1";
-			// 幂等归一化：结构已一致就完全不动，避免 observer 自触发死循环。
-			const normalize = () => {
-				navList.querySelectorAll("button").forEach((btn) => {
-					const label = btn.querySelector(".VOzbGW_navLabel");
-					const key = mpIconKeyOf(label ? label.textContent : btn.innerText);
-					if (!key) return;
-					// 官方图标 slot：className 含 navIcon
-					const slot = btn.querySelector('[class*="navIcon"]');
-					if (!slot) return;
-					if (slot.dataset.mpIcon === key && slot.firstElementChild) return; // 已是目标态
-					const svg = mpMakeIcon(key);
-					if (!svg) return;
-					slot.replaceChildren(svg);
-					slot.dataset.mpIcon = key;
-				});
-			};
-			// 观察子树：官方 React 可能只重渲染某个 button 的图标 slot（不重建 button），
-			// 只观察直接 childList 会漏掉这种情况 → 图标永久丢失。
-			// 防自我触发：normalize 的判据是「slot 已带正确 marker 且含 svg 就完全不动」，
-			// 因此本函数自己造成的 mutation 在下一轮会立即早退，不会无限循环。
-			// 另加 reentry 闸：回调内部同步执行，防御性避免极端情况下的重入。
-			let running = false;
-			const observer = new MutationObserver(() => {
-				if (running) return;
-				running = true;
-				try { normalize(); } finally { running = false; }
-			});
-			observer.observe(navList, { childList: true, subtree: true });
-			normalize();
-		}
+      if (!mpIsMobile() || !mpMobileScope) return;
+      const scope = mpMobileScope;
+      const active = () => scope === mpMobileScope && scope.active && mpIsMobile();
+      const navList = nav.querySelector(".VOzbGW_navList");
+      if (!navList || navList.dataset.mpIcons === "1") return;
+      mpMobileAttr(navList, "data-mp-icons", "1");
+      const normalize = () => {
+        if (!active()) return;
+        navList.querySelectorAll("button").forEach((btn) => {
+          const label = btn.querySelector(".VOzbGW_navLabel");
+          const key = mpIconKeyOf(label ? label.textContent : btn.innerText);
+          if (!key) return;
+          const slot = btn.querySelector('[class*="navIcon"]');
+          if (!slot) return;
+          if (slot.dataset.mpIcon === key && slot.querySelector("[data-mp-owned-icon]")) return;
+          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          for (const [k, v] of Object.entries({ width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", "aria-hidden": "true" })) svg.setAttribute(k, v);
+          if (!MP_FILL_ICONS[key]) for (const [k, v] of Object.entries({ stroke: "currentColor", "stroke-width": "1.4", "stroke-linecap": "round", "stroke-linejoin": "round" })) svg.setAttribute(k, v);
+          svg.innerHTML = MP_ICONS[key];
+          mpMobileStyle(svg, "flex", "none");
+          if (!svg) return;
+          for (const child of slot.children) {
+            if (child.hasAttribute("data-mp-owned-icon")) child.remove();
+            else mpMobileStyle(child, "display", "none", "important");
+          }
+          mpMobileAttr(svg, "data-mp-owned-icon", "1");
+          slot.appendChild(mpMobileOwn(svg));
+          mpMobileAttr(slot, "data-mp-icon", key);
+        });
+      };
+      let running = false;
+      const observer = new MutationObserver(() => {
+        if (!active() || running) return;
+        running = true;
+        try {
+          normalize();
+        } finally {
+          running = false;
+        }
+      });
+      observer.observe(navList, { childList: true, subtree: true });
+      mpMobileCleanup(() => observer.disconnect());
+      normalize();
+    }
 
 		// ── 7. 设置页两级化（全 inline style，不用 CSS 规则——见 CSS 区注释） ──
 		function setupSettingsDialog(dialog) {
-			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			if (dialog.dataset.mpReady) return;
-			dialog.dataset.mpReady = "1";
-			const nav = Array.from(dialog.children).find((c) => c.tagName === "NAV");
-			if (!nav) return;
-			dialog.dataset.mpSettings = "1";
-			// 隐藏安卓壳遗留的"开发者选项"：其功能依赖 window.androidBridge /
-			// /api/android/*，在 Web 进程中不存在，保留会进入一个空壳页面。
-			nav.querySelectorAll("button").forEach((b) => {
-				if ((b.innerText || "").trim() === "开发者选项") b.style.display = "none";
-			});
-			const content = nav.nextElementSibling;
-			setupPluginGrouping(content);
-			setupNavIcons(nav);
-			const isNarrow = () => mpIsMobile();
-			// — 全屏 + 纵向布局（避免旧样式闪烁：立即应用，不等动画结束） —
-			Object.assign(dialog.style, {
-				width: "100vw", maxWidth: "100vw", height: "100vh", maxHeight: "100vh",
-				borderRadius: "0", boxShadow: "none", position: "fixed", top: "0", left: "0",
-				flexDirection: "column", overflow: "hidden",
-			});
-			const overlay = dialog.parentElement;
-			if (overlay) {
-				overlay.style.left = "0";
-				overlay.style.width = "100vw";
-				overlay.style.height = "100vh";
-				overlay.style.alignItems = "stretch";
-			}
-			const navTitle = nav.querySelector(".VOzbGW_navTitle");
-			if (navTitle) navTitle.style.display = "none";
-			// 顶部返回条：只有圆形返回按钮 + 标题，不再放 ✕
-			const backBar = document.createElement("div");
-			backBar.className = "mp-back-bar";
-			backBar.innerHTML = '<button type="button" class="mp-back-circle" aria-label="返回">‹</button>'
-				+ '<span class="mp-title">设置</span>';
-			Object.assign(backBar.style, {
-				display: "flex", flex: "0 0 auto", alignItems: "center", gap: "4px",
-				minHeight: "56px", padding: "8px 12px", boxSizing: "border-box",
-				borderBottom: "none", background: "transparent", position: "relative",
-			});
-			// 回退 CSS 规则：用 !important 压内联 padding，让出状态栏
-			const sysTop = getComputedStyle(document.documentElement).getPropertyValue("--dsh-android-system-top").trim() || "0px";
-			backBar.style.setProperty("padding-top", sysTop, "important");
-			const backBtn = backBar.querySelector(".mp-back-circle");
-			Object.assign(backBtn.style, {
-				width: "36px", height: "36px", borderRadius: "50%", background: "var(--dsw-alias-interactive-bg-hover, #f0f0f0)",
-				border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center",
-				justifyContent: "center", fontSize: "20px", color: "#222", flex: "0 0 auto",
-			});
-			const titleSpan = backBar.querySelector(".mp-title");
-			Object.assign(titleSpan.style, {
-				position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
-				maxWidth: "70%", fontSize: "17px", fontWeight: "600",
-				color: "var(--dsw-alias-label-primary, #222)", whiteSpace: "nowrap",
-				overflow: "hidden", textOverflow: "ellipsis", padding: "0 4px",
-			});
-			dialog.insertBefore(backBar, nav);
-			const closeDialog = () => {
-				const mask = dialog.parentElement?.querySelector(".VOzbGW_mask");
-				if (mask) mask.click();
-			};
-			// 返回按钮：一级页关闭设置，二级页回一级
-			const showList = () => {
-				titleSpan.textContent = "设置";
-				// 用 !important 压过 dsh-market 的
-				//   @media (max-width:560px){ [role=dialog]:has([data-dsh-market-root])>nav{display:none} }
-				// 市场组件（data-dsh-market-root）挂载后一直留在 dialog 里，:has() 只看 DOM
-				// 存在性不看可见性，返回列表页时普通内联 display 会被该规则覆盖 → 列表页空白。
-				nav.style.setProperty("display", "flex", "important");
-				if (content) content.style.display = "none";
-				applyNavStyle();
-			};
-			const showContent = (titleText) => {
-				const sectionTitle = content?.querySelector(".zGbnIq_title, h2");
-				titleSpan.textContent = titleText || (sectionTitle ? sectionTitle.textContent : "设置");
-				// 与 showList 对称：用 !important，确保能覆盖 showList 留下的 flex !important
-				nav.style.setProperty("display", "none", "important");
-				if (content) {
-					content.style.display = "flex";
-					content.style.flexDirection = "column";
-					content.style.flex = "1 1 0%";
-					content.style.minHeight = "0";
-					content.style.overflowY = "auto";
-				}
-				const options = content?.querySelector(".VOzbGW_options");
-				if (options) {
-					options.style.flex = "1 1 0%";
-					options.style.minHeight = "0";
-					options.style.overflowY = "auto";
-				}
-			};
-			// 设置页的「退一层」语义（二级 → 一级 → 关闭），返回按钮与**系统返回键**共用。
-			// 系统返回键由原生经 `window.__DSH_MOBILE_BACK__` 调进来，见 §12。
-			const backOneLevel = () => {
-				const atList = !content || content.style.display === "none";
-				if (atList) closeDialog();
-				else showList();
-			};
-			backBtn.addEventListener("click", backOneLevel);
-			// ⚠️ 用 WeakMap 而不是 DOM 属性存回调：DOM 属性只能存字符串，
-			//   而这里要存的是带闭包的函数（`content`/`closeDialog` 都在闭包里）。
-			mpDialogBack.set(dialog, backOneLevel);
-			// nav 竖向化 + 分类小标题 + 可滚动
-			const applyNavStyle = () => {
-				if (!isNarrow()) return;
-				nav.style.flexDirection = "column";
-				nav.style.alignItems = "stretch";
-				nav.style.overflowY = "auto";
-				nav.style.overflowX = "hidden";
-				nav.style.width = "100%";
-				nav.style.gap = "2px";
-				nav.style.padding = "10px";
-				nav.style.flex = "1 1 0%";
-				nav.style.minHeight = "0";
-				const navList = nav.querySelector(".VOzbGW_navList");
-				if (navList) {
-					navList.style.flex = "1 1 0%";
-					navList.style.minHeight = "0";
-					navList.style.overflowY = "auto";
-				}
-				if (navList && !navList.querySelector("[data-mp-group]")) {
-					const groups = [
-						{ label: "通用", items: ["通用设置"] },
-						{ label: "模型", items: ["模型"] },
-						{ label: "插件", items: ["插件"] },
-						{ label: "高级", items: ["Agent 预设", "快照", "附件缓存", "特权权限", "悬浮气泡"] },
-					];
-					for (const g of groups) {
-						const first = [...navList.querySelectorAll("button")].find((b) => g.items.includes((b.innerText || "").trim()));
-						if (!first) continue;
-						const label = document.createElement("div");
-						label.className = "mp-nav-group";
-						label.dataset.mpGroup = "1";
-						label.textContent = g.label;
-						label.style.cssText = "padding:14px 16px 4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#888);";
-						navList.insertBefore(label, first);
-					}
-				}
-				Array.from(nav.children).forEach((c) => {
-					if (c.querySelector && c.querySelector("button")) {
-						c.style.flexDirection = "column";
-						c.style.overflowX = "hidden";
-						c.style.gap = "2px";
-						c.style.flex = "1 1 0%";
-						c.style.minWidth = "0";
-					}
-				});
-				nav.querySelectorAll("button").forEach((b) => {
-					b.style.width = "100%";
-					b.style.minHeight = "50px";
-					b.style.justifyContent = "flex-start";
-					b.style.padding = "0 16px";
-					b.style.borderRadius = "12px";
-					b.style.fontSize = "15px";
-					b.style.flex = "none";
-					b.style.textAlign = "left";
-					// 移动端一级列表不显示"当前项"高亮（官方 .VOzbGW_navCell.VOzbGW_active
-					// 的背景色块）：二级页是全屏的，nav 根本看不见，回到列表时这行残留的
-					// 色块只会让人误以为"刚才那下没退掉"（用户 2026-09-14 反馈）。
-					// ⚠️ 必须用内联样式：匹配设置 dialog 的 CSS 规则会把 dialog 推出屏幕
-					// （x=-301、关不掉），此处禁用 CSS 规则。内联样式优先级高于该类规则，
-					// 且官方 React 不管理 background 属性，重渲染不会把它冲掉。
-					b.style.background = "transparent";
-				});
-			};
-			const contentHeader = content?.querySelector(".VOzbGW_header");
-			if (contentHeader) contentHeader.style.display = "none";
-			nav.addEventListener("click", (e) => {
-				const btn = e.target.closest("button");
-				if (!btn) return;
-				const titleText = (btn.innerText || "").trim();
-				setTimeout(() => showContent(titleText || "设置"), 0);
-			});
-			// 立即应用，去掉 800ms 延迟（旧样式闪烁根因）
-			applyNavStyle();
-			showList();
-		}
+      if (!mpIsMobile() || !mpMobileScope) return;
+      const scope = mpMobileScope;
+      const active = () => scope === mpMobileScope && scope.active && mpIsMobile();
+      if (dialog.dataset.mpReady) return;
+      mpMobileAttr(dialog, "data-mp-ready", "1");
+      const nav = Array.from(dialog.children).find((c) => c.tagName === "NAV");
+      if (!nav) return;
+      mpMobileAttr(dialog, "data-mp-settings", "1");
+      nav.querySelectorAll("button").forEach((b) => {
+        if ((b.innerText || "").trim() === "\u5F00\u53D1\u8005\u9009\u9879") mpMobileStyle(b, "display", "none");
+      });
+      const content = nav.nextElementSibling;
+      setupPluginGrouping(content);
+      setupNavIcons(nav);
+      const isNarrow = active;
+      mpMobileStyles(dialog, {
+        width: "100vw",
+        maxWidth: "100vw",
+        height: "100vh",
+        maxHeight: "100vh",
+        borderRadius: "0",
+        boxShadow: "none",
+        position: "fixed",
+        top: "0",
+        left: "0",
+        flexDirection: "column",
+        overflow: "hidden"
+      });
+      const overlay = dialog.parentElement;
+      if (overlay) {
+        mpMobileStyle(overlay, "left", "0");
+        mpMobileStyle(overlay, "width", "100vw");
+        mpMobileStyle(overlay, "height", "100vh");
+        mpMobileStyle(overlay, "alignItems", "stretch");
+      }
+      const navTitle = nav.querySelector(".VOzbGW_navTitle");
+      if (navTitle) mpMobileStyle(navTitle, "display", "none");
+      const backBar = mpMobileOwn(document.createElement("div"));
+      backBar.className = "mp-back-bar";
+      backBar.innerHTML = '<button type="button" class="mp-back-circle" aria-label="\u8FD4\u56DE">\u2039</button><span class="mp-title">\u8BBE\u7F6E</span>';
+      mpMobileStyles(backBar, {
+        display: "flex",
+        flex: "0 0 auto",
+        alignItems: "center",
+        gap: "4px",
+        minHeight: "56px",
+        padding: "8px 12px",
+        boxSizing: "border-box",
+        borderBottom: "none",
+        background: "transparent",
+        position: "relative"
+      });
+      const sysTop = getComputedStyle(document.documentElement).getPropertyValue("--dsh-android-system-top").trim() || "0px";
+      mpMobileStyle(backBar, "padding-top", sysTop, "important");
+      const backBtn = backBar.querySelector(".mp-back-circle");
+      mpMobileStyles(backBtn, {
+        width: "36px",
+        height: "36px",
+        borderRadius: "50%",
+        background: "var(--dsw-alias-interactive-bg-hover, #f0f0f0)",
+        border: "none",
+        cursor: "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: "20px",
+        color: "#222",
+        flex: "0 0 auto"
+      });
+      const titleSpan = backBar.querySelector(".mp-title");
+      mpMobileStyles(titleSpan, {
+        position: "absolute",
+        left: "50%",
+        top: "50%",
+        transform: "translate(-50%, -50%)",
+        maxWidth: "70%",
+        fontSize: "17px",
+        fontWeight: "600",
+        color: "var(--dsw-alias-label-primary, #222)",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        padding: "0 4px"
+      });
+      dialog.insertBefore(backBar, nav);
+      const closeDialog = () => {
+        if (!active()) return;
+        var _a;
+        const mask = (_a = dialog.parentElement) == null ? void 0 : _a.querySelector(".VOzbGW_mask");
+        if (mask) mask.click();
+      };
+      const showList = () => {
+        if (!active()) return;
+        titleSpan.textContent = "\u8BBE\u7F6E";
+        mpMobileStyle(nav, "display", "flex", "important");
+        if (content) mpMobileStyle(content, "display", "none");
+        applyNavStyle();
+      };
+      const showContent = (titleText) => {
+        if (!active()) return;
+        const sectionTitle = content == null ? void 0 : content.querySelector(".zGbnIq_title, h2");
+        titleSpan.textContent = titleText || (sectionTitle ? sectionTitle.textContent : "\u8BBE\u7F6E");
+        mpMobileStyle(nav, "display", "none", "important");
+        if (content) {
+          mpMobileStyle(content, "display", "flex");
+          mpMobileStyle(content, "flexDirection", "column");
+          mpMobileStyle(content, "flex", "1 1 0%");
+          mpMobileStyle(content, "minHeight", "0");
+          mpMobileStyle(content, "overflowY", "auto");
+        }
+        const options = content == null ? void 0 : content.querySelector(".VOzbGW_options");
+        if (options) {
+          mpMobileStyle(options, "flex", "1 1 0%");
+          mpMobileStyle(options, "minHeight", "0");
+          mpMobileStyle(options, "overflowY", "auto");
+        }
+      };
+      const backOneLevel = () => {
+        if (!active()) return;
+        const atList = !content || content.style.display === "none";
+        if (atList) closeDialog();
+        else showList();
+      };
+      mpMobileListen(backBtn, "click", backOneLevel);
+      mpDialogBack.set(dialog, backOneLevel);
+      mpMobileCleanup(() => { if (mpDialogBack.get(dialog) === backOneLevel) mpDialogBack.delete(dialog); });
+      const applyNavStyle = () => {
+        if (!isNarrow()) return;
+        mpMobileStyle(nav, "flexDirection", "column");
+        mpMobileStyle(nav, "alignItems", "stretch");
+        mpMobileStyle(nav, "overflowY", "auto");
+        mpMobileStyle(nav, "overflowX", "hidden");
+        mpMobileStyle(nav, "width", "100%");
+        mpMobileStyle(nav, "gap", "2px");
+        mpMobileStyle(nav, "padding", "10px");
+        mpMobileStyle(nav, "flex", "1 1 0%");
+        mpMobileStyle(nav, "minHeight", "0");
+        const navList = nav.querySelector(".VOzbGW_navList");
+        if (navList) {
+          mpMobileStyle(navList, "flex", "1 1 0%");
+          mpMobileStyle(navList, "minHeight", "0");
+          mpMobileStyle(navList, "overflowY", "auto");
+        }
+        if (navList && !navList.querySelector("[data-mp-group]")) {
+          const groups = [
+            { label: "\u901A\u7528", items: ["\u901A\u7528\u8BBE\u7F6E"] },
+            { label: "\u6A21\u578B", items: ["\u6A21\u578B"] },
+            { label: "\u63D2\u4EF6", items: ["\u63D2\u4EF6"] },
+            { label: "\u9AD8\u7EA7", items: ["Agent \u9884\u8BBE", "\u5FEB\u7167", "\u9644\u4EF6\u7F13\u5B58", "\u7279\u6743\u6743\u9650", "\u60AC\u6D6E\u6C14\u6CE1"] }
+          ];
+          for (const g of groups) {
+            const first = [...navList.querySelectorAll("button")].find((b) => g.items.includes((b.innerText || "").trim()));
+            if (!first) continue;
+            const label = mpMobileOwn(document.createElement("div"));
+            label.className = "mp-nav-group";
+            mpMobileAttr(label, "data-mp-group", "1");
+            label.textContent = g.label;
+            mpMobileStyles(label, { padding: "14px 16px 4px", fontSize: "12px", fontWeight: "600", color: "var(--dsw-alias-label-secondary,#888)" });
+            let anchor = first;
+            while (anchor.parentElement && anchor.parentElement !== navList) anchor = anchor.parentElement;
+            if (anchor.parentElement === navList) navList.insertBefore(label, anchor);
+          }
+        }
+        Array.from(nav.children).forEach((c) => {
+          if (c.querySelector && c.querySelector("button")) {
+            mpMobileStyle(c, "flexDirection", "column");
+            mpMobileStyle(c, "overflowX", "hidden");
+            mpMobileStyle(c, "gap", "2px");
+            mpMobileStyle(c, "flex", "1 1 0%");
+            mpMobileStyle(c, "minWidth", "0");
+          }
+        });
+        nav.querySelectorAll("button").forEach((b) => {
+          mpMobileStyle(b, "width", "100%");
+          mpMobileStyle(b, "minHeight", "50px");
+          mpMobileStyle(b, "justifyContent", "flex-start");
+          mpMobileStyle(b, "padding", "0 16px");
+          mpMobileStyle(b, "borderRadius", "12px");
+          mpMobileStyle(b, "fontSize", "15px");
+          mpMobileStyle(b, "flex", "none");
+          mpMobileStyle(b, "textAlign", "left");
+          mpMobileStyle(b, "background", "transparent");
+        });
+      };
+      const contentHeader = content == null ? void 0 : content.querySelector(".VOzbGW_header");
+      if (contentHeader) mpMobileStyle(contentHeader, "display", "none");
+      mpMobileListen(nav, "click", (e) => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        const titleText = (btn.innerText || "").trim();
+        mpMobileLater(() => showContent(titleText || "\u8BBE\u7F6E"), 0);
+      });
+      applyNavStyle();
+      showList();
+    }
 
 			// ── 8. 移动端外壳（0.1.5 融合版）──
 			// 官方 0.1.5 的窄屏形态只是把侧栏压成 56px 图标条（正文仅 334px）；
@@ -1740,14 +1654,84 @@ window.__ModuleLoader__.load({
 			// 融合方案：保留官方骨架 —— 正文占满全宽、侧栏改为浮层抽屉，
 			// 官方 header（会话标题/模式/⋯ 菜单含「下载 Session 日志」/右侧栏按钮）
 			// 与 对话/轨迹 tabs 原样保留，不再自建顶栏与 ⋮ 菜单。
-			const MP_NARROW = 1024;   // 与官方 SIDEBAR_AUTO_COLLAPSE 一致
+			let mpMobileScope = null;
+    function mpCreateMobileScope() {
+      const records = new Map(), cleanups = [], timers = new Set();
+      let active = true;
+      function write(el, key, get, set, next) {
+        if (!active || !el) return;
+        let row = records.get(el);
+        if (!row) records.set(el, row = new Map());
+        let record = row.get(key);
+        const current = get();
+        if (!record) row.set(key, record = { get, set, before: current, applied: current });
+        else if (current !== record.applied) record.before = current;
+        set(next);
+        record.applied = get();
+      }
+      return {
+        get active() { return active; },
+        style(el, key, value, priority = "") {
+          const prop = key.replace(/[A-Z]/g, c => "-" + c.toLowerCase());
+          write(el, "style:" + prop,
+            () => JSON.stringify([el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)]),
+            raw => { const pair = JSON.parse(raw); if (pair[0]) el.style.setProperty(prop, pair[0], pair[1]); else el.style.removeProperty(prop); },
+            JSON.stringify([String(value), priority]));
+        },
+        attr(el, key, value) { write(el, "attr:" + key, () => el.getAttribute(key), v => v === null ? el.removeAttribute(key) : el.setAttribute(key, v), value); },
+        text(el, value) {
+          // Never replace a host/React subtree to shorten a label.
+          if (el.children && el.children.length) return;
+          const nodes = [...el.childNodes];
+          const first = nodes.length === 1 && nodes[0].nodeType === 3 ? nodes[0] : null;
+          if (!first) return;
+          write(first, "text", () => first.nodeValue, v => { first.nodeValue = v; }, value);
+        },
+        own(node) { cleanups.push(() => node.remove()); return node; },
+        defer(fn, ms = 0) {
+          if (!active) return null;
+          const id = setTimeout(() => { timers.delete(id); if (active && mpIsMobile()) fn(); }, ms);
+          timers.add(id); return id;
+        },
+        add(dispose) { if (typeof dispose === "function") cleanups.push(dispose); },
+        listen(el, type, callback, options) {
+          const handler = (...args) => { if (active && mpIsMobile()) callback(...args); };
+          el.addEventListener(type, handler, options);
+          cleanups.push(() => el.removeEventListener(type, handler, options));
+        },
+        dispose() {
+          if (!active) return;
+          active = false;
+          for (const id of timers) clearTimeout(id);
+          timers.clear();
+          for (const dispose of cleanups.reverse()) { try { dispose(); } catch (e) { console.warn("[dsh-android-mobile] mobile cleanup:", e); } }
+          cleanups.length = 0;
+          for (const row of records.values()) for (const record of [...row.values()].reverse()) {
+            if (record.get() === record.applied) record.set(record.before);
+          }
+          records.clear();
+        }
+      };
+    }
+    function mpMobileStyle(el, prop, value, priority) { if (mpMobileScope) mpMobileScope.style(el, prop, value, priority); }
+    function mpMobileStyles(el, values) { for (const [k, v] of Object.entries(values)) mpMobileStyle(el, k, v); }
+    function mpMobileAttr(el, key, value) { if (mpMobileScope) mpMobileScope.attr(el, key, value); }
+    function mpMobileText(el, value) { if (mpMobileScope) mpMobileScope.text(el, value); }
+    function mpMobileListen(el, type, fn, options) { if (mpMobileScope) mpMobileScope.listen(el, type, fn, options); }
+    function mpMobileLater(fn, ms) { return mpMobileScope ? mpMobileScope.defer(fn, ms) : null; }
+    function mpMobileOwn(node) { return mpMobileScope ? mpMobileScope.own(node) : node; }
+    function mpMobileCleanup(fn) { if (mpMobileScope) mpMobileScope.add(fn); }
+    const MP_NARROW = 1024;   // 与官方 SIDEBAR_AUTO_COLLAPSE 一致
 			let mpShellBuilt = false;
 			// ⭐ 修复 47（2026-09-17 啾灵反馈）：汉堡节点的**自持引用**。
 			//   官方 React 提交阶段会把 header 的子节点整个 removeChild 掉（实测栈：React j4/xt），
 			//   锚在 header 里的汉堡被连带摘走 → detached；而重挂路径用 querySelector 查它，
 			//   查询**只匹配已连接节点** → 查不到 → 早退 → 汉堡永远回不来。
 			//   自持引用后，detached 也能无损重挂（监听器都还在节点上）。
-			var mpNavBtnEl = null;
+			let mpShellObserver = null;
+    let mpShellClick = null;
+    let mpShellResize = null;
+    var mpNavBtnEl = null;
 			// 关闭动画进行中的闸（修复 25）：期间 mpSyncDrawer 不得把抽屉又拉回来；
 			// 关闭中再点汉堡 = 取消关闭、直接重开。
 			let mpClosing = false;
@@ -1791,11 +1775,26 @@ window.__ModuleLoader__.load({
 						&& window.matchMedia("(hover: hover)").matches);
 				} catch (e) { return false; }
 			}
-			function mpIsMobile() {
-				if (!mpIsNarrow()) return false;
-				if (mpIsPointerDesktop()) return false;
-				return true;
-			}
+			let mpLayoutMode = null;
+    let mpLayoutReady = false;
+    let mpResolvedLayout = null;
+    let mpRefreshLayout = null;
+    function mpResolveAutoLayout(width, height, previous) {
+      const fallback = previous === "official" ? "official" : "mobile";
+      if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) return fallback;
+      if (width * 3 > height * 4) return "official";
+      if (width * 4 < height * 3) return "mobile";
+      return fallback;
+    }
+    function mpIsMobile() {
+      if (!mpLayoutReady) return false;
+      if (mpLayoutMode === "mobile") return true;
+      if (mpLayoutMode === "official") return false;
+      if (mpLayoutMode === "auto") return mpResolvedLayout !== "official";
+      if (!mpIsNarrow()) return false;
+      if (mpIsPointerDesktop()) return false;
+      return true;
+    }
 			
 
 			// data-mobile：旧版由 ui-responsive 设置，新版无人设置，而本插件所有 CSS
@@ -1921,7 +1920,7 @@ window.__ModuleLoader__.load({
 		let mpAliasSig = '';   // 上次生效的映射指纹，用于去重日志与重扫
 
 		/** 桥接自己补上去的旧类名。用来防止「自我强化」，见 [mpCollectCurrentClasses]。 */
-		const mpAliasAdded = new Set();
+		
 
 		/**
 		 * 官方「仍在用」的 hash 累积集合（**只增不减**）。
@@ -1934,7 +1933,10 @@ window.__ModuleLoader__.load({
 		 *   只要某个 hash **曾经**出现在官方样式表里，就说明官方在用它，永久不再认领。
 		 *   真正过期的 hash 永远不会出现在官方样式表里，因此不受影响。
 		 */
-		const mpOfficialSeen = new Set();
+		const mpAliasOwned = new Map();
+    let mpAliasTimer = null;
+    let mpAliasEpoch = 0;
+    const mpOfficialSeen = new Set();
 
 		/**
 		 * 预热轮次计数：前 [MP_ALIAS_WARMUP] 轮**只累积证据、不做任何认领**。
@@ -1960,46 +1962,46 @@ window.__ModuleLoader__.load({
 		 *   「官方仍在用这个 hash」判据 —— 且必须**累积**记录到 [mpOfficialSeen]。
 		 */
 		function mpCollectCurrentClasses() {
-			const byHash = {};
-			const add = (cls, fromSheet) => {
-				// ⚠️ hash 字符集必须含 "-" 与 "_"，且可能以下划线开头
-				//   （官方实测形如 ZTP-Xa、n_2Q3W、pI_x6G、_0gBrGq）。
-				const mm = /^([A-Za-z0-9_][A-Za-z0-9_-]{2,13})_([A-Za-z][A-Za-z0-9]*)$/.exec(cls);
-				if (!mm) return;
-				/* 官方样式表里出现过 ⇒ 官方在用这个 hash。**累积**记录，见 [mpOfficialSeen]。 */
-				if (fromSheet) mpOfficialSeen.add(mm[1]);
-				// 跳过桥接自己补的类名：它们不是官方证据
-				if (!fromSheet && mpAliasAdded.has(cls)) return;
-				(byHash[mm[1]] || (byHash[mm[1]] = {}))[mm[2]] = true;
-			};
-			// ① 全部样式表（含尚未挂载组件的规则 —— 拿到完整类名域的关键）
-			for (const sheet of document.styleSheets) {
-				let rules;
-				try { rules = sheet.cssRules; } catch (e) { continue; }
-				if (!rules) continue;
-				/* ⚠️ 必须跳过**插件自己**的样式表：本插件的 CSS 大量使用旧类名
-				 *   （如 `[data-mobile] .bOPqQW_root`），若把它当作「官方仍在用」的
-				 *   证据，所有旧 hash 都会被判为未过期，桥接彻底失效。
-				 *   ⚠️ 判据必须是**全等**比较：官方 DSH 自己也给每个 CSS Module 的
-				 *   `<style>` 打 `dataset.pluginCss`（值是模块路径），
-				 *   只判 `dataset.pluginCss` 是否存在会误伤 140 个官方样式表。 */
-				const owner = sheet.ownerNode;
-				if (owner && owner.dataset &&
-					owner.dataset.pluginCss === "dsh-android-mobile/main.css") continue;
-				const walk = (rs) => {
-					for (const r of rs) {
-						if (r.cssRules) { walk(r.cssRules); continue; }
-						const sel = r.selectorText;
-						if (!sel) continue;
-						for (const mm of sel.matchAll(/\.(-?[A-Za-z0-9][A-Za-z0-9_-]*)/g)) add(mm[1], true);
-					}
-				};
-				try { walk(rules); } catch (e) { /* 单条异常不影响其余 */ }
-			}
-			// ② DOM（fromSheet=false：其中的旧类名可能是桥接自己补的，不能当证据）
-			for (const el of document.querySelectorAll('[class]')) for (const cls of el.classList) add(cls, false);
-			return { byHash };
-		}
+      const byHash = {};
+      const add = (cls, fromSheet) => {
+        const mm = /^([A-Za-z0-9_][A-Za-z0-9_-]{2,13})_([A-Za-z][A-Za-z0-9]*)$/.exec(cls);
+        if (!mm) return;
+        if (fromSheet) mpOfficialSeen.add(mm[1]);
+        // DOM filtering is done with element-level provenance below.
+        (byHash[mm[1]] || (byHash[mm[1]] = {}))[mm[2]] = true;
+      };
+      for (const sheet of document.styleSheets) {
+        let rules;
+        try {
+          rules = sheet.cssRules;
+        } catch (e) {
+          continue;
+        }
+        if (!rules) continue;
+        const owner = sheet.ownerNode;
+        if (owner && owner.dataset && owner.dataset.pluginCss === "dsh-android-mobile/main.css") continue;
+        const walk = (rs) => {
+          for (const r of rs) {
+            if (r.cssRules) {
+              walk(r.cssRules);
+              continue;
+            }
+            const sel = r.selectorText;
+            if (!sel) continue;
+            for (const mm of sel.matchAll(/\.(-?[A-Za-z0-9][A-Za-z0-9_-]*)/g)) add(mm[1], true);
+          }
+        };
+        try {
+          walk(rules);
+        } catch (e) {
+        }
+      }
+      for (const el of document.querySelectorAll("[class]")) {
+        const owned = mpAliasOwned.get(el);
+        for (const cls of el.classList) if (!owned || !owned.has(cls)) add(cls, false);
+      }
+      return { byHash };
+    }
 
 		/**
 		 * 推导「旧 hash → 当前 hash」。
@@ -2116,30 +2118,32 @@ window.__ModuleLoader__.load({
 		 *   照旧生效，用户看到的错位不会随代码修复而恢复，除非重启页面。
 		 *   真机实测：修好判据后，已被误加的 2 个 `.O_Ebla_root` 仍然是居中状态。
 		 */
-		function mpPruneStaleAliases() {
-			if (!mpAliasAdded.size) return;
-			const live = new Set(mpPairIndex ? mpPairIndex.values() : []);
-			const stale = [...mpAliasAdded].filter((c) => !live.has(c));
-			if (!stale.length) return;
-			for (const cls of stale) mpAliasAdded.delete(cls);
-			for (const el of document.querySelectorAll('[class]')) {
-				for (const cls of stale) if (el.classList.contains(cls)) el.classList.remove(cls);
-			}
-		}
+		function mpPruneStaleAliases(all = false) {
+      for (const [el, owned] of mpAliasOwned) {
+        for (const [alias, source] of owned) {
+          if (!all && el.isConnected !== false && mpPairIndex && mpPairIndex.get(source) === alias && el.classList.contains(source) && !mpOfficialSeen.has(alias.slice(0, alias.lastIndexOf("_")))) continue;
+          // A token supplied by an official sheet is no longer ours to remove.
+          if (!mpOfficialSeen.has(alias.slice(0, alias.lastIndexOf("_")))) el.classList.remove(alias);
+          owned.delete(alias);
+        }
+        if (!owned.size) mpAliasOwned.delete(el);
+      }
+    }
 
 		/** 给单个元素补齐旧类名（幂等）。 */
 		function mpAliasElement(el) {
-			if (!mpPairIndex || !mpPairIndex.size) return;
-			if (el.nodeType !== 1 || !el.classList) return;
-			for (const cls of el.classList) {
-				const alias = mpPairIndex.get(cls);
-				if (alias !== undefined && !el.classList.contains(alias)) {
-					el.classList.add(alias);
-					// 记下来：这是桥接自己补的，下一轮推导不能拿它当官方证据
-					mpAliasAdded.add(alias);
-				}
-			}
-		}
+      if (!mpPairIndex || !mpPairIndex.size) return;
+      if (el.nodeType !== 1 || !el.classList) return;
+      for (const cls of el.classList) {
+        const alias = mpPairIndex.get(cls);
+        if (alias !== void 0 && !el.classList.contains(alias)) {
+          el.classList.add(alias);
+          let owned = mpAliasOwned.get(el);
+          if (!owned) mpAliasOwned.set(el, owned = new Map());
+          owned.set(alias, cls);
+        }
+      }
+    }
 
 		function mpAliasTree(root) {
 			if (!mpPairIndex || !mpPairIndex.size) return;
@@ -2149,52 +2153,59 @@ window.__ModuleLoader__.load({
 
 		let mpAliasObserver = null;
 		function mpInstallAliasBridge() {
-			mpRefreshAliasMap(true);
-			// 官方样式表随组件懒加载，早期推导可能不全 → 持续重推；
-			// mpRefreshAliasMap 内部按指纹去重，映射没变时不会重复打日志。
-			let rounds = 0;
-			const retry = () => {
-				rounds++;
-				mpAliasRound++;                 // 预热期计数，见 [MP_ALIAS_WARMUP]
-				const before = mpAliasSig;
-				mpAliasDirty = true;
-				mpRefreshAliasMap(false);
-				if (mpAliasSig !== before) mpAliasTree(document.body);   // 映射变了才全树重扫
-				// 前 40 轮（约 24s）密集；之后放缓到 2s，长期兜底
-				if (rounds < 40) setTimeout(retry, 600);
-				else if (rounds < 200) setTimeout(retry, 2000);
-			};
-			setTimeout(retry, 300);
-			mpAliasTree(document.body);
-			if (mpAliasObserver) return;
-			mpAliasObserver = new MutationObserver((records) => {
-				mpRefreshAliasMap(false);
-				for (const r of records) {
-					if (r.type === 'childList') {
-						for (const n of r.addedNodes) if (n.nodeType === 1) mpAliasTree(n);
-					} else if (r.type === 'attributes') {
-						mpAliasElement(r.target);
-					}
-				}
-			});
-			mpAliasObserver.observe(document.documentElement, {
-				childList: true, subtree: true, attributes: true, attributeFilter: ['class'],
-			});
-		}
+      if (mpAliasObserver) return;
+      const epoch = ++mpAliasEpoch;
+      mpRefreshAliasMap(true);
+      let rounds = 0;
+      const retry = () => {
+        if (epoch !== mpAliasEpoch || !mpIsMobile()) return;
+        mpAliasTimer = null;
+        rounds++;
+        mpAliasRound++;
+        const before = mpAliasSig;
+        mpAliasDirty = true;
+        mpRefreshAliasMap(false);
+        if (mpAliasSig !== before) mpAliasTree(document.body);
+        if (rounds < 40) mpAliasTimer = setTimeout(retry, 600);
+        else if (rounds < 200) mpAliasTimer = setTimeout(retry, 2e3);
+      };
+      mpAliasTimer = setTimeout(retry, 300);
+      mpAliasTree(document.body);
+      if (mpAliasObserver) return;
+      mpAliasObserver = new MutationObserver((records) => {
+        if (epoch !== mpAliasEpoch || !mpIsMobile()) return;
+        mpRefreshAliasMap(false);
+        for (const r of records) {
+          if (r.type === "childList") {
+            for (const n of r.addedNodes) if (n.nodeType === 1) mpAliasTree(n);
+          } else if (r.type === "attributes") {
+            mpPruneStaleAliases();
+            mpAliasElement(r.target);
+          }
+        }
+      });
+      mpAliasObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class"]
+      });
+    }
 
 		function mpTeardownAliasBridge() {
-			if (mpAliasObserver) { mpAliasObserver.disconnect(); mpAliasObserver = null; }
-			// ⚠️ 不能按 split('_')[0] 取 hash：'pI_x6G' 本身就含下划线。
-			// 用「旧类名全集」精确判断，只删我们加上的那些。
-			const ours = new Set();
-			for (const [oldHash, locals] of Object.entries(MP_LEGACY_HASHES)) for (const l of locals) ours.add(`${oldHash}_${l}`);
-			for (const el of document.querySelectorAll('[class]')) {
-				for (const cls of [...el.classList]) if (ours.has(cls)) el.classList.remove(cls);
-			}
-			mpPairIndex = null;
-			mpAliasDirty = true;
-			mpAliasSig = '';   // 重置指纹：否则重装时指纹相同会跳过重新赋值 mpPairIndex
-		}
+      ++mpAliasEpoch;
+      if (mpAliasTimer !== null) clearTimeout(mpAliasTimer);
+      mpAliasTimer = null;
+      if (mpAliasObserver) {
+        mpAliasObserver.disconnect();
+        mpAliasObserver = null;
+      }
+      mpPruneStaleAliases(true);
+      mpAliasOwned.clear();
+      mpPairIndex = null;
+      mpAliasDirty = true;
+      mpAliasSig = "";
+    }
 
 		/* ══ 启动动画收尾信号 ═══════════════════════════════════════════
 		 * 原生侧盖了一层不透明的启动动画（头像 + 光环 + 进度环），它需要知道
@@ -2239,109 +2250,197 @@ window.__ModuleLoader__.load({
 		 * ⚠️ 只在移动端生效。桌面端没有原生启动层，上报是空操作（桥不存在）。
 		 */
 		function mpSignalUiReady() {
-			const bridge = window.DSHAndroid;
-			if (!bridge || typeof bridge.onUiReady !== "function") return;   // 桌面端 / 桥不可用
+      const bridge = window.DSHAndroid;
+      if (!bridge || typeof bridge.onUiReady !== "function") return;
+      let reported = false;
+      let timer = 0;
+      const report = (reason) => {
+        if (reported) return;
+        reported = true;
+        if (timer) window.clearInterval(timer);
+        try {
+          bridge.onUiReady();
+          console.log("[dsh-android-mobile] onUiReady: " + reason);
+        } catch (e) {
+        }
+      };
+      const officialBootVisible = () => {
+        const body = document.body;
+        if (!body) return false;
+        return /loading\s*plugins/i.test(body.innerText || "");
+      };
+      const pageLoaded = () => document.readyState === "complete";
+      const ready = () => mpLayoutReady && (!mpIsMobile() || document.querySelector(".mp-nav-btn") !== null) && pageLoaded() && !officialBootVisible();
+      if (ready()) {
+        report("\u7ACB\u5373");
+        return;
+      }
+      const t0 = Date.now();
+      let bootSeen = false;
+      let polls = 0;
+      let firstText = "";
+      timer = window.setInterval(() => {
+        polls++;
+        const bodyTxt = document.body && document.body.innerText || "";
+        if (polls === 1) firstText = bodyTxt.replace(/\s+/g, " ").slice(0, 40);
+        if (officialBootVisible()) bootSeen = true;
+        if (ready()) {
+          report(
+            (bootSeen ? "\u5B98\u65B9\u542F\u52A8\u9875\u5DF2\u6D88\u5931" : "\u672A\u89C1\u5230\u5B98\u65B9\u542F\u52A8\u9875") + " [polls=" + polls + " bootSeen=" + bootSeen + " \u9996\u5E27\u6B63\u6587=" + JSON.stringify(firstText) + "]"
+          );
+        } else if (Date.now() - t0 > UI_READY_MAX_WAIT_MS) {
+          report("\u8D85\u65F6\u515C\u5E95 [polls=" + polls + " bootSeen=" + bootSeen + "]");
+        }
+      }, 50);
+    }
 
-			let reported = false;
-			let timer = 0;
-			const report = (reason) => {
-				if (reported) return;
-				reported = true;
-				if (timer) window.clearInterval(timer);
-				try {
-					bridge.onUiReady();
-					console.log("[dsh-android-mobile] onUiReady: " + reason);   // 便于真机核对是哪条判据收的
-				} catch (e) { /* 原生侧异常不影响页面 */ }
-			};
-
-			/**
-			 * 官方前端的启动页是否还在。
-			 *
-			 * ⚠️ 判据用 **`body.innerText`** 而不是 `#root.innerText`：
-			 *   实测启动页阶段 `#root` 的 innerText 只有 24 字符，而 `body` 的匹配
-			 *   才是可靠的（两者并非总是同一个文本视图）。用 body 更稳。
-			 *
-			 * ⚠️ 只在启动阶段查，不存在"用户聊天内容里恰好出现这个词"的误判风险 ——
-			 *   这段时间页面里根本还没有会话内容。
-			 */
-			const officialBootVisible = () => {
-				const body = document.body;
-				if (!body) return false;
-				// "Loading plugins…" / "Loading plugins..." / 大小写差异都算
-				return /loading\s*plugins/i.test(body.innerText || "");
-			};
-
-			/**
-			 * 页面是否已经加载完。
-			 *
-			 * ⚠️ 这一条是**文案判据的保险**，不是重复。若官方前端把启动页文案本地化
-			 *   （中文界面下就不是 "Loading plugins"），`officialBootVisible()` 会永远
-			 *   返回 false → 判据提前满足。加上 readyState 之后，那种情况下至少还能
-			 *   等页面真正加载完再收。
-			 *
-			 * 实测冷启动：`readyState` 从 `interactive`（正文 = "HARNESS Loading plugins…"）
-			 * 变为 `complete` 的时刻，正是真实 UI 出现的时刻（t≈11606ms）。
-			 */
-			const pageLoaded = () => document.readyState === "complete";
-
-			const ready = () =>
-				document.documentElement.hasAttribute("data-mobile") &&
-				document.querySelector(".mp-nav-btn") !== null &&
-				pageLoaded() &&
-				!officialBootVisible();
-
-			// 先立刻查一次：apply() 之前可能已经由上一轮 observer 打好属性
-			if (ready()) { report("立即"); return; }
-
-			const t0 = Date.now();
-			let bootSeen = false;      // 是否观测到过官方启动页
-			let polls = 0;
-			let firstText = "";        // 第一次轮询时看到的正文（诊断用）
-			timer = window.setInterval(() => {
-				polls++;
-				const bodyTxt = (document.body && document.body.innerText) || "";
-				if (polls === 1) firstText = bodyTxt.replace(/\s+/g, " ").slice(0, 40);
-				if (officialBootVisible()) bootSeen = true;
-				if (ready()) {
-					// ⚠️ 诊断信息要带**实际观测到的文本**：只报"见到/没见到"无法区分
-					//   "判据正确"与"判据根本没生效"，这一轮就因此多绕了一次。
-					report(
-						(bootSeen ? "官方启动页已消失" : "未见到官方启动页") +
-						" [polls=" + polls + " bootSeen=" + bootSeen +
-						" 首帧正文=" + JSON.stringify(firstText) + "]"
-					);
-				} else if (Date.now() - t0 > UI_READY_MAX_WAIT_MS) {
-					report("超时兜底 [polls=" + polls + " bootSeen=" + bootSeen + "]");
-				}
-			}, 50);
-		}
-
-		function mpSyncMobileAttr() {				// ⚠️ 修复 40：改由 mpIsMobile()（窄屏 且 非鼠标设备）决定 data-mobile，
-				// 全部 CSS 作用域都挂在这个属性上 → CSS 与 JS 永远同一个判据。
-				// 离开移动模式时顺手拆掉我们留下的痕迹（平板旋转 / 跨断点缩放）。
-				const on = mpIsMobile();
-				const has = document.documentElement.hasAttribute("data-mobile");
-				if (on && !has) {
-					document.documentElement.setAttribute("data-mobile", "");
-					mpInstallAliasBridge();
-					// 修复 59：进入移动模式后立即算一次居中留白（首屏不等 mutation）。
-					mpScheduleHeaderCenter();
-					// ⚠️ 修复 40：桌面启动时 mpBuildShellForMobile 没建外壳（正确），
-					// 用户把窗口缩窄后才进入移动模式 → 必须在这里补建，否则没有汉堡按钮。
-					mpBuildShell(); // 修复 40：内部按 mpIsMobile() 决定是否建外壳（监听器无条件装）
-					mpBuildShellForMobile();
-				} else if (!on && has) {
-					document.documentElement.removeAttribute("data-mobile");
-					// 修复 59：属性已摘 → 立即清掉居中用的 CSS 变量（回到官方布局）
-					try { mpSyncHeaderCenter(); } catch (e) { /* 静默 */ }
-					mpSetDrawerOpen(false);
-					mpTeardownAliasBridge();
-					mpTeardownMobile();
-				}
-			}
+		function mpRegisterLayoutControl(ctx) {
+      // Preferences are an optional profile bundle. Missing settings must not
+      // disable the existing APK's narrow-screen adapter or delay onUiReady.
+      // A ready snapshot below takes ownership; loading/unavailable keeps the
+      // current policy (legacy until the first accepted preference).
+      mpLayoutReady = true;
+      mpSyncMobileAttr();
+      mpSyncDrawer();
+      const React = require("react");
+      ctx.inject(["slots", "configForms", "locale"], scope => {
+        // A profile bundle owns configuration. The native adapter itself is
+        // inserted too late by --patch to accept profile configuration writes.
+        const form = scope.configForms.get("dsh-android-layout-preferences");
+        let alive = true;
+        let historyWriting = false;
+        let historyWanted = null;
+        // Coalesce resize bursts and serialize through the official form. Snapshot
+        // echoes from an older write must not roll back the in-memory layout.
+        const saveHistory = async () => {
+          if (!alive || historyWriting) return;
+          historyWriting = true;
+          let failures = 0;
+          try {
+            while (alive && historyWanted) {
+              const target = historyWanted;
+              historyWanted = null;
+              const s = form.getSnapshot();
+              if (s.status !== "ready" || !s.writable) break;
+              if (s.value.lastLayout === target) continue;
+              try {
+                if (await form.set("lastLayout", target)) continue;
+              } catch (e) { /* A later configuration/resize event can retry. */ }
+              // Official set() recovers the mirror before returning false. Its
+              // subscription may enqueue the latest target while we are busy.
+              historyWanted = historyWanted || target;
+              if (++failures >= 2) break;
+            }
+          } finally { historyWriting = false; }
+        };
+        const sync = () => {
+          if (!alive) return;
+          const s = form.getSnapshot();
+          if (s.status !== "ready") return;
+          mpLayoutMode = ["auto", "mobile", "official"].includes(s.value.layoutMode) ? s.value.layoutMode : null;
+          if (mpLayoutMode === "auto") {
+            mpResolvedLayout = mpResolveAutoLayout(window.innerWidth, window.innerHeight, mpResolvedLayout || s.value.lastLayout);
+          } else if (mpLayoutMode) {
+            mpResolvedLayout = mpLayoutMode;
+          }
+          mpLayoutReady = true;
+          const actual = mpIsMobile() ? "mobile" : "official";
+          mpResolvedLayout = actual;
+          document.documentElement.dataset.dshAndroidLayout = actual;
+          mpSyncMobileAttr();
+          mpSyncDrawer();
+          if (s.writable && s.value.lastLayout !== actual) {
+            historyWanted = actual;
+            void saveHistory();
+          }
+        };
+        scope.effect(() => {
+          const off = form.subscribe(sync);
+          mpRefreshLayout = sync;
+          sync();
+          return () => { alive = false; historyWanted = null; off(); if (mpRefreshLayout === sync) mpRefreshLayout = null; };
+        }, "android layout: official configuration subscription");
+        let saving = false;
+        const pending = new Set();
+        const updateSaving = () => { for (const fn of pending) fn(saving); };
+        function Control({ wide = true, section = false }) {
+          const [snapshot, setSnapshot] = React.useState(() => form.getSnapshot());
+          const [busy, setBusy] = React.useState(saving);
+          const [error, setError] = React.useState("");
+          React.useEffect(() => {
+            const off = form.subscribe(() => setSnapshot(form.getSnapshot()));
+            pending.add(setBusy);
+            setSnapshot(form.getSnapshot());
+            return () => { off(); pending.delete(setBusy); };
+          }, []);
+          const mode = snapshot.status === "ready" && snapshot.value.layoutMode || (mpIsMobile() ? "mobile" : "official");
+          const disabled = busy || snapshot.status !== "ready" || !snapshot.writable;
+          const save = async next => {
+            if (saving || disabled) return;
+            saving = true; updateSaving(); setError("");
+            try {
+              if (!await form.set("layoutMode", next)) setError("保存失败，布局保持原状，请重试。");
+            } catch (e) { setError("保存失败，请检查连接后重试。"); }
+            finally { saving = false; updateSaving(); }
+          };
+          const button = (value, label) => React.createElement("button", {
+            key: value, type: "button", disabled, "aria-pressed": mode === value,
+            "data-dsh-layout-choice": value, onClick: () => save(value),
+            style: { flex: "1 1 0", minWidth: 0, padding: "8px 4px", borderRadius: "8px", border: "1px solid var(--dsw-alias-border-l2, #8886)", cursor: disabled ? "default" : "pointer", font: "inherit", fontSize: "12px", color: "var(--dsw-alias-label-primary, #333)", background: mode === value ? "var(--dsw-alias-interactive-bg-active, #8883)" : "transparent" }
+          }, label);
+          if (!wide && !section) return React.createElement("button", {
+            type: "button", disabled, "aria-label": "布局：" + (mode === "auto" ? "自动，切换手机布局" : mode === "mobile" ? "手机，切换官方布局" : "官方，切换自动模式"),
+            title: error || "自动 / 手机 / 官方布局", "data-dsh-layout-toggle": true,
+            onClick: () => save(mode === "auto" ? "mobile" : mode === "mobile" ? "official" : "auto"),
+            style: { width: "32px", height: "32px", padding: 0, border: "1px solid var(--dsw-alias-border-l2, #8886)", borderRadius: "8px", background: "var(--dsw-alias-bg-layer-1, transparent)", color: "var(--dsw-alias-label-primary, #333)", cursor: "pointer" }
+          }, "⇄");
+          return React.createElement("div", { "data-dsh-layout-control": true, style: { boxSizing: "border-box", width: "100%", minWidth: 0, flex: "1 1 0", padding: section ? "16px" : "8px", border: "1px solid var(--dsw-alias-border-l2, #8886)", borderRadius: "10px", background: "var(--dsw-alias-bg-layer-1, transparent)", color: "var(--dsw-alias-label-primary, #333)" } },
+            React.createElement(section ? "h2" : "div", { style: { fontSize: section ? "18px" : "12px", margin: "0 0 8px", fontWeight: 600 } }, "界面布局"),
+            React.createElement("div", { role: "group", "aria-label": "界面布局", style: { display: "flex", gap: "6px" } }, button("auto", "自动"), button("mobile", "手机布局"), button("official", "官方布局")),
+            section && React.createElement("p", { style: { fontSize: "13px", lineHeight: 1.7 } }, "自动模式：窗口宽高比大于 4:3 使用官方布局，小于 3:4 使用手机布局；中间区域（含边界）保持原布局。启动时沿用上次布局，无历史记录默认手机布局。两个手动模式不随窗口缩放切换；不更改皮肤、会话或草稿。"),
+            error && React.createElement("div", { role: "alert", style: { fontSize: "12px", paddingTop: "6px", color: "var(--dsw-alias-state-error-primary, #c33)" } }, error),
+            snapshot.status !== "ready" && React.createElement("div", { role: "status", style: { fontSize: "12px", paddingTop: "6px" } }, snapshot.status === "unavailable" ? "布局配置不可用" : "正在读取布局配置…")
+          );
+        }
+        scope.slots.inject("sidebar.footer.action", () => scope.slots.register({ name: "sidebar.footer.action", id: "dsh-android-layout", order: 100 }, Control));
+        scope.slots.inject("settings.section", () => scope.slots.register({ name: "settings.section", id: "dsh-android-layout", order: 24, label: "界面布局" }, props => React.createElement(Control, { ...props, section: true })));
+      });
+    }
+    function mpEnterMobileEffects() {
+      for (const setup of [setupComposerKeyboardGuard, setupTriggerMenuAutoDismiss, setupKeepFocusGuard, setupEnterAsNewline, setupPlainKeyboardForCredentials, setupImePrejudge]) mpMobileCleanup(setup());
+      document.querySelectorAll(".xzv4MW_timeEnd").forEach(trimMeta);
+      processStatsLine();
+      bindTitleRename();
+      document.querySelectorAll('[role="dialog"][aria-modal="true"]').forEach(setupSettingsDialog);
+    }
+    function mpSyncMobileAttr() {
+      const on = mpIsMobile();
+      const has = document.documentElement.hasAttribute("data-mobile");
+      if (on && !has) {
+        mpMobileScope = mpCreateMobileScope();
+        document.documentElement.setAttribute("data-mobile", "");
+        mpInstallAliasBridge();
+        mpScheduleHeaderCenter();
+        mpBuildShell();
+        mpBuildShellForMobile();
+        mpEnterMobileEffects();
+      } else if (!on && has) {
+        document.documentElement.removeAttribute("data-mobile");
+        try {
+          mpSyncHeaderCenter();
+        } catch (e) {
+        }
+        mpSetDrawerOpen(false);
+        mpTeardownMobile();
+        mpTeardownAliasBridge();
+      }
+    }
 
 			function mpSidebarCol() { return document.querySelector(".pI_x6G_sidebarCol"); }
-			function mpOfficialToggle() { return document.querySelector(".hHd-Xa_toggle"); }
+			function mpOfficialToggle() {
+      const layout = mpLayout();
+      return layout && typeof layout.toggleSidebar === "function" ? { click: () => layout.toggleSidebar() } : null;
+    }
 			// 官方开合状态的唯一事实源：.hHd-Xa_root 是否带 hHd-Xa_collapsed
 			function mpOfficialDrawerOpen() {
 				const col = mpSidebarCol();
@@ -2349,15 +2448,18 @@ window.__ModuleLoader__.load({
 				return !!root && !root.classList.contains("hHd-Xa_collapsed");
 			}
 			function mpMask() {
-				let mask = document.querySelector(".mp-drawer-mask");
-				if (!mask) {
-					mask = document.createElement("div");
-					mask.className = "mp-drawer-mask";
-					mask.addEventListener("click", mpCloseDrawer);
-					document.body.appendChild(mask);
-				}
-				return mask;
-			}
+      let mask = document.querySelector(".mp-drawer-mask");
+      if (!mask) {
+        mask = document.createElement("div");
+        mask.className = "mp-drawer-mask";
+        mask.addEventListener("click", mpCloseDrawer);
+        // Keep the mask and drawer in the same stacking context, even when
+        // the host or a skin gives the app root its own stacking layer.
+        const drawerParent = mpSidebarCol()?.parentElement || document.body;
+        drawerParent.appendChild(mpMobileOwn(mask));
+      }
+      return mask;
+    }
 			function mpSetDrawerOpen(open) {
 				// ⚠️ 修复 39（2026-09-16 啾灵反馈）：抽屉/遮罩机制**只在窄屏下成立**。
 				// 宽屏下官方侧栏常驻展开，mpOfficialDrawerOpen() 恒为 true → 这里会给遮罩
@@ -2405,21 +2507,19 @@ window.__ModuleLoader__.load({
 				mpSetDrawerOpen(mpOfficialDrawerOpen());
 			}
 			function mpToggleDrawer() {
-				if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-				// 关闭中再点汉堡 = 取消关闭、直接重开（而不是又去点官方 toggle）
-				if (mpClosing) { mpOpenDrawer(); return; }
-				// ⭐ 修复 56b：**关闭方向复用 mpCloseDrawer**。
-				//   原实现只做 setTimeout(mpSyncDrawer, 60)：官方 React 要 ~800ms 才
-				//   写出 collapsed，60ms 时读到过期的 expanded → 又保持打开；而主
-				//   observer 监听的是 {childList,subtree,characterData}，**不含 class**
-				//   → 官方随后真正收起时无人复查，抽屉以浮层形式永久占屏。
-				//   mpCloseDrawer 已含「滑出动画 + 等官方状态翻转 + 超时兜底」，直接复用。
-				//   打开方向保持原样（实测 3 轮开合与遮罩关闭均正常）。
-				if (mpOfficialDrawerOpen()) { mpCloseDrawer(); return; }
-				const btn = mpOfficialToggle();
-				if (btn) btn.click();
-				setTimeout(mpSyncDrawer, 60);
-			}
+      if (!mpIsMobile()) return;
+      if (mpClosing) {
+        mpOpenDrawer();
+        return;
+      }
+      if (mpOfficialDrawerOpen()) {
+        mpCloseDrawer();
+        return;
+      }
+      const btn = mpOfficialToggle();
+      if (btn) btn.click();
+      mpMobileLater(mpSyncDrawer, 60);
+    }
 			// 修复 25：抽屉关闭。
 			// ⚠️ 旧实现（修复 ③）用 .mp-drawer-closing 把抽屉**瞬间**隐藏，但遮罩仍走
 			//   opacity .22s 淡出 → 这 220ms 屏幕上只剩一层 35% 的黑，实测对话区亮度
@@ -2428,50 +2528,44 @@ window.__ModuleLoader__.load({
 			//   两者同时开始；等抽屉滑出屏幕（240ms）**之后**才点官方 toggle，
 			//   官方切 56px 图标条 + rail-in 动画就发生在屏幕外，看不见（保住修复 ③ 的效果）。
 			function mpCloseDrawer(opts) {
-				if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-				const visualOnly = !!(opts && opts.visualOnly);
-				if (mpClosing) return;
-				if (!mpOfficialDrawerOpen()) { mpSetDrawerOpen(false); return; }
-				mpClosing = true;
-				// 修复 27：弹窗打开期间只做「视觉收起」—— 抽屉滑出屏幕即可，
-				// 绝不点官方 toggle（否则官方 railIn 动画 → footArea opacity:0 → 连坐弹窗）。
-				// 官方收起推迟到弹窗关闭后，由 mpSyncDrawer 补做。
-				if (visualOnly) {
-					mpModalClose = true;
-					const col0 = mpSidebarCol();
-					if (col0) col0.classList.remove("mp-drawer-open");
-					const mask0 = document.querySelector(".mp-drawer-mask");
-					if (mask0) { mask0.classList.remove("mp-drawer-open"); mask0.classList.add("mp-drawer-closing"); }
-					setTimeout(() => {
-						const m2 = document.querySelector(".mp-drawer-mask");
-						if (m2) m2.classList.remove("mp-drawer-closing");
-						mpClosing = false;
-					}, 220);
-					return;
-				}
-				// ① 抽屉滑出 + 遮罩淡出：同时开始，一起走完 .22s
-				const col = mpSidebarCol();
-				if (col) col.classList.remove("mp-drawer-open");
-				const mask = document.querySelector(".mp-drawer-mask");
-				if (mask) { mask.classList.remove("mp-drawer-open"); mask.classList.add("mp-drawer-closing"); }
-				// ② 等抽屉完全滑出屏幕外，再让官方收起（图标条 morph 在屏幕外发生）
-				mpCloseTimer = setTimeout(() => {
-					mpCloseTimer = null;
-					// ⚠️ 修复 26：这里**不能**给抽屉加 .mp-drawer-closing（visibility:hidden）。
-					//   抽屉此刻已在屏幕外（left=-340、width:301 !important），官方 56px 图标条
-					//   的 morph 本来看不见，加隐藏是多余的"保险"；而 visibility **会继承给子元素**
-					//   —— 设置弹窗的 DOM 就在抽屉内部（实测 col.contains(dialog) === true），
-					//   于是弹窗被连坐隐藏 200ms → 啾灵看到"进入设置→闪过对话界面→回到设置"。
-					const btn = mpOfficialToggle();
-					if (btn) btn.click();
-					// ⭐ 修复 56：**等官方状态真正翻转**再收尾，不能定时读一次就下结论。
-					//   实测时间线：点 toggle 后约 800ms 官方 React 才写入 hHd-Xa_collapsed，
-					//   而旧代码只等 200ms 就去读 → 读到过期的 expanded → mpSetDrawerOpen(true)
-					//   把抽屉又拉回来（t=3500ms left 从 -340 滑回 0），等官方真收起时已无人复查
-					//   → 56px 图标条以浮层形式占屏 + 遮罩盖全屏 = 卡死。
-					mpAwaitOfficialCollapsed();
-				}, 240);
-			}
+      if (!mpIsMobile()) return;
+      const visualOnly = !!(opts && opts.visualOnly);
+      if (mpClosing) return;
+      if (!mpOfficialDrawerOpen()) {
+        mpSetDrawerOpen(false);
+        return;
+      }
+      mpClosing = true;
+      if (visualOnly) {
+        mpModalClose = true;
+        const col0 = mpSidebarCol();
+        if (col0) col0.classList.remove("mp-drawer-open");
+        const mask0 = document.querySelector(".mp-drawer-mask");
+        if (mask0) {
+          mask0.classList.remove("mp-drawer-open");
+          mask0.classList.add("mp-drawer-closing");
+        }
+        mpMobileLater(() => {
+          const m2 = document.querySelector(".mp-drawer-mask");
+          if (m2) m2.classList.remove("mp-drawer-closing");
+          mpClosing = false;
+        }, 220);
+        return;
+      }
+      const col = mpSidebarCol();
+      if (col) col.classList.remove("mp-drawer-open");
+      const mask = document.querySelector(".mp-drawer-mask");
+      if (mask) {
+        mask.classList.remove("mp-drawer-open");
+        mask.classList.add("mp-drawer-closing");
+      }
+      mpCloseTimer = mpMobileLater(() => {
+        mpCloseTimer = null;
+        const btn = mpOfficialToggle();
+        if (btn) btn.click();
+        mpAwaitOfficialCollapsed();
+      }, 240);
+    }
 			// ⭐ 修复 56：等官方侧栏真的收起（hHd-Xa_collapsed 出现）再复位状态。
 			//
 			// 为什么必须等：官方 toggle 只是改 React state，DOM 上的 collapsed 类
@@ -2482,55 +2576,68 @@ window.__ModuleLoader__.load({
 			// mpSyncDrawer 开头因它而早退，不会把抽屉拉回来。
 			// 3s 兜底：官方若因故无响应，至少保证遮罩摘掉，绝不留下卡死状态。
 			function mpAwaitOfficialCollapsed() {
-				let done = false;
-				const finish = (why) => {
-					if (done) return;
-					done = true;
-					if (mpCollapseObs) { mpCollapseObs.disconnect(); mpCollapseObs = null; }
-					if (mpCollapseFallback !== null) { clearTimeout(mpCollapseFallback); mpCollapseFallback = null; }
-					const m2 = document.querySelector(".mp-drawer-mask");
-					if (m2) m2.classList.remove("mp-drawer-closing", "mp-drawer-open");
-					const c2 = mpSidebarCol();
-					if (c2) c2.classList.remove("mp-drawer-closing");
-					mpClosing = false;
-					// 以官方**当下真实状态**为准做最后一次同步（此时它必然已更新完）
-					mpSetDrawerOpen(mpOfficialDrawerOpen());
-					if (why === "timeout") console.warn("[mobile-polish] 官方侧栏收起超时，已强制复位抽屉状态");
-				};
-				// 已经收起（同步路径）→ 直接收尾
-				if (!mpOfficialDrawerOpen()) { finish("sync"); return; }
-				const col = mpSidebarCol();
-				const root = col ? col.querySelector(".hHd-Xa_root") : null;
-				if (!root) { finish("noroot"); return; }
-				// ① 首选：观察 root 的 class，等到 collapsed 出现
-				if (mpCollapseObs) { mpCollapseObs.disconnect(); mpCollapseObs = null; }
-				mpCollapseObs = new MutationObserver(() => {
-					if (!mpOfficialDrawerOpen()) finish("observed");
-				});
-				mpCollapseObs.observe(root, { attributes: true, attributeFilter: ["class"] });
-				// ② 兜底：官方若没动静（或 root 被 React 换掉）也不留卡死
-				if (mpCollapseFallback !== null) clearTimeout(mpCollapseFallback);
-				mpCollapseFallback = setTimeout(() => finish("timeout"), 3000);
-			}
+      let done = false;
+      const finish = (why) => {
+        if (done) return;
+        done = true;
+        if (mpCollapseObs) {
+          mpCollapseObs.disconnect();
+          mpCollapseObs = null;
+        }
+        if (mpCollapseFallback !== null) {
+          clearTimeout(mpCollapseFallback);
+          mpCollapseFallback = null;
+        }
+        const m2 = document.querySelector(".mp-drawer-mask");
+        if (m2) m2.classList.remove("mp-drawer-closing", "mp-drawer-open");
+        const c2 = mpSidebarCol();
+        if (c2) c2.classList.remove("mp-drawer-closing");
+        mpClosing = false;
+        mpSetDrawerOpen(mpOfficialDrawerOpen());
+        if (why === "timeout") console.warn("[mobile-polish] \u5B98\u65B9\u4FA7\u680F\u6536\u8D77\u8D85\u65F6\uFF0C\u5DF2\u5F3A\u5236\u590D\u4F4D\u62BD\u5C49\u72B6\u6001");
+      };
+      if (!mpOfficialDrawerOpen()) {
+        finish("sync");
+        return;
+      }
+      const col = mpSidebarCol();
+      const root = col ? col.querySelector(".hHd-Xa_root") : null;
+      if (!root) {
+        finish("noroot");
+        return;
+      }
+      if (mpCollapseObs) {
+        mpCollapseObs.disconnect();
+        mpCollapseObs = null;
+      }
+      mpCollapseObs = new MutationObserver(() => {
+        if (!mpOfficialDrawerOpen()) finish("observed");
+      });
+      mpCollapseObs.observe(root, { attributes: true, attributeFilter: ["class"] });
+      if (mpCollapseFallback !== null) clearTimeout(mpCollapseFallback);
+      mpCollapseFallback = mpMobileLater(() => finish("timeout"), 3e3);
+    }
 
 			function mpOpenDrawer() {
-				if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-				// 关闭动画进行中：取消关闭、直接重开（官方仍是 expanded，加上类即可滑回）
-				if (mpClosing) {
-					if (mpCloseTimer !== null) { clearTimeout(mpCloseTimer); mpCloseTimer = null; }
-					mpClosing = false;
-					const c = mpSidebarCol();
-					if (c) c.classList.remove("mp-drawer-closing");
-					const m = document.querySelector(".mp-drawer-mask");
-					if (m) m.classList.remove("mp-drawer-closing");
-					mpSetDrawerOpen(true);
-					return;
-				}
-				if (mpOfficialDrawerOpen()) return;
-				const btn = mpOfficialToggle();
-				if (btn) btn.click();
-				setTimeout(mpSyncDrawer, 60);
-			}
+      if (!mpIsMobile()) return;
+      if (mpClosing) {
+        if (mpCloseTimer !== null) {
+          clearTimeout(mpCloseTimer);
+          mpCloseTimer = null;
+        }
+        mpClosing = false;
+        const c = mpSidebarCol();
+        if (c) c.classList.remove("mp-drawer-closing");
+        const m = document.querySelector(".mp-drawer-mask");
+        if (m) m.classList.remove("mp-drawer-closing");
+        mpSetDrawerOpen(true);
+        return;
+      }
+      if (mpOfficialDrawerOpen()) return;
+      const btn = mpOfficialToggle();
+      if (btn) btn.click();
+      mpMobileLater(mpSyncDrawer, 60);
+    }
 
 			// 汉堡按钮：固定左上、浮于正文之上（自建元素，不注入 React 子树）
 			// ⚠️ 修复 40：mpAnchorBurger 提到模块作用域。
@@ -2908,31 +3015,35 @@ window.__ModuleLoader__.load({
 			// ⚠️ mpShellBuilt 一旦置 true 就**永不复位**（拆解时也不复位）——
 			//   否则重新进入移动模式会重复注册监听器。
 			function mpBuildShell() {
-				mpSyncMobileAttr();
-				if (mpShellBuilt) return;
-				mpShellBuilt = true;
-				// 修复 40：监听器移到这里（无条件装），回调内部各自判移动端。
-				new MutationObserver(mpAnchorBurger).observe(document.body, { childList: true, subtree: true });
-				document.addEventListener("click", (e) => {
-					const t = e.target;
-					if (!t || !t.closest) return;
-					if (!t.closest(".hHd-Xa_toggle")) return;
-					const col = mpSidebarCol();
-					if (!col || !col.classList.contains("mp-drawer-open")) return; // 抽屉没开：交官方
-					if (mpClosing) return;
-					e.preventDefault();
-					e.stopPropagation();
-					e.stopImmediatePropagation();
-					mpCloseDrawer();
-				}, { capture: true });
-				window.addEventListener("resize", () => { mpSyncMobileAttr(); mpSyncDrawer(); mpScheduleHeaderCenter(); }, { passive: true });
-				// §12：把返回键处理器交给原生。原生拦下系统返回键后调它，
-				//   返回值 = 「这一层被消费了吗」；只有 false 才退出 App。
-				//   ⚠️ 挂在 mpBuildShell 里（与上面三个监听器同处，只执行一次）；
-				//   拆解时**不摘**，理由与 mpShellBuilt 不复位相同。
-				window.__DSH_MOBILE_BACK__ = mpHandleSystemBack;
-				mpBuildShellForMobile();
-			}
+      mpSyncMobileAttr();
+      if (mpShellBuilt) return;
+      mpShellBuilt = true;
+      mpShellObserver = new MutationObserver(mpAnchorBurger);
+      mpShellObserver.observe(document.body, { childList: true, subtree: true });
+      mpShellClick = (e) => {
+        if (!mpIsMobile()) return;
+        const t = e.target;
+        if (!t || !t.closest) return;
+        if (!t.closest(".hHd-Xa_toggle")) return;
+        const col = mpSidebarCol();
+        if (!col || !col.classList.contains("mp-drawer-open")) return;
+        if (mpClosing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        mpCloseDrawer();
+      };
+      document.addEventListener("click", mpShellClick, { capture: true });
+      mpShellResize = () => {
+        if (mpRefreshLayout) mpRefreshLayout();
+        mpSyncMobileAttr();
+        mpSyncDrawer();
+        mpScheduleHeaderCenter();
+      };
+      window.addEventListener("resize", mpShellResize, { passive: true });
+      window.__DSH_MOBILE_BACK__ = mpHandleSystemBack;
+      mpBuildShellForMobile();
+    }
 
 			// 移动端外壳元素（汉堡按钮 + 遮罩）：非移动端一个节点都不建。
 			// ══ 修复 40：离开移动模式时的拆解 ══
@@ -2940,73 +3051,43 @@ window.__ModuleLoader__.load({
 			// 纯鼠标桌面**永不进入**移动模式 → 对该场景是恒等操作（零风险）。
 			// CSS 部分已由 data-mobile 属性移除自动失效，这里只收拾 JS 留下的痕迹。
 			function mpTeardownMobile() {
-				if (mpCollapseObs) { mpCollapseObs.disconnect(); mpCollapseObs = null; }
-				if (mpCollapseFallback !== null) { clearTimeout(mpCollapseFallback); mpCollapseFallback = null; }
-				mpClosing = false;
-				try {
-					// ① 自建节点：汉堡按钮 / 遮罩 / 设置页返回条 / 分组小标题
-					document.querySelectorAll(".mp-nav-btn, .mp-drawer-mask, .mp-back-bar, .mp-nav-group")
-						.forEach((n) => { try { n.remove(); } catch (e) { /* 静默 */ } });
-					mpNavBtnEl = null; // ⭐ 修复 47：节点已移除，引用一并清空
-					// ⚠️ **不复位 mpShellBuilt**：监听器只该注册一次。
-					//   复位它会让重进窄屏时 mpBuildShell 再走一遍 → 重复注册
-					//   MutationObserver / click / resize（三个都泄漏）。
-					//   重进窄屏的外壳重建由 mpBuildShellForMobile()（幂等）负责。
-					// ② 内联覆盖：设置弹窗被我们改成 100vw/100vh 全屏 —— 恢复官方
-					document.querySelectorAll('[role="dialog"][aria-modal="true"]').forEach((d) => {
-						["width", "maxWidth", "height", "maxHeight", "borderRadius", "boxShadow",
-							"position", "top", "left", "flexDirection", "overflow"].forEach((k) => {
-							try { d.style[k] = ""; } catch (e) { /* 静默 */ }
-						});
-						const ov = d.parentElement;
-						if (ov && ov.classList && ov.classList.contains("VOzbGW_mask")) {
-							["left", "width", "height", "alignItems"].forEach((k) => {
-								try { ov.style[k] = ""; } catch (e) { /* 静默 */ }
-							});
-						}
-					});
-					// ③ 插件分组：把被我们藏起来的官方卡片恢复（否则桌面端插件列表是空的）
-					document.querySelectorAll(".qSYn7G_card").forEach((c) => {
-						try { c.style.display = ""; } catch (e) { /* 静默 */ }
-					});
-					// ④ 标记位：清掉以便再次进入窄屏时能重新处理
-					document.querySelectorAll("[data-mp-ready]").forEach((n) => { try { delete n.dataset.mpReady; } catch (e) {} });
-					document.querySelectorAll("[data-mp-plugin-group]").forEach((n) => { try { delete n.dataset.mpPluginGroup; } catch (e) {} });
-					document.querySelectorAll("[data-mp-group]").forEach((n) => { try { delete n.dataset.mpGroup; } catch (e) {} });
-					document.querySelectorAll("[data-mp-tap]").forEach((n) => { try { delete n.dataset.mpTap; } catch (e) {} });
-					document.querySelectorAll("[data-mp-more-bound]").forEach((n) => { try { delete n.dataset.mpMoreBound; } catch (e) {} });
-				} catch (e) { /* 修复 40：拆解失败也绝不抛错、绝不阻断页面 */ }
-			}
+      if (mpCloseTimer !== null) clearTimeout(mpCloseTimer);
+      mpCloseTimer = null;
+      if (mpCollapseObs) mpCollapseObs.disconnect();
+      mpCollapseObs = null;
+      if (mpCollapseFallback !== null) clearTimeout(mpCollapseFallback);
+      mpCollapseFallback = null;
+      if (mpCenterRaf) cancelAnimationFrame(mpCenterRaf);
+      mpCenterRaf = 0;
+      mpClosing = false;
+      mpModalClose = false;
+      lastApprovalCount = -1;
+      if (mpMobileScope) mpMobileScope.dispose();
+      mpMobileScope = null;
+      mpNavBtnEl = null;
+      const col = mpSidebarCol();
+      if (col) col.classList.remove("mp-drawer-open", "mp-drawer-closing");
+      for (const key of ["--mp-hdr-padl", "--mp-hdr-h", "--mp-float-nav-h"]) document.documentElement.style.removeProperty(key);
+    }
 
 
 			function mpBuildShellForMobile() {
-				if (!mpIsMobile()) return; // 修复 40
-				// 幂等：拆解后重进窄屏会再次调用，别建出第二个汉堡。
-				if (document.querySelector(".mp-nav-btn")) return;
-				const btn = document.createElement("button");
-				btn.type = "button";
-				btn.className = "mp-nav-btn";
-				btn.setAttribute("aria-label", "打开导航");
-				btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-				btn.addEventListener("click", (e) => { e.stopPropagation(); mpToggleDrawer(); });
-				document.body.appendChild(btn);
-				mpNavBtnEl = btn; // ⭐ 修复 47：自持引用，detached 后也能重挂
-				// 修复 30：汉堡锚定进 header（CSS .mp-nav-btn.mp-in-header 相对 header 定位）。
-				// ⚠️ React 重渲染 header 会把外来子节点整个清掉（btn 变 detached），
-				//   所以这里不能只看 class 判断"已锚定"——必须检查 btn 是否还在文档里，
-				//   不在就重新 appendChild（实测 detached 节点可无损重挂）。
-				// ⚠️ 修复 31：**空会话页（Hero）官方 header 是空壳**（高度 0、无 titleRow），
-				//   锚进去 = 锚进一个 0 高度容器 → 汉堡被裁掉、新建对话后打不开侧边栏。
-				//   判据：header 有可见内容（titleRow 存在）才锚定；否则退回 body + fixed 定位。
-				mpMask();
-				mpAnchorBurger(); // 修复 40：首屏立即锚定（observer 只在 mutation 时触发）
-				// 修复 32：用户在抽屉内点**官方收起按钮**（.hHd-Xa_toggle）时，
-				//   官方会**立刻**把侧栏切到 56px 图标条形态（collapsed + railIn），
-				//   而我们的抽屉还在 left:0 没滑走 → 中间约 160ms 露出"空白侧边栏"，
-				//   然后才滑出屏幕（啾灵截图反馈）。
-				//   做法：捕获阶段拦下这次点击，阻止官方立即 morph，改走我们的
-				//   mpCloseDrawer（先滑出屏幕、再点官方 toggle，morph 发生在屏幕外）。
-			}
+      if (!mpIsMobile()) return;
+      if (document.querySelector(".mp-nav-btn")) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mp-nav-btn";
+      btn.setAttribute("aria-label", "\u6253\u5F00\u5BFC\u822A");
+      btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        mpToggleDrawer();
+      });
+      document.body.appendChild(mpMobileOwn(btn));
+      mpNavBtnEl = btn;
+      mpMask();
+      mpAnchorBurger();
+    }
 
 			// ── 8a. 官方 ⋯ 菜单补回「刷新」──
 			// 0.1.5 的 ⋯ 菜单由官方提供，只有「下载 Session 日志」一项；旧版我们
@@ -3114,50 +3195,51 @@ window.__ModuleLoader__.load({
 			//   故：① 去掉 disabled 让点击可穿透；② 用 role/aria 标注它是可点的；
 			//   ③ 再在 header 上做捕获监听（防御 React 重渲染把 disabled 写回来）。
 			function mpEnableTitleTap() {
-				if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-				const crumb = document.querySelector(".wSkVaW_crumbCurrent");
-				if (!crumb) return;
-				if (crumb.disabled) crumb.disabled = false;
-				if (crumb.dataset.mpTap !== "1") {
-					crumb.dataset.mpTap = "1";
-					crumb.style.cursor = "pointer";
-					// 去掉 disabled 后按钮会进入 tab 序，移动端不需要
-					crumb.setAttribute("tabindex", "-1");
-				}
-			}
+      if (!mpIsMobile()) return;
+      const crumb = document.querySelector(".wSkVaW_crumbCurrent");
+      if (!crumb) return;
+      if (crumb.disabled) mpMobileAttr(crumb, "disabled", null);
+      if (crumb.dataset.mpTap !== "1") {
+        mpMobileAttr(crumb, "data-mp-tap", "1");
+        mpMobileStyle(crumb, "cursor", "pointer");
+        mpMobileAttr(crumb, "tabindex", "-1");
+      }
+    }
 			// ⋯ 按钮点击后立刻注入（不等 observer 的 300ms 节流，避免菜单先显示一项再补）
 			function mpBindMoreButton() {
-				const more = document.querySelector(".nL4_yW_moreButton");
-				if (!more || more.dataset.mpMoreBound) return;
-				more.dataset.mpMoreBound = "1";
-				more.addEventListener("click", () => { setTimeout(mpEnsureRefreshItem, 0); setTimeout(mpEnsureRefreshItem, 60); });
-			}
+      const more = document.querySelector(".nL4_yW_moreButton");
+      if (!more || more.dataset.mpMoreBound) return;
+      mpMobileAttr(more, "data-mp-more-bound", "1");
+      mpMobileListen(more, "click", () => {
+        mpMobileLater(mpEnsureRefreshItem, 0);
+        mpMobileLater(mpEnsureRefreshItem, 60);
+      });
+    }
 
 			function bindTitleRename() {
-				if (!mpIsMobile()) return;
-				mpBindMoreButton();
-				mpEnableTitleTap();
-				const header = document.querySelector(".wSkVaW_header");
-				if (!header || header.dataset.mpRenameBound) return;
-				header.dataset.mpRenameBound = "1";
-				header.addEventListener("click", (e) => {
-					const sessions = mpSessionsOf();
-					if (!sessions) return;
-					const cluster = e.target.closest && e.target.closest(".wSkVaW_titleCluster");
-					if (!cluster) return;
-					// 只认标题本体，避免抢「模式」下拉与右侧工具按钮的点击
-					if (!e.target.closest(".wSkVaW_crumb, .wSkVaW_crumbCurrent, .wSkVaW_crumbs")) return;
-					const list = sessions.list.getSnapshot();
-					const id = list.current;
-					if (id === void 0) return;
-					const binding = sessions.binding(id);
-					if (!binding) return;
-					const crumb = cluster.querySelector(".wSkVaW_crumbCurrent");
-					showRenameDialog((crumb && crumb.innerText || "").trim(), binding.session);
-				}, true);
-				const cluster = header.querySelector(".wSkVaW_titleCluster");
-				if (cluster) cluster.style.cursor = "pointer";
-			}
+      if (!mpIsMobile()) return;
+      mpBindMoreButton();
+      mpEnableTitleTap();
+      const header = document.querySelector(".wSkVaW_header");
+      if (!header || header.dataset.mpRenameBound) return;
+      mpMobileAttr(header, "data-mp-rename-bound", "1");
+      mpMobileListen(header, "click", (e) => {
+        const sessions = mpSessionsOf();
+        if (!sessions) return;
+        const cluster2 = e.target.closest && e.target.closest(".wSkVaW_titleCluster");
+        if (!cluster2) return;
+        if (!e.target.closest(".wSkVaW_crumb, .wSkVaW_crumbCurrent, .wSkVaW_crumbs")) return;
+        const list = sessions.list.getSnapshot();
+        const id = list.current;
+        if (id === void 0) return;
+        const binding = sessions.binding(id);
+        if (!binding) return;
+        const crumb = cluster2.querySelector(".wSkVaW_crumbCurrent");
+        showRenameDialog((crumb && crumb.innerText || "").trim(), binding.session);
+      }, true);
+      const cluster = header.querySelector(".wSkVaW_titleCluster");
+      if (cluster) mpMobileStyle(cluster, "cursor", "pointer");
+    }
 
 		// ── 全局 MutationObserver：懒处理动态挂载的元素 ──
 		// 节流 300ms + 去重：防止历史/流式渲染时的高频 mutation 造成
@@ -3986,108 +4068,100 @@ window.__ModuleLoader__.load({
 		}
 		// 在轨迹详情面板里就地回填。幂等：已回填过的用 dataset 标记跳过。
 		function mpPatchTrajectoryTiming() {
-			if (!mpIsMobile()) return;
-			const details = document.querySelector(".Y0dWHa_details");
-			if (!details) return;
-			// 面板标题带「第 N 轮 · 步骤 M」→ 直接解析出 key，无需依赖表格行
-			const loc = details.querySelector(".Y0dWHa_detailsLocation");
-			if (!loc) return;
-			const text = (loc.textContent || "").trim();
-			const mm = text.match(/第\s*(\d+)\s*轮\s*·\s*步骤\s*(\d+)/);
-			if (!mm) return;
-			const key = mm[1] + ":" + mm[2];
-			// 只在有「不可用」时才干活，避免无谓开销
-			const dds = details.querySelectorAll("dt");
-			let hasUnavailable = false;
-			for (const dt of dds) {
-				const dd = dt.nextElementSibling;
-				if (dd && (dd.textContent || "").indexOf(MP_TIMING_UNAVAILABLE) >= 0) { hasUnavailable = true; break; }
-			}
-			if (!hasUnavailable) return;
-			const map = mpCollectTimings();
-			if (!map) return;
-			const m = map[key];
-			if (!m) return;
-			for (const dt of dds) {
-				const label = (dt.textContent || "").trim();
-				const dd = dt.nextElementSibling;
-				if (!dd) continue;
-				const cur = (dd.textContent || "").trim();
-				if (cur.indexOf(MP_TIMING_UNAVAILABLE) < 0) continue;
-				let kind = null;
-				if (label.indexOf("首 token") >= 0) kind = "ttft";
-				else if (label === "生成") kind = "generation";
-				else if (label === "吞吐量") kind = "throughput";
-				if (kind === null) continue;
-				const out = mpTimingText(kind, m);
-				if (out === null || out === MP_TIMING_UNAVAILABLE) continue;
-				dd.textContent = out;
-				dd.dataset.mpTimingPatched = kind;
-			}
-		}
+      if (!mpIsMobile()) return;
+      const details = document.querySelector(".Y0dWHa_details");
+      if (!details) return;
+      const loc = details.querySelector(".Y0dWHa_detailsLocation");
+      if (!loc) return;
+      const text = (loc.textContent || "").trim();
+      const mm = text.match(/第\s*(\d+)\s*轮\s*·\s*步骤\s*(\d+)/);
+      if (!mm) return;
+      const key = mm[1] + ":" + mm[2];
+      const dds = details.querySelectorAll("dt");
+      let hasUnavailable = false;
+      for (const dt of dds) {
+        const dd = dt.nextElementSibling;
+        if (dd && (dd.textContent || "").indexOf(MP_TIMING_UNAVAILABLE) >= 0) {
+          hasUnavailable = true;
+          break;
+        }
+      }
+      if (!hasUnavailable) return;
+      const map = mpCollectTimings();
+      if (!map) return;
+      const m = map[key];
+      if (!m) return;
+      for (const dt of dds) {
+        const label = (dt.textContent || "").trim();
+        const dd = dt.nextElementSibling;
+        if (!dd) continue;
+        const cur = (dd.textContent || "").trim();
+        if (cur.indexOf(MP_TIMING_UNAVAILABLE) < 0) continue;
+        let kind = null;
+        if (label.indexOf("\u9996 token") >= 0) kind = "ttft";
+        else if (label === "\u751F\u6210") kind = "generation";
+        else if (label === "\u541E\u5410\u91CF") kind = "throughput";
+        if (kind === null) continue;
+        const out = mpTimingText(kind, m);
+        if (out === null || out === MP_TIMING_UNAVAILABLE) continue;
+        mpMobileText(dd, out);
+        mpMobileAttr(dd, "data-mp-timing-patched", kind);
+      }
+    }
 		function showRenameDialog(currentTitle, session) {
-			if (!session) return;
-			// 复用现有弹窗（若已打开则聚焦输入框）
-			let mask = document.querySelector(".mp-rename-mask");
-			if (!mask) {
-				mask = document.createElement("div");
-				mask.className = "mp-rename-mask";
-				mask.innerHTML =
-					'<div class="mp-rename-box">' +
-					'<p class="mp-rename-title">重命名会话</p>' +
-					'<input class="mp-rename-input" type="text" maxlength="120" autocomplete="off" />' +
-					'<div class="mp-rename-error"></div>' +
-					'<div class="mp-rename-row">' +
-					'<button type="button" class="mp-rename-btn mp-rename-cancel">取消</button>' +
-					'<button type="button" class="mp-rename-btn mp-rename-ok">确定</button>' +
-					'</div></div>';
-				document.body.appendChild(mask);
-				const input = mask.querySelector(".mp-rename-input");
-				const error = mask.querySelector(".mp-rename-error");
-				const cancel = mask.querySelector(".mp-rename-cancel");
-				const ok = mask.querySelector(".mp-rename-ok");
-				let busy = false;
-				mask.addEventListener("click", (e) => {
-					if (e.target === mask) closeRename(mask);
-				});
-				cancel.addEventListener("click", () => closeRename(mask));
-				ok.addEventListener("click", async () => {
-					if (busy) return;
-					const title = input.value.trim();
-					if (!title) {
-						error.textContent = "标题不能为空";
-						return;
-					}
-					busy = true;
-					ok.disabled = true;
-					error.textContent = "";
-					try {
-						const result = await session.rename(title);
-						if (result.ok) closeRename(mask);
-						else error.textContent = result.error?.message || "重命名失败";
-					} catch (err) {
-						error.textContent = err instanceof Error ? err.message : String(err);
-					} finally {
-						busy = false;
-						ok.disabled = false;
-					}
-				});
-				input.addEventListener("keydown", (e) => {
-					if (e.key === "Enter") ok.click();
-					else if (e.key === "Escape") closeRename(mask);
-				});
-			}
-			const input = mask.querySelector(".mp-rename-input");
-			const error = mask.querySelector(".mp-rename-error");
-			input.value = currentTitle;
-			error.textContent = "";
-			mask.style.display = "flex";
-			// 等一帧再聚焦（避免弹窗未显示时键盘抢焦点）
-			setTimeout(() => {
-				input.focus();
-				input.select();
-			}, 80);
-		}
+      if (!session) return;
+      let mask = document.querySelector(".mp-rename-mask");
+      if (!mask) {
+        mask = document.createElement("div");
+        mask.className = "mp-rename-mask";
+        mask.innerHTML = '<div class="mp-rename-box"><p class="mp-rename-title">\u91CD\u547D\u540D\u4F1A\u8BDD</p><input class="mp-rename-input" type="text" maxlength="120" autocomplete="off" /><div class="mp-rename-error"></div><div class="mp-rename-row"><button type="button" class="mp-rename-btn mp-rename-cancel">\u53D6\u6D88</button><button type="button" class="mp-rename-btn mp-rename-ok">\u786E\u5B9A</button></div></div>';
+        document.body.appendChild(mpMobileOwn(mask));
+        const input2 = mask.querySelector(".mp-rename-input");
+        const error2 = mask.querySelector(".mp-rename-error");
+        const cancel = mask.querySelector(".mp-rename-cancel");
+        const ok = mask.querySelector(".mp-rename-ok");
+        let busy = false;
+        mask.addEventListener("click", (e) => {
+          if (e.target === mask) closeRename(mask);
+        });
+        cancel.addEventListener("click", () => closeRename(mask));
+        ok.addEventListener("click", async () => {
+          var _a;
+          if (busy) return;
+          const title = input2.value.trim();
+          if (!title) {
+            error2.textContent = "\u6807\u9898\u4E0D\u80FD\u4E3A\u7A7A";
+            return;
+          }
+          busy = true;
+          ok.disabled = true;
+          error2.textContent = "";
+          try {
+            const result = await session.rename(title);
+            if (result.ok) closeRename(mask);
+            else error2.textContent = ((_a = result.error) == null ? void 0 : _a.message) || "\u91CD\u547D\u540D\u5931\u8D25";
+          } catch (err) {
+            error2.textContent = err instanceof Error ? err.message : String(err);
+          } finally {
+            busy = false;
+            ok.disabled = false;
+          }
+        });
+        input2.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") ok.click();
+          else if (e.key === "Escape") closeRename(mask);
+        });
+      }
+      const input = mask.querySelector(".mp-rename-input");
+      const error = mask.querySelector(".mp-rename-error");
+      input.value = currentTitle;
+      error.textContent = "";
+      mask.style.display = "flex";
+      mpMobileLater(() => {
+        input.focus();
+        input.select();
+      }, 80);
+    }
 		function closeRename(mask) {
 			if (mask) mask.style.display = "none";
 		}
@@ -4127,14 +4201,31 @@ window.__ModuleLoader__.load({
 		const MP_MENU_SEL = "[data-trigger-menu]";
 		let mpBlurGateUntilMenu = false;
 		let mpPendingBlurEl = null, mpPendingBlurObs = null, mpPendingBlurTid = 0;
-		const mpFlushPendingBlur = () => {
-			mpBlurGateUntilMenu = false;
-			try { if (mpPendingBlurObs) { mpPendingBlurObs.disconnect(); mpPendingBlurObs = null; } } catch (e) { /* 静默 */ }
-			try { if (mpPendingBlurTid) { window.clearTimeout(mpPendingBlurTid); mpPendingBlurTid = 0; } } catch (e) { /* 静默 */ }
-			const el = mpPendingBlurEl;
-			mpPendingBlurEl = null;
-			if (el) { try { el.blur(); } catch (e) { /* 静默 */ } }
-		};
+		const mpFlushPendingBlur = (blur = true) => {
+      mpBlurGateUntilMenu = false;
+      try {
+        if (mpPendingBlurObs) {
+          mpPendingBlurObs.disconnect();
+          mpPendingBlurObs = null;
+        }
+      } catch (e) {
+      }
+      try {
+        if (mpPendingBlurTid) {
+          window.clearTimeout(mpPendingBlurTid);
+          mpPendingBlurTid = 0;
+        }
+      } catch (e) {
+      }
+      const el = mpPendingBlurEl;
+      mpPendingBlurEl = null;
+      if (el && blur) {
+        try {
+          el.blur();
+        } catch (e) {
+        }
+      }
+    };
 		const mpDeferBlur = (el) => {
 			// arm 与 onFocusIn 是同一次手势的两段，盯的是同一个编辑区 → 别互相冲掉
 			if (mpBlurGateUntilMenu && mpPendingBlurEl === el) return;
@@ -4310,133 +4401,124 @@ window.__ModuleLoader__.load({
 		//   无头 Chromium **没有输入法**，"键盘是否弹出"在无头里根本不可观测。
 		//   键盘类修复只有真机 visualViewport 信标或用户确认才算证据。
 		function setupKeepFocusGuard() {
-			if (!mpIsMobile()) return () => {}; // 修复 40：仅移动端（必须返回空清理函数）
-			const INPUT_SEL = "[data-composer-input]";
-			const CARD_SEL = "[data-composer-card]";
-			let stubbed = null, prevOwn = false, prevVal = null;
-			let tid = 0;
-			let restVh = 0;
-
-			const vh = () => {
-				try { return window.visualViewport ? window.visualViewport.height : window.innerHeight; } catch (e) { return 0; }
-			};
-			// 静止视口高度 = 历史最大值（键盘只会让可视区变矮，不会变高）
-			const sampleRest = () => {
-				try { const h = vh(); if (h > restVh) restVh = h; } catch (e) { /* 静默 */ }
-			};
-			// 键盘是否**正在占据视口**。
-			// ① 官方 VirtualKeyboard API（Android Chrome 94+）最直接；
-			// ② 回退「当前可视高比静止高度矮 80px 以上」——真机实测：静止 752、键盘弹起 445~504。
-			// 两条都判不出 → 保守当作**可见**：宁可保留官方行为，也绝不误关用户正在用的键盘。
-			const imeVisible = () => {
-				let byApi = null;
-				try {
-					const vk = navigator.virtualKeyboard;
-					if (vk && vk.boundingRect) byApi = vk.boundingRect.height > 0;
-				} catch (e) { /* 静默 */ }
-				if (byApi === true) return true;
-				const byVh = restVh > 0 ? (restVh - vh()) > 80 : null;
-				if (byVh === true) return true;
-				if (byApi === false || byVh === false) return false;
-				return true;
-			};
-			const clearTimer = () => {
-				try { if (tid) { window.clearTimeout(tid); tid = 0; } } catch (e) { /* 静默 */ }
-			};
-			// 只有触摸设备才有"软键盘被手动收起后又被重新挂回"这件事。
-			// 桌面端鼠标点「+」时抢走焦点 = 打断正在打字的人 → 必须排除。
-			const isTouchUI = () => {
-				try {
-					return (navigator.maxTouchPoints || 0) > 0 &&
-						!!window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
-				} catch (e) { return false; }
-			};
-			// 修复 38b 的注记：官方 keepFocus 里的 preventDefault() 让编辑区**始终
-			// 保持 DOM 焦点**（真机信标实测：整个手势 activeElement 恒为编辑区）。
-			// 键盘被用户手动收起后，Android 只要看到「仍有可编辑元素持有焦点」，就会在
-			// 这次 composer 触摸上重新挂回输入法 —— 与官方那次 focus() 无关。
-			// → 键盘不可见时必须真的把焦点移走；但**移走的时机**由修复 64 的共享闸门
-			//   决定（见 setupComposerKeyboardGuard 上方的长注释），不能就地 blur。
-			const restore = () => {
-				clearTimer();
-				if (!stubbed) return;
-				try { if (prevOwn) stubbed.focus = prevVal; else delete stubbed.focus; } catch (e) { /* 静默 */ }
-				stubbed = null;
-			};
-			const arm = (e) => {
-				try {
-					// 同一次手势内（touchstart → 合成 mousedown）已接管 → 桩继续留着
-					if (stubbed) return;
-					const t = e.target;
-					if (!t || typeof t.closest !== "function") return;
-					if (!t.closest(CARD_SEL)) return;          // 只在 composer 内
-					if (t.closest(INPUT_SEL)) return;          // 用户点输入框本体 → 官方语义照旧
-					if (!t.closest("button")) return;          // 只针对按钮
-					const inp = document.activeElement;
-					// 仅当编辑区**此刻已聚焦**才接管。未聚焦时官方 keepFocus 会派发 focusin，
-					// 由修复 29 的守卫拦下（那条路径本来就是对的）。
-					if (!inp || !inp.matches || !inp.matches(INPUT_SEL)) return;
-					sampleRest();
-					// ⭐ 修复 38b（2026-09-16 真机实测根因）：
-					//   官方 keepFocus 里的 e.preventDefault() 让编辑区**始终保持 DOM 焦点**
-					//   （真机信标实测：整个手势 activeElement 恒为编辑区）。
-					//   键盘被用户手动收起后，Android 只要看到「仍有可编辑元素持有焦点」，
-					//   就会在这次 composer 触摸上重新挂回输入法 —— **与官方那次 focus() 无关**：
-					//   实测已中和 focus()（sw=1）、无任何泄漏（pf=空），键盘照样弹起（752→445）。
-					//   反之焦点不在输入框时没有可恢复的输入连接，所以不弹（与啾灵观察一致）。
-					//   → 键盘不可见时，必须**真的把焦点移走**；只吞 focus() 不够。
-					//
-					// ⭐ 修复 64：移走焦点的**时机**由共享闸门决定（见上方长注释）。
-					//   「+」（`button[aria-haspopup="listbox"]`，真机实测 aria-haspopup=listbox）
-					//   要等指令菜单渲染出来再 blur，否则菜单根本不会出现；其余按钮立即 blur。
-					const btn = t.closest("button");
-					if (!imeVisible()) {
-						// 仅触摸端执行：桌面端没有软键盘，抢焦点只会打断打字。
-						if (isTouchUI()) {
-							try {
-								if (btn && btn.matches('button[aria-haspopup="listbox"]')) mpDeferBlur(inp);
-								else inp.blur();
-							} catch (e2) { /* 静默 */ }
-						}
-					}
-					prevOwn = Object.prototype.hasOwnProperty.call(inp, "focus");
-					prevVal = prevOwn ? inp.focus : null;
-					// 这一步在 38b 里**仍然必要**：我们刚 blur 走焦点，官方 keepFocus 的
-					// mousedown 处理器紧接着就会 `focus()` 把它抢回来，必须吃掉。
-					// 桩必须留到本次手势走完（blur 之后合成的 mousedown 仍会调它，
-					// 早拆会让编辑区被重新聚焦 → 键盘又回来）。
-					// 桩本身是**真正静默**的 noop（不写全局、不产生副作用）。
-					inp.focus = function () { /* 修复 38/38b：吃掉官方 keepFocus 的这一次重聚焦 */ };
-					stubbed = inp;
-					clearTimer();
-					// 兜底还原：任何异常路径都保证桩不残留（正常路径由 mouseup/click 拆）
-					tid = window.setTimeout(restore, 700);
-				} catch (err) { /* 静默：绝不打断输入 */ }
-			};
-			// ⚠️ 只在 mouseup/click 拆桩，**绝不在 touchend 拆**：
-			//   触摸端合成鼠标事件的顺序是 touchstart → touchend → **mousedown** → mouseup → click，
-			//   在 touchend 拆会让随后的合成 mousedown 重新武装失败（此时编辑区已被 blur、
-			//   不再是 activeElement）→ 官方 keepFocus 的 focus() 逃逸 → 键盘回来。
-			const onEnd = () => restore();
-
-			sampleRest();
-			try { if (window.visualViewport) window.visualViewport.addEventListener("resize", sampleRest); } catch (e) { /* 静默 */ }
-			window.addEventListener("resize", sampleRest);
-			document.addEventListener("touchstart", arm, true);
-			document.addEventListener("mousedown", arm, true);
-			window.addEventListener("mouseup", onEnd, false);
-			window.addEventListener("click", onEnd, false);
-			return () => {
-				restore();
-				mpFlushPendingBlur(); // 修复 64：拆掉待执行的 observer/定时器，别泄漏
-				try { if (window.visualViewport) window.visualViewport.removeEventListener("resize", sampleRest); } catch (e) { /* 静默 */ }
-				window.removeEventListener("resize", sampleRest);
-				document.removeEventListener("touchstart", arm, true);
-				document.removeEventListener("mousedown", arm, true);
-				window.removeEventListener("mouseup", onEnd, false);
-				window.removeEventListener("click", onEnd, false);
-			};
-		}
+      if (!mpIsMobile()) return () => {
+      };
+      const INPUT_SEL = "[data-composer-input]";
+      const CARD_SEL = "[data-composer-card]";
+      let stubbed = null, prevOwn = false, prevVal = null, ownedFocus = null;
+      let tid = 0;
+      let restVh = 0;
+      const vh = () => {
+        try {
+          return window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        } catch (e) {
+          return 0;
+        }
+      };
+      const sampleRest = () => {
+        try {
+          const h = vh();
+          if (h > restVh) restVh = h;
+        } catch (e) {
+        }
+      };
+      const imeVisible = () => {
+        let byApi = null;
+        try {
+          const vk = navigator.virtualKeyboard;
+          if (vk && vk.boundingRect) byApi = vk.boundingRect.height > 0;
+        } catch (e) {
+        }
+        if (byApi === true) return true;
+        const byVh = restVh > 0 ? restVh - vh() > 80 : null;
+        if (byVh === true) return true;
+        if (byApi === false || byVh === false) return false;
+        return true;
+      };
+      const clearTimer = () => {
+        try {
+          if (tid) {
+            window.clearTimeout(tid);
+            tid = 0;
+          }
+        } catch (e) {
+        }
+      };
+      const isTouchUI = () => {
+        try {
+          return (navigator.maxTouchPoints || 0) > 0 && !!window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+        } catch (e) {
+          return false;
+        }
+      };
+      const restore = () => {
+        clearTimer();
+        if (!stubbed) return;
+        try {
+          if (stubbed.focus === ownedFocus) {
+            if (prevOwn) stubbed.focus = prevVal;
+            else delete stubbed.focus;
+          }
+        } catch (e) {
+        }
+        stubbed = null;
+      };
+      const arm = (e) => {
+        try {
+          if (stubbed) return;
+          const t = e.target;
+          if (!t || typeof t.closest !== "function") return;
+          if (!t.closest(CARD_SEL)) return;
+          if (t.closest(INPUT_SEL)) return;
+          if (!t.closest("button")) return;
+          const inp = document.activeElement;
+          if (!inp || !inp.matches || !inp.matches(INPUT_SEL)) return;
+          sampleRest();
+          const btn = t.closest("button");
+          if (!imeVisible()) {
+            if (isTouchUI()) {
+              try {
+                if (btn && btn.matches('button[aria-haspopup="listbox"]')) mpDeferBlur(inp);
+                else inp.blur();
+              } catch (e2) {
+              }
+            }
+          }
+          prevOwn = Object.prototype.hasOwnProperty.call(inp, "focus");
+          prevVal = prevOwn ? inp.focus : null;
+          ownedFocus = function() {};
+          inp.focus = ownedFocus;
+          stubbed = inp;
+          clearTimer();
+          tid = window.setTimeout(restore, 700);
+        } catch (err) {
+        }
+      };
+      const onEnd = () => restore();
+      sampleRest();
+      try {
+        if (window.visualViewport) window.visualViewport.addEventListener("resize", sampleRest);
+      } catch (e) {
+      }
+      window.addEventListener("resize", sampleRest);
+      document.addEventListener("touchstart", arm, true);
+      document.addEventListener("mousedown", arm, true);
+      window.addEventListener("mouseup", onEnd, false);
+      window.addEventListener("click", onEnd, false);
+      return () => {
+        restore();
+        mpFlushPendingBlur(false);
+        try {
+          if (window.visualViewport) window.visualViewport.removeEventListener("resize", sampleRest);
+        } catch (e) {
+        }
+        window.removeEventListener("resize", sampleRest);
+        document.removeEventListener("touchstart", arm, true);
+        document.removeEventListener("mousedown", arm, true);
+        window.removeEventListener("mouseup", onEnd, false);
+        window.removeEventListener("click", onEnd, false);
+      };
+    }
 
 		// ══════════════════════════════════════════════════════════════════
 		// 特权权限（uid 2000）设置分节
@@ -6686,136 +6768,118 @@ window.__ModuleLoader__.load({
 		 *    早一步晚一步都行）。
 		 * ⚠️ 只在移动端生效（修复 40 的惯例）：桌面端没有安全键盘问题，不该被改。
 		 */
-		function installPasswordTypeShim() {
-			if (!mpIsMobile()) return () => {};
-			try {
-				const proto = HTMLInputElement.prototype;
-				const desc = Object.getOwnPropertyDescriptor(proto, "type");
-				if (!desc || typeof desc.set !== "function") return () => {};
-				const origSet = desc.set;
-				const origGet = desc.get;
-				const origSetAttribute = proto.setAttribute;
+		
 
-				Object.defineProperty(proto, "type", {
-					configurable: true,
-					enumerable: desc.enumerable,
-					get() { return origGet.call(this); },
-					set(value) {
-						// 只改写入值，不改语义：调用方以为写的是 password，DOM 拿到 text。
-						origSet.call(this, String(value).toLowerCase() === "password" ? "text" : value);
-					},
-				});
-				proto.setAttribute = function (name, value) {
-					if (String(name).toLowerCase() === "type" && String(value).toLowerCase() === "password") {
-						return origSetAttribute.call(this, "type", "text");
-					}
-					return origSetAttribute.call(this, name, value);
-				};
-				// 只还原这两个，不做通用 hook 复原：本函数只改这两处。
-				return () => {
-					try {
-						Object.defineProperty(proto, "type", desc);
-						proto.setAttribute = origSetAttribute;
-					} catch (err) { /* 静默 */ }
-				};
-			} catch (err) {
-				return () => {}; // 拦截失败就退化成下面 MutationObserver 的事后补救
-			}
-		}
-
-		function setupPlainKeyboardForCredentials() {
-			if (!mpIsMobile()) return () => {}; // 修复 40：仅移动端（桌面无安全键盘）
-
-			// ⚠️ **顺序要紧**：拦截器必须在任何 React 渲染之前装上，否则第一帧的
-			//    `type=password` + autoFocus 又会把输入连接定成密码型（见上面长注释）。
-			const disposeShim = installPasswordTypeShim();
-
-			/** 把一处密码输入框降级成普通文本框 + 打标记。返回是否真的改了。 */
-			function soften(el) {
-				if (!el || el.nodeType !== 1 || el.tagName !== "INPUT") return false;
-				// ⚠️ **先看现在是不是密码框，不是就一个字节都不动。**
-				//   ① 安全：只处理真正的密码框，页面里普通的 `input[type=email]`
-				//      （登录页之类）不被误标。
-				//   ② 幂等：改成 text 之后再调用会走到这里直接返回，不产生任何写入 ⇒
-				//      MutationObserver 不会自激。
-				//   装了拦截器之后，`type=password` 几乎不会出现（写进去就变 text），
-				//   所以这里通常不命中 —— 它现在主要是**兜底**：万一 React 用
-				//   `innerHTML`/`cloneNode` 等绕过 setter 的路径造出密码框，
-				//   或拦截器因环境差异没装上，仍然能补救。
-				if ((el.getAttribute("type") || "").toLowerCase() !== "password") return false;
-				try {
-					el.setAttribute(MP_KEY_ATTR, "1");
-					// 主触发点：`type=password` ⇒ WebView 的 inputType 变成
-					// TYPE_TEXT_VARIATION_PASSWORD ⇒ 输入法切安全键盘。
-					el.setAttribute("type", "text");
-					// 次要触发点：`autocomplete="new-password"` 是 Chromium 的 autofill
-					// 提示（AutofillManager 会把它作为 hint 交给输入法），部分国产输入法
-					// 据此也判成密码字段。**整个移除属性**而不是改成 "off" —— 后者会让
-					// Chromium 置上 `IME_FLAG_NO_PERSONALIZED_LEARNING`，又是一条「敏感
-					// 字段」信号，等于换一个可能触发安全键盘的理由。
-					if (el.hasAttribute("autocomplete")) el.removeAttribute("autocomplete");
-					return true;
-				} catch (err) { return false; } // 静默：绝不打断设置页
-			}
-
-			/**
-			 * 兜底扫描 + 摘 `autocomplete`。
-			 *
-			 * ⚠️ 装了拦截器之后，这里**不再**是主路径（password 压根不会出现），
-			 *    它的职责变成两件：
-			 *      ① 万一拦截器没生效（环境差异）时的补救；
-			 *      ② 摘掉 `autocomplete="new-password"` —— 拦截器不管这个属性。
-			 *    所以判断条件放宽成「带 data-mp-key 或 autocomplete 的输入框」，
-			 *    而不是只认 `type=password`。
-			 */
-			function tidy(el) {
-				if (!el || el.nodeType !== 1 || el.tagName !== "INPUT") return false;
-				let changed = false;
-				try {
-					if ((el.getAttribute("type") || "").toLowerCase() === "password") {
-						changed = soften(el) || changed;
-					}
-					// autocomplete 只有"像密码框"的输入框才需要摘 —— 判据是官方那两处
-					// 都会带 `new-password`，普通输入框的 autocomplete（如 "email"）
-					// 是页面正常语义，不该动。
-					if (el.getAttribute("autocomplete") === "new-password") {
-						el.removeAttribute("autocomplete");
-						changed = true;
-					}
-				} catch (err) { /* 静默 */ }
-				return changed;
-			}
-
-			function scan(root) {
-				if (!root || typeof root.querySelectorAll !== "function") return;
-				try {
-					tidy(root); // root 自身可能就是那个输入框（addedNodes 分支）
-					root.querySelectorAll("input").forEach(tidy);
-				} catch (err) { /* 静默 */ }
-			}
-
-			scan(document);
-
-			const obs = new MutationObserver((records) => {
-				for (const r of records) {
-					// attributes 分支：React 把 type / autocomplete 设回去时立刻改回来。
-					// tidy 自身幂等（无需改动时不产生写入）⇒ 不会自激循环。
-					if (r.type === "attributes") { tidy(r.target); continue; }
-					for (const n of r.addedNodes) scan(n);
-				}
-			});
-			// subtree + childList 抓懒挂载（设置页是按需打开的对话框）；
-			// attributes 抓 React 回写。
-			obs.observe(document.documentElement || document.body, {
-				childList: true, subtree: true,
-				attributes: true, attributeFilter: ["type", "autocomplete"],
-			});
-
-			return () => {
-				try { obs.disconnect(); } catch (err) { /* 静默 */ }
-				disposeShim();
-			};
-		}
+		    function installPasswordTypeShim() {
+      if (!mpIsMobile()) return () => {};
+      const proto = HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, "type");
+      if (!desc || !desc.configurable || typeof desc.set !== "function") return () => {};
+      const ownAttribute = Object.getOwnPropertyDescriptor(proto, "setAttribute");
+      const originalAttribute = proto.setAttribute;
+      const inputs = new Map();
+      let active = true;
+      const convert = (el, value) => {
+        if (!active || !mpIsMobile()) return value;
+        if (String(value).toLowerCase() === "password") {
+          inputs.set(el, "password");
+          return "text";
+        }
+        inputs.delete(el);
+        return value;
+      };
+      const setType = function(value) { return desc.set.call(this, convert(this, value)); };
+      const setAttribute = function(name, value) {
+        return originalAttribute.call(this, name, String(name).toLowerCase() === "type" ? convert(this, value) : value);
+      };
+      const dispose = () => {
+        if (!active) return;
+        active = false;
+        // No value access. Restore only inputs still bearing our type write.
+        for (const [el, requested] of inputs) {
+          try { if (el.getAttribute("type") === "text") desc.set.call(el, requested); } catch (e) {}
+        }
+        inputs.clear();
+        try {
+          const current = Object.getOwnPropertyDescriptor(proto, "type");
+          if (current && current.set === setType && current.get === desc.get) Object.defineProperty(proto, "type", desc);
+        } catch (e) {}
+        try {
+          if (proto.setAttribute === setAttribute) {
+            if (ownAttribute) Object.defineProperty(proto, "setAttribute", ownAttribute);
+            else delete proto.setAttribute;
+          }
+        } catch (e) {}
+      };
+      try {
+        Object.defineProperty(proto, "type", { ...desc, set: setType });
+        Object.defineProperty(proto, "setAttribute", { configurable: true, writable: true, enumerable: ownAttribute ? ownAttribute.enumerable : false, value: setAttribute });
+      } catch (e) { dispose(); return () => {}; }
+      return dispose;
+    }
+    function setupPlainKeyboardForCredentials() {
+      if (!mpIsMobile()) return () => {
+      };
+      const disposeShim = installPasswordTypeShim();
+      function soften(el) {
+        if (!el || el.nodeType !== 1 || el.tagName !== "INPUT") return false;
+        if ((el.getAttribute("type") || "").toLowerCase() !== "password") return false;
+        try {
+          mpMobileAttr(el, MP_KEY_ATTR, "1");
+          mpMobileAttr(el, "type", "text");
+          if (el.hasAttribute("autocomplete")) mpMobileAttr(el, "autocomplete", null);
+          return true;
+        } catch (err) {
+          return false;
+        }
+      }
+      function tidy(el) {
+        if (!el || el.nodeType !== 1 || el.tagName !== "INPUT") return false;
+        let changed = false;
+        try {
+          if ((el.getAttribute("type") || "").toLowerCase() === "password") {
+            changed = soften(el) || changed;
+          }
+          if (el.getAttribute("autocomplete") === "new-password") {
+            mpMobileAttr(el, "autocomplete", null);
+            changed = true;
+          }
+        } catch (err) {
+        }
+        return changed;
+      }
+      function scan(root) {
+        if (!root || typeof root.querySelectorAll !== "function") return;
+        try {
+          tidy(root);
+          root.querySelectorAll("input").forEach(tidy);
+        } catch (err) {
+        }
+      }
+      scan(document);
+      const obs = new MutationObserver((records) => {
+        for (const r of records) {
+          if (r.type === "attributes") {
+            tidy(r.target);
+            continue;
+          }
+          for (const n of r.addedNodes) scan(n);
+        }
+      });
+      obs.observe(document.documentElement || document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["type", "autocomplete"]
+      });
+      return () => {
+        disposeShim();
+        try {
+          obs.disconnect();
+        } catch (err) {
+        }
+      };
+    }
 
 		/* ══ 「运行日志与诊断」分节 ══
 
@@ -7135,78 +7199,65 @@ window.__ModuleLoader__.load({
 		let mpLastCompositionEnd = 0;
 
 		function apply(ctx) {
-			mpCtx = ctx;
-			mpSessionsCache = ctx.get("sessions") ?? null;
-			mpRegisterPrivilegedSection(ctx);
-			mpRegisterBubbleSection(ctx);
-			mpRegisterLogsSection(ctx);
-			mpRegisterContactSection(ctx);
-			mpInstallPendingTrust();   /* 修复 51：越早越好 */
-			mpWatchSessions(ctx);       /* 修复 51：等服务就绪 */
-			injectStyles();
-			const disposeKeyboardGuard = setupComposerKeyboardGuard();
-			const disposeTriggerMenuDismiss = setupTriggerMenuAutoDismiss();
-			const disposeKeepFocusGuard = setupKeepFocusGuard();
-			const disposeEnterAsNewline = setupEnterAsNewline();   /* 修复 67 */
-			const disposePlainKey = setupPlainKeyboardForCredentials();   /* 修复 68 */
-			// 初始一轮
-			document.querySelectorAll(".xzv4MW_timeEnd").forEach(trimMeta);
-			processStatsLine();
-			watchApproval();
-			mpBuildShell();
-			mpSyncDrawer();
-			bindTitleRename();
-			document.querySelectorAll('[role="dialog"][aria-modal="true"]').forEach(setupSettingsDialog);
-			document.addEventListener("click", onNewSessionClick, true);
-			document.addEventListener("click", onSessionRowClick, true);
-			document.addEventListener("click", onPanelRowClick, true);   /* 修复 66 */
-			const disposePressFeedback = setupPressFeedback();
-			const disposeStatusBridge = mpInstallStatusBridge();
-			const disposeTranscriptBridge = mpInstallTranscriptBridge();
-			const disposeImePrejudge = setupImePrejudge();   /* 修复 65 */
-			mo.observe(document.body, { childList: true, subtree: true, characterData: true });
-			// 启动爆发：apply() 执行时 React 尚未挂载，而 observer 有 300ms 节流，
-			// 导致顶栏会话标题出现偏慢。前 ~1.2s 内主动补 10 轮（120ms 间隔），
-			// 之后完全交给 observer 常态驱动，不增加稳态开销。
-			let mpBootBursts = 0;
-			const mpBootBurstTimer = window.setInterval(() => {
-				mpSyncMobileAttr();
-				mpSyncDrawer();
-				bindTitleRename();
-				mpInstallPendingTrust();   /* 修复 51 兜底 */
-				if (++mpBootBursts >= 10) window.clearInterval(mpBootBurstTimer);
-			}, 120);
-			// 审批徽章可能在侧栏抽屉渲染完成前不存在：轮询兜底（低频）
-			const t = window.setInterval(watchApproval, 5000);
-			/* 启动动画收尾信号：告诉原生「界面真的能用了」。
-			 *
-			 * ⚠️ 不能在这里直接报 —— apply() 返回时 React 还没挂载，`data-mobile`
-			 *   属性与外壳按钮都还不存在，此刻报等于骗原生提前收起启动页，
-			 *   用户会看到一块空白的 WebView。
-			 *   真机实测：apply() 之后约 1.4~1.7s 界面才真正可用。
-			 *
-			 * 判据用「data-mobile 已打上 且 外壳已建」，与 CSS 生效条件同源：
-			 * 这两件事成立就说明本插件的移动端适配已经挂好，界面可以交付了。 */
-			mpSignalUiReady();
-
-			return () => {
-				mo.disconnect();
-				document.removeEventListener("click", onNewSessionClick, true);
-				document.removeEventListener("click", onSessionRowClick, true);
-				disposePressFeedback();
-				disposeStatusBridge();
-				disposeTranscriptBridge();
-				disposeImePrejudge();
-				window.clearInterval(t);
-				window.clearInterval(mpBootBurstTimer);
-				disposeKeyboardGuard();
-				disposeTriggerMenuDismiss();
-				disposeKeepFocusGuard();
-				disposeEnterAsNewline();   /* 修复 67 */
-				disposePlainKey();   /* 修复 68 */
-				document.removeEventListener("click", onPanelRowClick, true);   /* 修复 66 */
-			};
-		}
+      var _a;
+      mpCtx = ctx;
+      mpSessionsCache = (_a = ctx.get("sessions")) != null ? _a : null;
+      mpRegisterPrivilegedSection(ctx);
+      mpRegisterBubbleSection(ctx);
+      mpRegisterLogsSection(ctx);
+      mpRegisterContactSection(ctx);
+      mpInstallPendingTrust();
+      mpWatchSessions(ctx);
+      injectStyles();
+      document.querySelectorAll(".xzv4MW_timeEnd").forEach(trimMeta);
+      processStatsLine();
+      watchApproval();
+      mpBuildShell();
+      mpSyncDrawer();
+      bindTitleRename();
+      document.querySelectorAll('[role="dialog"][aria-modal="true"]').forEach(setupSettingsDialog);
+      document.addEventListener("click", onNewSessionClick, true);
+      document.addEventListener("click", onSessionRowClick, true);
+      document.addEventListener("click", onPanelRowClick, true);
+      const disposePressFeedback = setupPressFeedback();
+      const disposeStatusBridge = mpInstallStatusBridge();
+      const disposeTranscriptBridge = mpInstallTranscriptBridge();
+      mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+      let mpBootBursts = 0;
+      const mpBootBurstTimer = window.setInterval(() => {
+        mpSyncMobileAttr();
+        mpSyncDrawer();
+        bindTitleRename();
+        mpInstallPendingTrust();
+        if (++mpBootBursts >= 10) window.clearInterval(mpBootBurstTimer);
+      }, 120);
+      const t = window.setInterval(watchApproval, 5e3);
+      mpRegisterLayoutControl(ctx);
+      mpSignalUiReady();
+      return () => {
+        mpLayoutReady = false;
+        document.documentElement.removeAttribute("data-mobile");
+        mpTeardownMobile();
+        mpTeardownAliasBridge();
+        if (mpShellObserver) mpShellObserver.disconnect();
+        mpShellObserver = null;
+        if (mpShellClick) document.removeEventListener("click", mpShellClick, true);
+        if (mpShellResize) window.removeEventListener("resize", mpShellResize);
+        mpShellClick = mpShellResize = null;
+        mpShellBuilt = false;
+        if (window.__DSH_MOBILE_BACK__ === mpHandleSystemBack) delete window.__DSH_MOBILE_BACK__;
+        document.documentElement.removeAttribute("data-dsh-android-layout");
+        mo.disconnect();
+        document.removeEventListener("click", onNewSessionClick, true);
+        document.removeEventListener("click", onSessionRowClick, true);
+        disposePressFeedback();
+        disposeStatusBridge();
+        disposeTranscriptBridge();
+        window.clearInterval(t);
+        window.clearInterval(mpBootBurstTimer);
+        document.removeEventListener("click", onPanelRowClick, true);
+      };
+    }
 
 		exports.apply = apply;
 		exports.inject = [];
