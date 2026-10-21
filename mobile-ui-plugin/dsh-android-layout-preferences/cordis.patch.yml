@@ -1,0 +1,5 @@
+# The native adapter is inserted by a late launch overlay and cannot own
+# profile writes. This stable bundle owns only its official Settings namespace.
+- insert:
+    - id: dsh-android-layout-preferences
+      name: ./index.js
