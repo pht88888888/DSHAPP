@@ -9062,6 +9062,29 @@ window.__ModuleLoader__.load({
 			note3: "整包用你的密码加密，即使别人拿到文件也读不出内容。",
 			note4: "保留最近三份完整备份，更早的会被自动清理。",
 			note5: "忘记密码无法恢复 —— 这是加密的代价，请把密码记在安全的地方。",
+			// ── 导入 ──────────────────────────────────────────────
+			importTitle: "从备份恢复",
+			importHint: "选一个之前导出的 .dshbak 包，输入当时的密码。导入会替换现有的对话记录、技能等内容。",
+			importChoose: "选择备份文件",
+			importInspect: "检查",
+			importDo: "开始导入",
+			importNoFile: "请先选择备份文件",
+			importPwdNeeded: "请输入备份密码",
+			importChecking: "检查中…",
+			importApplying: "导入中…",
+			importDone: "导入完成",
+			importFailed: "导入失败",
+			importRolledBack: "（已回滚，当前数据完好）",
+			importSummary: "包信息",
+			importCreated: "创建时间",
+			importVersion: "来源版本",
+			importEntries: "文件数",
+			importComplete: "完整性",
+			importCompleteYes: "完整",
+			importCompleteNo: "不完整",
+			importWillReplace: "会被替换",
+			importWarnings: "注意事项",
+			importConfirmHint: "确认无误后点「开始导入」。导入前会自动建立恢复点，失败可回滚。",
 		};
 
 		const MP_BACKUP_EN = {
@@ -9107,6 +9130,28 @@ window.__ModuleLoader__.load({
 			note3: "The whole package is encrypted with your password.",
 			note4: "The latest three complete backups are kept; older ones are pruned.",
 			note5: "A forgotten password cannot be recovered — keep it somewhere safe.",
+			importTitle: "Restore from backup",
+			importHint: "Pick a .dshbak package and enter the password used at export time. Import replaces existing sessions, skills and similar data.",
+			importChoose: "Choose backup file",
+			importInspect: "Inspect",
+			importDo: "Start import",
+			importNoFile: "Choose a backup file first",
+			importPwdNeeded: "Enter the backup password",
+			importChecking: "Inspecting…",
+			importApplying: "Importing…",
+			importDone: "Import complete",
+			importFailed: "Import failed",
+			importRolledBack: " (rolled back, current data intact)",
+			importSummary: "Package info",
+			importCreated: "Created",
+			importVersion: "Source version",
+			importEntries: "Files",
+			importComplete: "Completeness",
+			importCompleteYes: "Complete",
+			importCompleteNo: "Incomplete",
+			importWillReplace: "Will be replaced",
+			importWarnings: "Notes",
+			importConfirmHint: "Confirm and press Start import. A rollback point is created first.",
 		};
 
 		/**
@@ -9125,6 +9170,11 @@ window.__ModuleLoader__.load({
 			const [pwd2, setPwd2] = React.useState("");
 			const [msg, setMsg] = React.useState("");
 			const [busy, setBusy] = React.useState(false);
+			// ── 导入相关状态 ─────────────────────────────────────────
+			const [impPwd, setImpPwd] = React.useState("");
+			const [impInfo, setImpInfo] = React.useState(null);
+			const [impPhase, setImpPhase] = React.useState("idle");
+			const [impMsg, setImpMsg] = React.useState("");
 
 			const bridge = () => (typeof window !== "undefined" ? window.DSHAndroid : undefined);
 
@@ -9206,19 +9256,73 @@ window.__ModuleLoader__.load({
 				}
 			}, [t]);
 
+			const doChooseImport = React.useCallback(() => {
+				const b = bridge();
+				if (!b || typeof b.backupChooseImportFile !== "function") { setImpMsg(t("noBridge")); return; }
+				try { b.backupChooseImportFile(); setImpMsg(t("importChoose") + "…"); }
+				catch (e) { setImpMsg((e && e.message) || "打开失败"); }
+			}, [t]);
+
+			const doInspect = React.useCallback(() => {
+				if (!impPwd) { setImpMsg(t("importPwdNeeded")); return; }
+				const b = bridge();
+				if (!b || typeof b.backupInspect !== "function") { setImpMsg(t("noBridge")); return; }
+				setBusy(true);
+				try {
+					const r = JSON.parse(b.backupInspect(impPwd) || "{}");
+					if (r.ok) { setImpInfo(r); setImpMsg(""); }
+					else { setImpInfo(null); setImpMsg(r.error || t("importFailed")); }
+				} catch (e) {
+					setImpMsg((e && e.message) || "检查失败");
+				} finally { setBusy(false); }
+			}, [impPwd, t]);
+
+			const doImport = React.useCallback(() => {
+				const b = bridge();
+				if (!b || typeof b.backupImport !== "function") { setImpMsg(t("noBridge")); return; }
+				setBusy(true);
+				setImpPhase("applying");
+				try {
+					const r = JSON.parse(b.backupImport(impPwd) || "{}");
+					if (!r.ok) { setImpMsg(r.error || t("importFailed")); setImpPhase("failed"); }
+				} catch (e) {
+					setImpMsg((e && e.message) || "导入失败"); setImpPhase("failed");
+				} finally { setBusy(false); }
+			}, [impPwd, t]);
+
+			// 导入是长操作，轮询结果
+			React.useEffect(() => {
+				if (impPhase !== "applying") return;
+				const b = bridge();
+				if (!b || typeof b.backupImportResult !== "function") return;
+				const id = setInterval(() => {
+					try {
+						const r = JSON.parse(b.backupImportResult() || "{}");
+						if (r.phase === "done") {
+							setImpPhase("done");
+							setImpMsg(t("importDone") + "：" + (r.restored || []).join("、"));
+						} else if (r.phase === "failed") {
+							setImpPhase("failed");
+							setImpMsg((r.error || t("importFailed")) + (r.rolledBack ? t("importRolledBack") : ""));
+						}
+					} catch (e) { /* 忽略轮询错误 */ }
+				}, 1000);
+				return () => clearInterval(id);
+			}, [impPhase, t]);
+
 			if (state.phase === "loading") {
 				return React.createElement("div", { className: S.section }, "...");
 			}
 			if (state.phase === "nobridge") {
 				return React.createElement("div", { className: S.section },
-					React.createElement("div", { className: S.hint }, t("noBridge")));
+					React.createElement("div", { className: S.intro }, t("noBridge")));
 			}
 
 			const d = state.data || {};
 			const row = (label, value, tone) =>
 				React.createElement("div", { className: S.row },
 					React.createElement("span", { className: S.rowLabel }, label),
-					React.createElement("span", { className: tone === "warn" ? S.rowWarn : S.rowValue }, value));
+					React.createElement("span", { className: tone === "warn" ? S.error : S.rowValue }, value));
 
 			const fmtLast = (ms) => {
 				if (!ms) return t("never");
@@ -9227,46 +9331,90 @@ window.__ModuleLoader__.load({
 
 			return React.createElement("div", { className: S.section },
 				React.createElement("div", { className: S.intro }, t("intro")),
-				React.createElement("h3", { className: S.h }, t("statusTitle")),
+				React.createElement("h3", { className: S.heading }, t("statusTitle")),
 				row(t("rowPassword"), d.hasPassword ? t("set") : t("unset"), d.hasPassword ? null : "warn"),
 				row(t("rowDir"), d.hasDir ? t("set") : t("unset"), d.hasDir ? null : "warn"),
 				row(t("rowAuto"), d.autoEnabled ? t("on") : t("off")),
 				row(t("rowLast"), fmtLast(d.lastSuccessAt)),
-				React.createElement("div", { className: S.hint }, d.ready ? t("ready") : t("notReady")),
+				React.createElement("div", { className: S.intro }, d.ready ? t("ready") : t("notReady")),
 
-				React.createElement("h3", { className: S.h }, t("pwdTitle")),
-				React.createElement("div", { className: S.hint }, t("pwdHint")),
+				React.createElement("h3", { className: S.heading }, t("pwdTitle")),
+				React.createElement("div", { className: S.intro }, t("pwdHint")),
 				React.createElement("input", {
-					className: S.input, type: "password", value: pwd,
+					className: S.cmd, type: "password", value: pwd,
 					placeholder: t("pwdPlaceholder"),
 					onChange: (e) => setPwd(e.target.value),
 				}),
 				React.createElement("input", {
-					className: S.input, type: "password", value: pwd2,
+					className: S.cmd, type: "password", value: pwd2,
 					placeholder: t("pwdConfirmPlaceholder"),
 					onChange: (e) => setPwd2(e.target.value),
 				}),
 				React.createElement("button", {
-					className: S.button, disabled: busy, onClick: doSetPassword,
+					className: S.btn, disabled: busy, onClick: doSetPassword,
 				}, t("pwdSet")),
 
-				React.createElement("h3", { className: S.h }, t("dirTitle")),
-				React.createElement("button", { className: S.button, onClick: doChooseDir }, t("chooseDir")),
+				React.createElement("h3", { className: S.heading }, t("dirTitle")),
+				React.createElement("button", { className: S.btn, onClick: doChooseDir }, t("chooseDir")),
 
-				React.createElement("h3", { className: S.h }, t("autoTitle")),
-				React.createElement("button", { className: S.button, onClick: doToggleAuto },
+				React.createElement("h3", { className: S.heading }, t("autoTitle")),
+				React.createElement("button", { className: S.btn, onClick: doToggleAuto },
 					d.autoEnabled ? t("off") : t("on")),
 
-				React.createElement("h3", { className: S.h }, t("manualTitle")),
-				React.createElement("div", { className: S.hint }, t("manualHint")),
+				React.createElement("h3", { className: S.heading }, t("manualTitle")),
+				React.createElement("div", { className: S.intro }, t("manualHint")),
 				React.createElement("button", {
-					className: S.button, disabled: busy, onClick: doRunNow,
+					className: S.btn, disabled: busy, onClick: doRunNow,
 				}, busy ? t("running") : t("runNow")),
 
-				msg ? React.createElement("div", { className: S.hint }, msg) : null,
+				msg ? React.createElement("div", { className: S.intro }, msg) : null,
 
-				React.createElement("h3", { className: S.h }, t("noteTitle")),
-				React.createElement("ul", { className: S.ul },
+				// ── 导入 ─────────────────────────────────────────────
+				React.createElement("h3", { className: S.heading }, t("importTitle")),
+				React.createElement("div", { className: S.intro }, t("importHint")),
+				React.createElement("button", { className: S.btn, onClick: doChooseImport },
+					t("importChoose")),
+				React.createElement("input", {
+					className: S.cmd, type: "password", value: impPwd,
+					placeholder: t("pwdPlaceholder"),
+					onChange: (e) => setImpPwd(e.target.value),
+				}),
+				React.createElement("button", {
+					className: S.btn, disabled: busy, onClick: doInspect,
+				}, busy ? t("importChecking") : t("importInspect")),
+
+				// 检查结果
+				impInfo ? React.createElement("div", { className: S.card },
+					React.createElement("div", { className: S.cardTitle }, t("importSummary")),
+					React.createElement("div", { className: S.rowValue },
+						t("importCreated") + "：" + (impInfo.createdAt ? new Date(impInfo.createdAt).toLocaleString() : "?")),
+					React.createElement("div", { className: S.rowValue },
+						t("importVersion") + "：" + (impInfo.appVersion || "?")),
+					React.createElement("div", { className: S.rowValue },
+						t("importEntries") + "：" + (impInfo.entries || 0)),
+					React.createElement("div", { className: S.rowValue },
+						t("importComplete") + "：" + (impInfo.complete ? t("importCompleteYes") : t("importCompleteNo"))),
+					(impInfo.willReplace || []).length > 0
+						? React.createElement("div", { className: S.rowValue },
+							t("importWillReplace") + "：" + impInfo.willReplace.join("、"))
+						: null,
+					(impInfo.warnings || []).length > 0
+						? React.createElement("div", { className: S.error },
+							t("importWarnings") + "：",
+							React.createElement("ul", { className: S.notes },
+								impInfo.warnings.map((w, i) => React.createElement("li", { key: i }, w))))
+						: null,
+					React.createElement("div", { className: S.intro }, t("importConfirmHint")),
+					React.createElement("button", {
+						className: S.btn, disabled: busy || impPhase === "applying",
+						onClick: doImport,
+					}, impPhase === "applying" ? t("importApplying") : t("importDo")),
+				) : null,
+
+				impMsg ? React.createElement("div", { className: S.intro }, impMsg) : null,
+
+				React.createElement("h3", { className: S.heading }, t("noteTitle")),
+				React.createElement("ul", { className: S.notes },
 					React.createElement("li", null, t("note1")),
 					React.createElement("li", null, t("note2")),
 					React.createElement("li", null, t("note3")),

@@ -9588,7 +9588,7 @@ class EngineManager private constructor(private val context: Context) {
           *      （99 → 100 / 33 → 34），否则会回退，设备上静默跑回没有这张卡的旧 UI。
           *      ⚠️ 两个戳都 bump（本常量 99 → 100，-CompatVersion 33 → 34）。
           */
-        private const val MOBILE_UI_VERSION = "1.0.0-102"
+        private const val MOBILE_UI_VERSION = "1.0.0-103"
         private const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────

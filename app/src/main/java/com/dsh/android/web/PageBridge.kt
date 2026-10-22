@@ -381,4 +381,51 @@ interface PageBridge {
      *   而实际可能失败在加密阶段。
      */
     fun backupRunNow(): String
+
+    /**
+     * 打开系统文件选择器，让用户选一个备份包来导入。
+     *
+     * ⚠️ 立即返回：真正的选择在原生 Activity 里做。
+     *   选完会通过 [backupInspect] 的返回值体现（用户需要再点「检查」）。
+     */
+    fun backupChooseImportFile()
+
+    /**
+     * 检查一个备份包（**只读，不改任何东西**）。
+     *
+     * @param password 用户输入的密码
+     * @return JSON：
+     * ```json
+     * {"ok":true,"createdAt":1792686000000,"appVersion":"0.3.3",
+     *  "sourceEnv":"a","complete":true,"entries":42,
+     *  "warnings":["这份备份来自 App 0.3.2，当前是 0.3.3"],
+     *  "willReplace":["sessions","skills"]}
+     * ```
+     * 失败时 `{"ok":false,"error":"密码错误或文件损坏"}` ——
+     * ⚠️ **刻意不区分两者**：区分会泄露「密码对不对」。
+     */
+    fun backupInspect(password: String): String
+
+    /**
+     * 执行导入（用户已确认）。
+     *
+     * @param password 密码（与 inspect 时同一个）
+     * @return `{"ok":true,"started":true}` —— **不代表完成**，
+     *   结果通过 [backupImportResult] 查询。
+     *
+     * ⚠️ 导入是破坏性操作（会替换 sessions/skills 等）。
+     *   本方法内部会建恢复点，失败自动回滚，但调用方仍应先让用户确认。
+     */
+    fun backupImport(password: String): String
+
+    /**
+     * 查询导入进度/结果。
+     *
+     * ```json
+     * {"phase":"idle"} / {"phase":"staging"} / {"phase":"applying"}
+     * {"phase":"done","restored":["sessions","skills"]}
+     * {"phase":"failed","error":"...","rolledBack":true}
+     * ```
+     */
+    fun backupImportResult(): String
 }

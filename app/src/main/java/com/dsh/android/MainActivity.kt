@@ -1604,6 +1604,115 @@ class MainActivity : AppCompatActivity() {
         }, AUTO_BACKUP_DELAY_MS)
     }
 
+    /** 待导入的备份包 URI（用户选完文件后暂存）。 */
+    @Volatile private var pendingImportUri: android.net.Uri? = null
+
+    /** 导入进度（桥查询用）。 */
+    @Volatile private var importPhase: String = "idle"
+    @Volatile private var importError: String = ""
+    @Volatile private var importRestored: List<String> = emptyList()
+    @Volatile private var importRolledBack: Boolean = false
+
+    // SAF 文件选择器（导入备份包）。
+    //
+    // 用 OpenDocument 而不是 OpenDocumentTree：这里选的是单个文件。
+    // MIME 用通配符：.dshbak 不是注册过的 MIME，收窄会选不到文件。
+    //
+    // ⚠️ 这里刻意用行注释而不是块注释：块注释里写通配符容易形成
+    //   「星号+斜杠」从而提前结束注释（同族问题已踩过两次）。
+    private val importFileLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) {
+            Log.i(DshApplication.TAG, "导入：用户取消选择文件")
+            return@registerForActivityResult
+        }
+        pendingImportUri = uri
+        Log.i(DshApplication.TAG, "导入：已选择文件 $uri")
+    }
+
+    /**
+     * 执行导入（后台线程）。
+     *
+     * ⚠️ 导入会替换 sessions/skills 等目录，所以：
+     *   1. 先停引擎（否则它正在写这些目录）
+     *   2. 应用（内部有恢复点与回滚）
+     *   3. 无论成败都重启引擎
+     */
+    private fun runImport(uri: android.net.Uri, password: CharArray) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            var ok = false
+            try {
+                // ① 暂存（只写 cache，不碰 $DSH_HOME）
+                importPhase = "staging"
+                val staged = com.dsh.android.backup.BackupImporter.stage(
+                    this@MainActivity, uri, password,
+                )
+                if (staged == null) {
+                    importPhase = "failed"
+                    importError = "解密失败（密码错误或文件损坏）"
+                    return@launch
+                }
+
+                // ② 停引擎
+                //
+                // ⚠️ 必须停：引擎正在写 sessions/，不停就替换会得到
+                //   一半旧一半新的混乱状态。
+                importPhase = "stopping"
+                val em = EngineManager.get(this@MainActivity)
+                val wasRunning = em.isRunning()
+                if (wasRunning) {
+                    em.stop()
+                    var waited = 0
+                    while (em.isRunning() && waited < 5000) {
+                        delay(100); waited += 100
+                    }
+                }
+
+                // ③ 应用
+                importPhase = "applying"
+                val result = com.dsh.android.backup.BackupImporter.apply(
+                    this@MainActivity, staged,
+                    com.dsh.android.manage.ManageEnv.Env.A,
+                )
+                when (result) {
+                    is com.dsh.android.backup.BackupImporter.Applied.Ok -> {
+                        importPhase = "done"
+                        importRestored = result.restored
+                        ok = true
+                    }
+                    is com.dsh.android.backup.BackupImporter.Applied.Failed -> {
+                        importPhase = "failed"
+                        importError = result.reason
+                        importRolledBack = result.rolledBack
+                    }
+                }
+
+                // ④ 无论成败都重启引擎（除非本来就没跑）
+                if (wasRunning) {
+                    runCatching { em.start() }
+                        .onFailure { Log.w(DshApplication.TAG, "导入后重启引擎失败: ${it.message}") }
+                }
+            } catch (t: Throwable) {
+                importPhase = "failed"
+                importError = t.message ?: "导入异常"
+                Log.w(DshApplication.TAG, "导入失败: ${t.message}")
+            } finally {
+                password.fill('\u0000')
+                com.dsh.android.backup.BackupImporter.cleanupStage(this@MainActivity)
+                withContext(Dispatchers.Main) {
+                    val msg = if (ok) {
+                        "导入完成（${importRestored.joinToString("、")}）"
+                    } else {
+                        "导入失败：$importError" +
+                            if (importRolledBack) "（已回滚，当前数据完好）" else ""
+                    }
+                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     /** 打开备份目录选择器（主线程）。 */
     private fun pickBackupDir() {
         runCatching { backupDirLauncher.launch(null) }
@@ -2375,6 +2484,86 @@ class MainActivity : AppCompatActivity() {
             JSONObject().put("ok", true).put("started", true).toString()
         }.getOrElse { t ->
             JSONObject().put("ok", false).put("error", t.message ?: "启动失败").toString()
+        }
+
+        // ── 导入桥 ──────────────────────────────────────────────────────
+
+        override fun backupChooseImportFile() {
+            // ⚠️ 立即返回：真正的选择在主线程开 Activity
+            mainHandler.post {
+                runCatching { importFileLauncher.launch(arrayOf("*/*")) }
+                    .onFailure { t ->
+                        Log.w(DshApplication.TAG, "打开文件选择器失败: ${t.message}")
+                    }
+            }
+        }
+
+        override fun backupInspect(password: String): String = runCatching {
+            val uri = pendingImportUri
+                ?: return@runCatching JSONObject()
+                    .put("ok", false).put("error", "请先选择备份文件").toString()
+            val arr = password.toCharArray()
+            try {
+                val ins = com.dsh.android.backup.BackupImporter.inspect(
+                    this@MainActivity, uri, arr,
+                ) ?: return@runCatching JSONObject()
+                    // ⚠️ 刻意不区分「密码错」与「文件损坏」—— 区分会泄露密码正确性
+                    .put("ok", false).put("error", "密码错误或文件已损坏").toString()
+
+                JSONObject().apply {
+                    put("ok", true)
+                    put("createdAt", ins.manifest.createdAt)
+                    put("appVersion", ins.manifest.appVersion)
+                    put("sourceEnv", ins.manifest.sourceEnv)
+                    put("complete", ins.manifest.complete)
+                    put("entries", ins.manifest.entries.size)
+                    put("missing", ins.manifest.missing.size)
+                    put("warnings", org.json.JSONArray().apply {
+                        ins.warnings.forEach { put(it) }
+                    })
+                    put("willReplace", org.json.JSONArray().apply {
+                        ins.willReplace.forEach { put(it) }
+                    })
+                }.toString()
+            } finally {
+                arr.fill('\u0000')
+            }
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "检查失败").toString()
+        }
+
+        override fun backupImport(password: String): String = runCatching {
+            val uri = pendingImportUri
+                ?: return@runCatching JSONObject()
+                    .put("ok", false).put("error", "请先选择备份文件").toString()
+            val arr = password.toCharArray()
+            importPhase = "staging"
+            importError = ""
+            importRestored = emptyList()
+            importRolledBack = false
+
+            mainHandler.post { runImport(uri, arr) }
+            JSONObject().put("ok", true).put("started", true).toString()
+        }.getOrElse { t ->
+            importPhase = "failed"
+            importError = t.message ?: "启动失败"
+            JSONObject().put("ok", false).put("error", importError).toString()
+        }
+
+        override fun backupImportResult(): String = runCatching {
+            JSONObject().apply {
+                put("phase", importPhase)
+                if (importError.isNotEmpty()) put("error", importError)
+                if (importRestored.isNotEmpty()) {
+                    put("restored", org.json.JSONArray().apply {
+                        importRestored.forEach { put(it) }
+                    })
+                }
+                if (importPhase == "failed") put("rolledBack", importRolledBack)
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("phase", "failed")
+                .put("error", t.message ?: "?").toString()
         }
 
         override fun logSummary(): String = runCatching {
