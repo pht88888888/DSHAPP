@@ -4,6 +4,7 @@ import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
 import com.dsh.android.manage.ManageFsm
+import com.dsh.android.manage.ManageLedger
 import com.dsh.android.manage.ManageLock
 import com.dsh.android.manage.ManageReconcile
 import com.dsh.android.manage.ManageState
@@ -159,6 +160,15 @@ class EngineManager private constructor(private val context: Context) {
      */
     @Volatile
     private var process: Process? = null
+
+    /**
+     * 已登记到 [ManageLedger] 的引擎 PID。
+     *
+     * ⚠️ 单独存一份而不是从 `process` 现取：`stop()` 里 `process` 会被置 null，
+     *   而账本移除需要在置 null **之后**做（要等进程真正确认退出）。
+     *   `-1` = 未登记（PID 取不到，或登记失败）。
+     */
+    private var ledgerPid: Int = -1
 
     /**
      * 是否是**我们自己**在停引擎（[stop]）。
@@ -7364,6 +7374,34 @@ class EngineManager private constructor(private val context: Context) {
         }
         process = proc
 
+        // ── 受管作业账本：登记主引擎进程 ─────────────────────────────
+        //
+        // 设计说明 §6.5.2 要求「建立实例描述与受管作业账本…PID 与可用出生标识」，
+        // 且「不能核验的进程不得按名称误杀」。
+        //
+        // ⚠️ **必须在启动后立刻登记**：进程如果在登记之前就崩了，账本里没有它，
+        //   崩溃后对账就看不到这个作业。宁可多记一条（后面核验会发现已死），
+        //   也不要漏记 —— 漏记意味着「不知道它存不存在」，那是最坏的状态。
+        //
+        // ⚠️ 只记 PID + 出生标识，不记命令行：命令行里有工作区路径等敏感信息，
+        //   而账本只是用来核验存活的，不需要它。
+        runCatching {
+            val pid = ManageLedger.pidOf(proc)
+            if (pid > 0) {
+                ManageLedger.record(
+                    context,
+                    pid,
+                    ManageLedger.Kind.ENGINE,
+                    "node bin.js --profile $targetProfile",
+                )
+                ledgerPid = pid
+            } else {
+                // ⚠️ 取不到 PID 就不登记：一条没有 PID 的记录毫无用处，
+                //   反而会让「账本里有它」看起来像已知状态。
+                Log.w(TAG, "取不到引擎 PID，跳过作业登记")
+            }
+        }.onFailure { Log.w(TAG, "登记引擎作业失败: ${it.message}") }
+
         // 只用一个后台线程从头到尾持续消费 stdout。
         // 不能用 use{} 读完 URL 就关流：引擎之后仍在写日志，64KB 管道缓冲写满后
         // 会阻塞在 write 上导致引擎彻底卡死；重复打开同一 inputStream 也会失败。
@@ -7866,6 +7904,21 @@ class EngineManager private constructor(private val context: Context) {
         runCatching {
             ManageFsm.confirmStopped(context, processGone = goneNow, descendantsGone = null)
         }.onFailure { Log.w(TAG, "确认停止状态失败: ${it.message}") }
+
+        // ── 受管作业账本：确认已死才移除记录 ───────────────────────────
+        //
+        // ⚠️ **只在确认已死时移除**。进程没退就移除记录，等于把「它可能还在」
+        //   这个事实从账本里抹掉 —— 下次对账就看不到它了，而这正是最需要看到的。
+        //
+        // ⚠️ 核验用出生标识而不是只看 isAlive：PID 可能已被复用，
+        //   `isAlive` 为真不代表还是当初那个进程。
+        runCatching {
+            val pid = ledgerPid
+            if (pid > 0 && goneNow) {
+                ManageLedger.forget(context, pid)
+                ledgerPid = -1
+            }
+        }.onFailure { Log.w(TAG, "更新作业账本失败: ${it.message}") }
 
         process = null
         // 引擎停了就别再占着 mDNS 监听（NsdManager 的 listener 注册是全局资源）
