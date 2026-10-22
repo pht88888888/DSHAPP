@@ -156,6 +156,32 @@
                 android:text="@string/overlay_logs_entry"
                 android:textColor="#8FA3C0"
                 android:textSize="12.5sp" />
+
+            <!--
+                最小原生恢复出口（设计说明 §4：不依赖 Node 的原生恢复页）。
+
+                ⚠️ 只在失败态显示（与「安全模式」同一判据）：正常启动期多一个
+                   按钮只会诱人误点，而它的代价是重启整个进程。
+
+                ⚠️ 用 TextView 而不是 Button，理由同上：`Theme.Material3.*`
+                   会给 Button 套实心紫底。
+            -->
+            <TextView
+                android:id="@+id/overlayRecovery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/log_chip_bg"
+                android:clickable="true"
+                android:focusable="true"
+                android:letterSpacing="0.06"
+                android:paddingStart="18dp"
+                android:paddingTop="9dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="9dp"
+                android:text="恢复模式"
+                android:textColor="#8FA3C0"
+                android:textSize="12.5sp" />
         </LinearLayout>
     </FrameLayout>
 

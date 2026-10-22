@@ -211,6 +211,18 @@
             ⚠️ `excludeFromRecents` 不设：用户从崩溃浮层跳进来看日志时，
             这个界面出现在最近任务里是合理的（他可能想切出去发截图再切回来）。
         -->
+        <!--
+            最小原生恢复出口（设计说明 §4：「不依赖 Node 的原生恢复页」）。
+
+            ⚠️ **不设 exported=true**：它只能由本 App 内部启动（崩溃浮层/救援路径），
+               不暴露给外部 Intent —— 那会让别的 App 能把用户推进恢复页。
+        -->
+        <activity
+            android:name=".manage.RecoveryActivity"
+            android:exported="false"
+            android:label="DSH 恢复模式"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode" />
+
         <activity
             android:name=".LogViewerActivity"
             android:exported="false"

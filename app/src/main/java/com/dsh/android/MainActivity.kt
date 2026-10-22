@@ -832,6 +832,10 @@ class MainActivity : AppCompatActivity() {
         // ⚠️ 同样要拦冒泡：不拦的话点它会先触发 overlay 自己的「点一下收起浮层」，
         //   于是启动层被收掉、白屏露出来，而日志界面还没打开。
         binding.overlayLogs.setOnClickListener { openLogViewer("overlay") }
+        // 最小原生恢复出口：不依赖引擎，引擎全挂时仍能打开
+        binding.overlayRecovery.setOnClickListener {
+            startActivity(android.content.Intent(this, com.dsh.android.manage.RecoveryActivity::class.java))
+        }
 
         // 降级态常驻横幅（不变量 I4）。**入口必须在 onCreate 就装好**，不能等到
         // 引擎就绪 —— 救援态恰恰可能在引擎起来之前用户就想退出（比如他确信
@@ -2958,6 +2962,8 @@ class MainActivity : AppCompatActivity() {
         // 安全模式入口只在失败态给：正常启动期界面马上就出来了，多一个按钮只会
         // 诱人误点（而它的代价是重解包 15 秒 + 推开插件配置）。
         binding.overlaySafeMode.visibility = if (isError) View.VISIBLE else View.GONE
+        // 恢复入口与安全模式同一判据：都是「出问题了才给」的出口
+        binding.overlayRecovery.visibility = if (isError) View.VISIBLE else View.GONE
         binding.bootAnim.setProgress(if (isError) -1f else (progress ?: -1f))
     }
 
