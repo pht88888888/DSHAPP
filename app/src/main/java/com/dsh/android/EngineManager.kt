@@ -4,6 +4,7 @@ import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
 import com.dsh.android.manage.ManageFsm
+import com.dsh.android.manage.ManageEnv
 import com.dsh.android.manage.ManageHealth
 import com.dsh.android.manage.ManageLedger
 import com.dsh.android.manage.ManageLock
@@ -3212,7 +3213,10 @@ class EngineManager private constructor(private val context: Context) {
         }
     }
 
-    private fun ensureKeyPoolProvider(profile: String = PROFILE_NAME): Boolean {
+    private fun ensureKeyPoolProvider(
+        profile: String = PROFILE_NAME,
+        env: ManageEnv.Env = ManageEnv.Env.A,
+    ): Boolean {
         // 老版本把内置号池写成 --patch overlay（keyinject.patch.yml）。那个写法会
         // 在最顶层整块替换 `llm-pi-ai` 那行，把用户自己的 provider 一起盖掉 ——
         // 见 [KEY_POOL_NS]。这份残留**必须无条件删掉**（与号池资产在不在无关）：
@@ -3224,7 +3228,7 @@ class EngineManager private constructor(private val context: Context) {
         // 「没有 libkeyinject.so 就跳过」的短路。旧逻辑的因果已经不存在了 ——
         // 现在只要网关可用，号池就该在（原参数 `inject: File?` 已随之删除）。
 
-        val patch = File(dshHome, "profiles/$profile/$PROFILE_PATCH_FILENAME")
+        val patch = File(ManageEnv.home(context, env), "profiles/$profile/$PROFILE_PATCH_FILENAME")
         val existing = try {
             if (patch.isFile) patch.readText() else ""
         } catch (t: Throwable) {
@@ -3556,8 +3560,11 @@ class EngineManager private constructor(private val context: Context) {
      * 判据与 [ensureKeyPoolProvider] 一致：**只补缺，不覆盖**。行已存在就一个字节
      * 都不动 —— 那意味着用户在设置页里选过模型，属于用户意图。
      */
-    private fun ensureDefaultModel(profile: String = PROFILE_NAME) {
-        val patch = File(dshHome, "profiles/$profile/$PROFILE_PATCH_FILENAME")
+    private fun ensureDefaultModel(
+        profile: String = PROFILE_NAME,
+        env: ManageEnv.Env = ManageEnv.Env.A,
+    ) {
+        val patch = File(ManageEnv.home(context, env), "profiles/$profile/$PROFILE_PATCH_FILENAME")
         val existing = try {
             if (patch.isFile) patch.readText() else ""
         } catch (t: Throwable) {
@@ -4664,7 +4671,17 @@ class EngineManager private constructor(private val context: Context) {
      * @return 写好的 profile 目录；null = 建不出来（调用方应回落 L3）。
      */
     private fun ensureRescueProfile(): File? {
-        val dir = File(dshHome, "profiles/$RESCUE_PROFILE_NAME")
+        // ⚠️ **必须建在 R 自己的 HOME 下**，与 `start()` 里设置 DSH_HOME 时
+        //   用的 `ManageEnv.home(context, R)` 保持一致。
+        //
+        //   这两处一旦不一致，症状是「救援模式永远起不来」：引擎在
+        //   `env-r/.dsh` 下找 `profiles/rescue`，而这里把它建在了
+        //   `home/.dsh` 下 —— 引擎看到的是一个空 HOME，按模板重建一份，
+        //   于是救援 profile 的 bundle 清单（RESCUE_BUNDLES 那套）根本没用上。
+        //
+        //   这个坑正是「两个地方各自拼路径」的典型后果，所以两边都走
+        //   [ManageEnv.home] 这一个真相源。
+        val dir = File(ManageEnv.home(context, ManageEnv.Env.R), "profiles/$RESCUE_PROFILE_NAME")
         val manifest = File(dir, "package.json")
         if (manifest.isFile) return dir
 
@@ -4697,8 +4714,11 @@ class EngineManager private constructor(private val context: Context) {
         }
     }
 
-    private fun seedDefaultSettings(profile: String = PROFILE_NAME) {
-        val profileDir = File(dshHome, "profiles/$profile")
+    private fun seedDefaultSettings(
+        profile: String = PROFILE_NAME,
+        env: ManageEnv.Env = ManageEnv.Env.A,
+    ) {
+        val profileDir = File(ManageEnv.home(context, env), "profiles/$profile")
         val patch = File(profileDir, PROFILE_PATCH_FILENAME)
         if (patch.exists() && !isEmptyProfilePatch(patch)) {
             Log.i(TAG, "profile 用户配置已存在，保留用户设置: ${patch.absolutePath}")
@@ -7060,9 +7080,12 @@ class EngineManager private constructor(private val context: Context) {
         //     只有 `cordis.patch.yml`、**没有 `package.json`** —— 那样的 profile
         //     引擎读不了（`profile "rescue" does not exist`），比不建更糟。
         if (rescueProfileDir != null) {
-            seedDefaultSettings(RESCUE_PROFILE_NAME)
-            ensureKeyPoolProvider(RESCUE_PROFILE_NAME)
-            ensureDefaultModel(RESCUE_PROFILE_NAME)
+            // ⚠️ **三个都要显式传 Env.R**：它们内部按 env 取 HOME。
+            //   不传的话默认 A，会把救援环境的配置写进 A 的 HOME ——
+            //   那等于「R 环境没有任何配置」，引擎起来后模型/号池全是空的。
+            seedDefaultSettings(RESCUE_PROFILE_NAME, ManageEnv.Env.R)
+            ensureKeyPoolProvider(RESCUE_PROFILE_NAME, ManageEnv.Env.R)
+            ensureDefaultModel(RESCUE_PROFILE_NAME, ManageEnv.Env.R)
         }
         // uid 2000 通道：截图/点击/卸载/settings 等 app 域做不到的操作要靠它。
         // 未导入密钥时脚本自己回落为本地执行，不影响任何现有功能。
@@ -7224,8 +7247,31 @@ class EngineManager private constructor(private val context: Context) {
             // sharp-wasm32）、bash/dpkg/pnpm/rg 全部实测正常。
             // PREFIX/HOME 让 DSH 内部按 Termux 习惯推导路径，与库搜索无关，保留。
             put("PREFIX", prefix)
-            put("DSH_HOME", dshHome.absolutePath)
-            put("HOME", homeDir.absolutePath)
+            // ── 三环境隔离：R 用独立 DSH_HOME ─────────────────────────
+            //
+            // 设计说明 §3.1：「A、R、E 分别使用独立 DSH_HOME，隔离 home patch、
+            // 模型设置、凭据、插件和其他可变状态」。
+            //
+            // ⚠️ 现状是 A 与 R 共用 `home/.dsh`，只靠 profile 区分 —— 于是
+            //   R 里改密钥会改到 A 的、A 的坏 home patch 在 R 里照样生效。
+            //   那让「修复环境」失去了它存在的意义。
+            //
+            // ⚠️ **A 的路径刻意保持原样**（`ManageEnv.home(context, A)` 返回
+            //   与 `dshHome` 完全相同的路径）—— 存量用户的会话、凭据、插件都在
+            //   那里，搬它需要迁移与回滚方案，风险远大于收益。
+            //
+            // ⚠️ 环境由 `targetProfile` 推导而不是另传参数：两者必须一致，
+            //   分开传会漂开（R 用 web profile 却指向 R 的 HOME = 找不到配置）。
+            val activeEnv = if (targetProfile == RESCUE_PROFILE_NAME) {
+                ManageEnv.Env.R
+            } else {
+                ManageEnv.Env.A
+            }
+            val activeHome = ManageEnv.home(context, activeEnv)
+            put("DSH_HOME", activeHome.absolutePath)
+            // ⚠️ HOME 也要跟着切：引擎在 HOME 下找 `.dsh` 之外的缓存与配置
+            //   （如 pnpm store、.npmrc）。只切 DSH_HOME 会让两环境共用这些。
+            put("HOME", activeHome.parentFile?.absolutePath ?: homeDir.absolutePath)
             put("TMPDIR", context.cacheDir.absolutePath)
             // $PREFIX/bin 必须排在最前：node 自己 spawn 子进程（如 shell 工具）时
             // 要能找到 Termux 的 sh/bash 而不是系统的。
