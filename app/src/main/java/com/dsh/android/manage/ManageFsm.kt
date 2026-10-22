@@ -110,6 +110,26 @@ object ManageFsm {
         if (cur.phase == ManageState.Phase.QUIESCING) {
             return Outcome.Rejected("已经在停止中（epoch=${cur.epoch}）", cur)
         }
+
+        // ── 先冻结新管理写入，再请求停止 ──────────────────────────────
+        //
+        // 设计说明 §6.5.2 的顺序是硬性的：
+        //   「切换前**冻结新管理写入**、使旧桥租约与请求 epoch 失效，**再请求停止**」
+        //
+        // ⚠️ 顺序反了的后果：先发停止、后冻结，中间那个窗口里新来的备份请求
+        //   会被放行 —— 而它会在一个正在停止的引擎上取快照，拿到不一致数据。
+        //
+        // ⚠️ 冻结失败（已被别的流程冻结）时**不阻止停止**：
+        //   停是安全方向，挡一个停止请求比放行危险得多。只记录并继续。
+        val frozen = ManageGate.freeze(context, ManageGate.Reason.SWITCHING)
+        if (!frozen) {
+            Log.w(TAG, "冻结失败（已有流程持有），继续停止: ${ManageGate.currentReason().label}")
+            EventLog.record(
+                "manage.fsm.stop.freeze-failed",
+                mapOf("holder" to ManageGate.currentReason().id),
+            )
+        }
+
         val next = ManageState.beginTransition(context, "fsm.stop", ManageState.Env.A)
         return Outcome.Allowed(next)
     }
@@ -207,6 +227,15 @@ object ManageFsm {
                 mapOf("epoch" to next.epoch.toString()),
             )
         }
+
+        // ⚠️ 停止确认完成后**必须解冻**，否则：
+        //   冻结会一直挂到进程结束，用户此后所有备份/修复请求都被拒，
+        //   而界面只会显示「正在切换环境」—— 看起来像卡死。
+        //
+        //   放在这里而不是 requestStop 之后：停止还没确认时不能解冻，
+        //   那段时间引擎可能还在写，正是最需要挡住新请求的时候。
+        ManageGate.unfreeze(ManageGate.Reason.SWITCHING)
+
         return Outcome.Allowed(next)
     }
 
