@@ -140,12 +140,24 @@ object ManageState {
             phase == Phase.QUIESCING || phase == Phase.STARTING || desired != observed
     }
 
-    /** 默认状态：从未转换过。 */
+    /**
+     * 默认状态：从未转换过。
+     *
+     * ⚠️ **`observed` 必须是 `Env.A` 而不是 `null`**。
+     *
+     *   `isInFlight()` 的判据是 `desired != observed`，而 `null != A` 为真 ⇒
+     *   全新安装的机器会被判成「上一次转换未完成」⇒ 首次启动被状态机拒绝。
+     *   实测推演确认过这条链。
+     *
+     *   语义上也该是 A：**没有过任何转换**意味着「当前就是初始的 A 环境」，
+     *   而不是「不知道在哪个环境」。`null` 只应该出现在
+     *   「转换已开始但还没观察到结果」这个真实的中间态里。
+     */
     private fun initial(): Snapshot = Snapshot(
         epoch = 0,
         transitionId = null,
         desired = Env.A,
-        observed = null,
+        observed = Env.A,
         phase = Phase.IDLE,
         updatedAt = 0,
         pid = 0,

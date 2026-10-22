@@ -3,6 +3,7 @@ package com.dsh.android
 import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
+import com.dsh.android.manage.ManageFsm
 import com.dsh.android.manage.ManageState
 import com.dsh.android.log.LogStore
 import com.dsh.android.log.CrashRecorder
@@ -6785,7 +6786,25 @@ class EngineManager private constructor(private val context: Context) {
         //   而整个 start() 长达 11 秒（引擎自身 7~10 秒），全程持锁会让
         //   stop/修复 被挡十几秒。锁由调用方在真正需要互斥的短区间里取。
         runCatching {
-            ManageState.beginTransition(context, "engine.start", ManageState.Env.A)
+            // ⚠️ 走状态机而不是直接 beginTransition：
+            //   requestStart() 会先判「进程是否还活着」「上一次转换是否未完成」，
+            //   不合法就**什么都不做**。直接 beginTransition 会无条件改 epoch，
+            //   等于把非法转换也记成一次正常转换 —— 那就失去了状态机的意义。
+            //
+            //   ⚠️ 这里**只记录、不因 Rejected 而中止启动**：现有启动路径有
+            //   自己的一套降级逻辑（preflight / 救援 / 安全模式），贸然在这里
+            //   return 会绕过它们。本次接入的目标是「让状态可见」，
+            //   不是「改变启动行为」—— 后者要等状态机全流程做完再谈。
+            when (val r = ManageFsm.requestStart(context, process?.isAlive == true)) {
+                is ManageFsm.Outcome.Allowed -> Unit
+                is ManageFsm.Outcome.Rejected -> {
+                    Log.w(TAG, "启动状态机拒绝（继续启动，仅记录）: ${r.reason}")
+                    EventLog.record(
+                        "manage.fsm.start.rejected",
+                        mapOf("reason" to r.reason, "phase" to r.current.phase.id),
+                    )
+                }
+            }
         }.onFailure { Log.w(TAG, "记录启动意图失败: ${it.message}") }
         // ⚠️ 每次启动都清掉「主动停止」标记，否则 stop() 之后再也起不来
         //   （EOF 会被当成用户停止而不再上报死亡，这里反过来：新一轮启动了，
@@ -7754,6 +7773,23 @@ class EngineManager private constructor(private val context: Context) {
     }
 
     fun stop() {
+        // ── 管理状态：先登记「要停止」的意图（write-ahead）────────────
+        //
+        // ⚠️ **必须在真正 destroy 之前**。顺序反了的话：
+        //   进程已经杀了、状态还没进 QUIESCING，此刻被杀 ⇒ 下次启动看到的是
+        //   「上一次转换未完成但阶段还是 ACTIVE」，无法判断到底停没停。
+        //
+        // ⚠️ 被状态机拒绝（已经在停止中）时**不中止停止**：
+        //   停是安全方向，拒绝一个停止请求比放行危险得多。
+        //   ManageFsm.requestStop 也只在这一种情况下拒绝。
+        runCatching {
+            when (val r = ManageFsm.requestStop(context)) {
+                is ManageFsm.Outcome.Allowed -> Unit
+                is ManageFsm.Outcome.Rejected ->
+                    Log.i(TAG, "停止状态机：${r.reason}（继续停止）")
+            }
+        }.onFailure { Log.w(TAG, "记录停止意图失败: ${it.message}") }
+
         // Shizuku 桥随引擎一起收：它的接受线程是 daemon、名字随进程释放，
         // 但显式关掉能让下一次 start() 重新绑定同一个名字而不撞车。
         ShizukuChannel.stop()
@@ -7767,6 +7803,25 @@ class EngineManager private constructor(private val context: Context) {
                 p.destroyForcibly()
             }
         }
+        // ── 管理状态：确认停止（不是「信任已请求停止」）──────────────
+        //
+        // 设计说明 §6.5.3 要求 QUIESCING 阶段的成功条件是
+        // 「旧受管作业树及相关写者**已确认停止**」，并明确
+        // 「**对账而非信任『已请求停止』**」。
+        //
+        // 上面 `waitFor(3, SECONDS)` 已经给出了进程是否真的退出，
+        // 这里把它交给状态机判定 —— 而不是自己再写一遍 if。
+        //
+        // ⚠️ `descendantsGone` 传 null（无法确认）：
+        //   引擎的子进程（node 拉起的 bash / pnpm）在 Android 上没有可靠的
+        //   进程组归属可查，所以**如实报「无法确认」**而不是猜 `true`。
+        //   状态机会因此停在 QUIESCING 并记事件，调用方据此走只读路径。
+        //   这与文档「无法确认则只读恢复」一致 —— 猜 true 才是真的危险。
+        val goneNow = process == null || process?.isAlive != true
+        runCatching {
+            ManageFsm.confirmStopped(context, processGone = goneNow, descendantsGone = null)
+        }.onFailure { Log.w(TAG, "确认停止状态失败: ${it.message}") }
+
         process = null
         // 引擎停了就别再占着 mDNS 监听（NsdManager 的 listener 注册是全局资源）
         WirelessDebugging.stopWatcher()
