@@ -11,6 +11,7 @@ import com.dsh.android.manage.ManageHealth
 import com.dsh.android.manage.ManageLedger
 import com.dsh.android.manage.ManageLock
 import com.dsh.android.manage.ManageReconcile
+import com.dsh.android.manage.RecoveryChain
 import com.dsh.android.manage.ManageState
 import com.dsh.android.log.LogStore
 import com.dsh.android.log.CrashRecorder
@@ -7026,10 +7027,43 @@ class EngineManager private constructor(private val context: Context) {
         //   `tier()` 读的是 `$DSH_HOME/rescue/state.json`，由降级决策写入。
         //   ⚠️ 它**不会**因为"这次起来了"而自动复位 —— 复位只在用户点
         //   「退出救援模式」时发生（I4：降级状态必须常驻可见 + 可一键退出）。
-        val targetProfile = if (RescueBoot.tier().tier == RescueBoot.Tier.RESCUE) {
-            RESCUE_PROFILE_NAME
-        } else {
-            PROFILE_NAME
+        // ── 恢复链决策（设计说明 §6.3）─────────────────────────────────
+        //
+        // ⚠️ 这一步只**决策**，不改状态。决策结果决定用哪个 profile / 哪个内核。
+        //
+        // ⚠️ `rescueJustTried` 传的是「上次失败发生在救援模式」——
+        //   用 `lastFailure` 的层级记录判断，而不是猜。
+        val chainDecision = runCatching {
+            RecoveryChain.decideFromDisk(
+                context = context,
+                primaryLaunchable = File(engineDir, "node_modules/@deepseek-ai/dsh/lib/bin.js").isFile,
+                primaryStamp = lastAssetStamp ?: "",
+                // 上次失败时若已经在救援态，说明 R 试过了
+                rescueJustTried = RescueBoot.lastFailure()?.let {
+                    RescueBoot.tier().tier == RescueBoot.Tier.RESCUE
+                } ?: false,
+            )
+        }.getOrElse { t ->
+            Log.w(TAG, "恢复链决策失败（按正常启动）: ${t.message}")
+            RecoveryChain.Decision(RecoveryChain.Action.START_A, "决策失败，按正常启动")
+        }
+
+        // ⚠️ GIVE_UP 时**不启动引擎**，直接进原生恢复页。
+        //   这是「不无限重启」的实现 —— 文档明确禁止无限重启。
+        if (chainDecision.action == RecoveryChain.Action.GIVE_UP) {
+            Log.w(TAG, "恢复链：${chainDecision.reason}")
+            _state.value = State.Failed("所有内核都无法启动：${chainDecision.reason}")
+            EventLog.record(
+                "recovery.giveup",
+                mapOf("reason" to chainDecision.reason),
+            )
+            return@withContext
+        }
+
+        val targetProfile = when (chainDecision.action) {
+            RecoveryChain.Action.START_R -> RESCUE_PROFILE_NAME
+            RecoveryChain.Action.START_E -> RESCUE_PROFILE_NAME  // E 也用最小 profile
+            else -> PROFILE_NAME
         }
         if (targetProfile != PROFILE_NAME) {
             Log.w(TAG, "以救援 profile 启动（--profile $targetProfile）：不加载任何第三方插件")

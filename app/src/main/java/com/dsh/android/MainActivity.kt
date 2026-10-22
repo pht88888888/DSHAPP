@@ -3719,6 +3719,13 @@ class MainActivity : AppCompatActivity() {
             RescueBoot.Tier.SAFE_MODE ->
                 "⚠️ 安全模式$when_\n" +
                     "已推开全部第三方插件配置并重新解包引擎。"
+            // ⚠️ 必须说清「换了内核」而不只是「换了配置」：
+            //   用户最容易误解成「应急模式 = 更严格的安全模式」。
+            //   实际是**另一套依赖树**（engine-e/），一号内核可能已经损坏。
+            RescueBoot.Tier.EMERGENCY ->
+                "⚠️ 应急模式$when_\n" +
+                    "一号内核（含重解包）已经救不回来，已改用**二号内核的独立依赖树**启动。" +
+                    "你的数据都在，但这里是旧版本环境 —— 一号修好后应尽快切回。"
             RescueBoot.Tier.NORMAL -> return
         }
         binding.rescueBannerText.text = text
