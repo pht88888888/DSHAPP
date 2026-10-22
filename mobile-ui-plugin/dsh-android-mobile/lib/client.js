@@ -9013,6 +9013,301 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		// ── 备份设置节（设计说明 §5.3：通过「安卓基座」设置入口提供）──────
+		//
+		// ⚠️ 文档明确「不新增原生日常设置中心」，所以备份的日常操作
+		//   （设密码/选目录/立即备份/看状态）全部在这一个设置节里，
+		//   原生侧只提供桥方法。
+		const MP_BACKUP_NS = "dsh-android-mobile.backup";
+		const MP_BACKUP_ZH = {
+			nav: "备份与恢复",
+			title: "备份与恢复",
+			intro: "用你自己设的密码加密整个配置与插件目录，存到手机里你能找到的位置。重装或换机后输入密码即可恢复。",
+			statusTitle: "当前状态",
+			rowPassword: "备份密码",
+			rowDir: "备份目录",
+			rowAuto: "自动备份",
+			rowLast: "上次成功",
+			set: "已设置",
+			unset: "未设置",
+			on: "已开启",
+			off: "已关闭",
+			never: "从未成功",
+			notReady: "还没配好，请按下面的步骤设置。",
+			ready: "已配置完成。每次正常进入会自动备份一版。",
+			stepsTitle: "怎么设置",
+			step1: "设置一个密码 —— 它用来加密备份，忘了就解不开，请记牢。",
+			step2: "选择一个目录 —— 建议选手机根目录下新建的文件夹，卸载重装后还能找到。",
+			step3: "开启自动备份 —— 之后每次正常打开 App 会自动备份一版，保留最近三份。",
+			pwdTitle: "设置密码",
+			pwdHint: "至少 8 个字符。这个密码不会被保存在任何地方，只用来加密备份。",
+			pwdPlaceholder: "输入备份密码",
+			pwdConfirmPlaceholder: "再输入一次",
+			pwdMismatch: "两次输入的密码不一致",
+			pwdTooShort: "密码至少 8 个字符",
+			pwdSet: "设置密码",
+			pwdOk: "密码已设置",
+			dirTitle: "备份目录",
+			chooseDir: "选择目录",
+			autoTitle: "自动备份",
+			runNow: "立即备份一次",
+			running: "备份中…",
+			runStarted: "已开始备份，完成后会提示",
+			manualTitle: "手动备份",
+			manualHint: "自动备份记的是「进入时的状态」，之后的重要改动建议手动再备份一次。",
+			noBridge: "当前环境没有原生桥（DSHAndroid 不可用），无法使用备份。",
+			noteTitle: "几点说明",
+			note1: "备份包含：对话记录、配置、技能、桌宠素材、API 密钥。",
+			note2: "备份不包含：引擎本体与运行时（这些能从安装包重建）、工作区文件。",
+			note3: "整包用你的密码加密，即使别人拿到文件也读不出内容。",
+			note4: "保留最近三份完整备份，更早的会被自动清理。",
+			note5: "忘记密码无法恢复 —— 这是加密的代价，请把密码记在安全的地方。",
+		};
+
+		const MP_BACKUP_EN = {
+			nav: "Backup & restore",
+			title: "Backup & restore",
+			intro: "Encrypt your config and plugin directory with your own password, stored where you can find it on the phone. Restore after reinstall or on a new device with the password.",
+			statusTitle: "Status",
+			rowPassword: "Password",
+			rowDir: "Directory",
+			rowAuto: "Auto backup",
+			rowLast: "Last success",
+			set: "Set",
+			unset: "Not set",
+			on: "On",
+			off: "Off",
+			never: "Never",
+			notReady: "Not configured yet. Follow the steps below.",
+			ready: "Configured. A backup is made each time the app starts normally.",
+			stepsTitle: "How to set up",
+			step1: "Set a password — it encrypts the backup. If you forget it, it cannot be recovered.",
+			step2: "Choose a directory — ideally a folder you create at the phone root, so it survives reinstall.",
+			step3: "Turn on auto backup — one backup per normal start, keeping the latest three.",
+			pwdTitle: "Set password",
+			pwdHint: "At least 8 characters. Never stored anywhere; only used to encrypt backups.",
+			pwdPlaceholder: "Enter backup password",
+			pwdConfirmPlaceholder: "Enter again",
+			pwdMismatch: "Passwords do not match",
+			pwdTooShort: "Password must be at least 8 characters",
+			pwdSet: "Set password",
+			pwdOk: "Password set",
+			dirTitle: "Backup directory",
+			chooseDir: "Choose directory",
+			autoTitle: "Auto backup",
+			runNow: "Back up now",
+			running: "Backing up…",
+			runStarted: "Backup started; you will be notified when done",
+			manualTitle: "Manual backup",
+			manualHint: "Auto backup captures the state at app start; back up manually after important changes.",
+			noBridge: "No native bridge (DSHAndroid) in this environment; backup unavailable.",
+			noteTitle: "Notes",
+			note1: "Included: sessions, config, skills, pet assets, API keys.",
+			note2: "Excluded: engine and runtime (rebuildable from the APK), workspace files.",
+			note3: "The whole package is encrypted with your password.",
+			note4: "The latest three complete backups are kept; older ones are pruned.",
+			note5: "A forgotten password cannot be recovered — keep it somewhere safe.",
+		};
+
+		/**
+		 * 备份设置节。
+		 *
+		 * ⚠️ 所有原生调用都先查桥存不存在：非 App 环境（或桥被清理）时
+		 *   `window.DSHAndroid` 是 undefined，直接调会抛
+		 *   "Cannot read properties of undefined"。
+		 */
+		function mpBackupSection(props) {
+			const React = mpPrivReact;
+			const S = MP_PRIV_S;
+			const t = typeof props.t === "function" ? props.t : (key) => MP_BACKUP_ZH[key] ?? key;
+			const [state, setState] = React.useState({ phase: "loading" });
+			const [pwd, setPwd] = React.useState("");
+			const [pwd2, setPwd2] = React.useState("");
+			const [msg, setMsg] = React.useState("");
+			const [busy, setBusy] = React.useState(false);
+
+			const bridge = () => (typeof window !== "undefined" ? window.DSHAndroid : undefined);
+
+			const refresh = React.useCallback(() => {
+				const b = bridge();
+				if (!b || typeof b.backupStatus !== "function") {
+					setState({ phase: "nobridge" });
+					return;
+				}
+				try {
+					const raw = b.backupStatus();
+					const o = JSON.parse(raw || "{}");
+					setState({ phase: "ready", data: o });
+				} catch (e) {
+					setState({ phase: "error", error: (e && e.message) || String(e) });
+				}
+			}, []);
+
+			React.useEffect(() => {
+				refresh();
+				// 备份是长操作，轮询一次状态就够了（不需要实时）
+				const id = setInterval(refresh, 3000);
+				return () => clearInterval(id);
+			}, [refresh]);
+
+			const doSetPassword = React.useCallback(() => {
+				if (pwd.length < 8) { setMsg(t("pwdTooShort")); return; }
+				if (pwd !== pwd2) { setMsg(t("pwdMismatch")); return; }
+				const b = bridge();
+				if (!b || typeof b.backupSetPassword !== "function") { setMsg(t("noBridge")); return; }
+				setBusy(true);
+				try {
+					const r = JSON.parse(b.backupSetPassword(pwd) || "{}");
+					if (r.ok) {
+						setMsg(t("pwdOk"));
+						// ⚠️ 传完立刻清空 React state —— 密码不该留在内存里更久
+						setPwd(""); setPwd2("");
+						refresh();
+					} else {
+						setMsg(r.error || "设置失败");
+					}
+				} catch (e) {
+					setMsg((e && e.message) || "设置失败");
+				} finally {
+					setBusy(false);
+				}
+			}, [pwd, pwd2, refresh, t]);
+
+			const doChooseDir = React.useCallback(() => {
+				const b = bridge();
+				if (!b || typeof b.backupChooseDir !== "function") { setMsg(t("noBridge")); return; }
+				try { b.backupChooseDir(); } catch (e) { setMsg((e && e.message) || "打开失败"); }
+			}, [t]);
+
+			const doToggleAuto = React.useCallback(() => {
+				const b = bridge();
+				if (!b || typeof b.backupSetAutoEnabled !== "function") { setMsg(t("noBridge")); return; }
+				const cur = state.data && state.data.autoEnabled;
+				try {
+					const r = JSON.parse(b.backupSetAutoEnabled(!cur) || "{}");
+					if (!r.ok) setMsg(r.error || "设置失败");
+					refresh();
+				} catch (e) {
+					setMsg((e && e.message) || "设置失败");
+				}
+			}, [state, refresh, t]);
+
+			const doRunNow = React.useCallback(() => {
+				const b = bridge();
+				if (!b || typeof b.backupRunNow !== "function") { setMsg(t("noBridge")); return; }
+				setBusy(true);
+				try {
+					const r = JSON.parse(b.backupRunNow() || "{}");
+					setMsg(r.ok ? t("runStarted") : (r.error || "启动失败"));
+				} catch (e) {
+					setMsg((e && e.message) || "启动失败");
+				} finally {
+					setBusy(false);
+				}
+			}, [t]);
+
+			if (state.phase === "loading") {
+				return React.createElement("div", { className: S.section }, "...");
+			}
+			if (state.phase === "nobridge") {
+				return React.createElement("div", { className: S.section },
+					React.createElement("div", { className: S.hint }, t("noBridge")));
+			}
+
+			const d = state.data || {};
+			const row = (label, value, tone) =>
+				React.createElement("div", { className: S.row },
+					React.createElement("span", { className: S.rowLabel }, label),
+					React.createElement("span", { className: tone === "warn" ? S.rowWarn : S.rowValue }, value));
+
+			const fmtLast = (ms) => {
+				if (!ms) return t("never");
+				try { return new Date(ms).toLocaleString(); } catch (e) { return String(ms); }
+			};
+
+			return React.createElement("div", { className: S.section },
+				React.createElement("div", { className: S.intro }, t("intro")),
+				React.createElement("h3", { className: S.h }, t("statusTitle")),
+				row(t("rowPassword"), d.hasPassword ? t("set") : t("unset"), d.hasPassword ? null : "warn"),
+				row(t("rowDir"), d.hasDir ? t("set") : t("unset"), d.hasDir ? null : "warn"),
+				row(t("rowAuto"), d.autoEnabled ? t("on") : t("off")),
+				row(t("rowLast"), fmtLast(d.lastSuccessAt)),
+				React.createElement("div", { className: S.hint }, d.ready ? t("ready") : t("notReady")),
+
+				React.createElement("h3", { className: S.h }, t("pwdTitle")),
+				React.createElement("div", { className: S.hint }, t("pwdHint")),
+				React.createElement("input", {
+					className: S.input, type: "password", value: pwd,
+					placeholder: t("pwdPlaceholder"),
+					onChange: (e) => setPwd(e.target.value),
+				}),
+				React.createElement("input", {
+					className: S.input, type: "password", value: pwd2,
+					placeholder: t("pwdConfirmPlaceholder"),
+					onChange: (e) => setPwd2(e.target.value),
+				}),
+				React.createElement("button", {
+					className: S.button, disabled: busy, onClick: doSetPassword,
+				}, t("pwdSet")),
+
+				React.createElement("h3", { className: S.h }, t("dirTitle")),
+				React.createElement("button", { className: S.button, onClick: doChooseDir }, t("chooseDir")),
+
+				React.createElement("h3", { className: S.h }, t("autoTitle")),
+				React.createElement("button", { className: S.button, onClick: doToggleAuto },
+					d.autoEnabled ? t("off") : t("on")),
+
+				React.createElement("h3", { className: S.h }, t("manualTitle")),
+				React.createElement("div", { className: S.hint }, t("manualHint")),
+				React.createElement("button", {
+					className: S.button, disabled: busy, onClick: doRunNow,
+				}, busy ? t("running") : t("runNow")),
+
+				msg ? React.createElement("div", { className: S.hint }, msg) : null,
+
+				React.createElement("h3", { className: S.h }, t("noteTitle")),
+				React.createElement("ul", { className: S.ul },
+					React.createElement("li", null, t("note1")),
+					React.createElement("li", null, t("note2")),
+					React.createElement("li", null, t("note3")),
+					React.createElement("li", null, t("note4")),
+					React.createElement("li", null, t("note5"))),
+			);
+		}
+
+		/**
+		 * 注册备份设置节。
+		 *
+		 * ⚠️ order 取 29（紧接日志的 28 之后）：备份与日志同属「出问题时的出口」，
+		 *   放在一起用户容易找到。
+		 */
+		function mpRegisterBackupSection(ctx) {
+			let React = mpPrivReact;
+			if (!React) {
+				try { React = require("react"); mpPrivReact = React; }
+				catch (e) { mpPrivReact = null; }
+			}
+			if (!mpPrivReact) return;
+			try {
+				ctx.inject(["slots", "locale"], (scope) => {
+					const t = scope.locale.bind(MP_BACKUP_NS);
+					scope.effect(
+						() => scope.locale.register(MP_BACKUP_NS, { zh: MP_BACKUP_ZH, en: MP_BACKUP_EN }),
+						"dsh-android-mobile: 备份字典",
+					);
+					scope.slots.inject("settings.section", () => scope.slots.register({
+						name: "settings.section",
+						id: "dsh-android-backup",
+						order: 29,
+						label: () => t("nav"),
+						locale: MP_BACKUP_NS,
+					}, mpBackupSection));
+				});
+			} catch (e) {
+				console.warn("[dsh-android-mobile] 注册备份分节失败:", e && (e.stack || e.message || e));
+			}
+		}
+
 		/** 最近一次组字结束的时间戳（0 = 从未）。见 setupEnterAsNewline。 */
 		let mpLastCompositionEnd = 0;
 
@@ -9483,6 +9778,7 @@ window.__ModuleLoader__.load({
 			mpRegisterPrivilegedSection(ctx);
 			mpRegisterBubbleSection(ctx);
 			mpRegisterLogsSection(ctx);
+			mpRegisterBackupSection(ctx);   /* 备份与恢复（设计说明 §5.3） */
 			mpRegisterContactSection(ctx);
 			mpInstallPendingTrust();   /* 修复 51：越早越好 */
 			mpWatchSessions(ctx);       /* 修复 51：等服务就绪 */

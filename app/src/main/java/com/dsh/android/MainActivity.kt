@@ -50,6 +50,7 @@ import com.dsh.android.web.WebHostCallbacks
 import com.dsh.android.web.createWebHost
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -905,6 +906,43 @@ class MainActivity : AppCompatActivity() {
      * （`/sdcard/Android/data/com.dsh.android/files/`，那里的属主是 app 自己）。
      * 所以不做二次追问。
      */
+    /** 主线程 Handler（桥方法从 JS 线程调进来，UI 操作必须切回主线程）。 */
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * SAF 目录选择器（备份目录）。
+     *
+     * ⚠️ 用 `OpenDocumentTree` 而不是 `GetContent`：前者授权的是**目录**，
+     *   后者只能选单个文件 —— 而备份需要一个目录来放多个包。
+     *
+     * ⚠️ 必须 `takePersistableUriPermission`：否则重启后授权就没了，
+     *   而文档明确「重装后重新取得 URI 授权」意味着同一次安装内要能持久持有。
+     */
+    private val backupDirLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri == null) {
+            Log.i(DshApplication.TAG, "备份目录选择已取消")
+            return@registerForActivityResult
+        }
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+            com.dsh.android.backup.BackupConfig.saveTreeUri(this, uri)
+            Log.i(DshApplication.TAG, "备份目录已选定: $uri")
+            Toast.makeText(this, "备份目录已设置", Toast.LENGTH_SHORT).show()
+        } catch (t: Throwable) {
+            // ⚠️ 拿不到持久授权**也要保存** —— 至少本次会话能用；
+            //   只是重启后要重新选。如实告知而不是静默失败。
+            Log.w(DshApplication.TAG, "持久化目录授权失败: ${t.message}")
+            com.dsh.android.backup.BackupConfig.saveTreeUri(this, uri)
+            Toast.makeText(this, "目录已选，但重启后可能需要重新选择", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private val storagePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
@@ -1530,6 +1568,104 @@ class MainActivity : AppCompatActivity() {
      *   通知交给 `EngineService.updateStatus()`（内部只走 NotificationManager），
      *   底色则 `runOnUiThread` 切回主线程再设。gecko 版由 [WebHost] 统一切主线程。
      */
+    /** 打开备份目录选择器（主线程）。 */
+    private fun pickBackupDir() {
+        runCatching { backupDirLauncher.launch(null) }
+            .onFailure { t ->
+                Log.w(DshApplication.TAG, "打开目录选择器失败: ${t.message}")
+                Toast.makeText(this, "无法打开目录选择器: ${t.message}", Toast.LENGTH_LONG).show()
+            }
+    }
+
+    /**
+     * 执行一次备份（主线程 → 后台线程）。
+     *
+     * ⚠️ 备份是长操作（加密几百 MB 可能几十秒），**不能在主线程做**。
+     *   这里起一个后台协程，进度通过事件日志与 [com.dsh.android.backup.BackupScheduler]
+     *   的状态体现，UI 侧靠轮询 backupStatus() 更新。
+     */
+    private fun runBackupNow() {
+        val password = com.dsh.android.backup.BackupConfig.loadPassword(this)
+        if (password == null) {
+            // ⚠️ 解不开不是错误 —— 可能是换机或 Keystore 密钥失效。
+            //   如实提示用户重新输入，而不是报「备份失败」让人困惑。
+            Toast.makeText(this, "需要重新输入备份密码", Toast.LENGTH_LONG).show()
+            Log.w(DshApplication.TAG, "备份：Keystore 解不出密码，需用户重新输入")
+            return
+        }
+        val treeUri = com.dsh.android.backup.BackupConfig.loadTreeUri(this)
+        if (treeUri == null) {
+            password.fill('\u0000')
+            Toast.makeText(this, "请先选择备份目录", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val eventId = "manual-" + System.currentTimeMillis()
+        com.dsh.android.backup.BackupScheduler.onEnteredA(
+            this, eventId,
+            com.dsh.android.backup.BackupScheduler.Origin.USER_ENTRY,
+        )
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val outcome = try {
+                com.dsh.android.backup.BackupOrchestrator.run(
+                    context = this@MainActivity,
+                    env = com.dsh.android.manage.ManageEnv.Env.A,
+                    password = password,
+                    treeUri = treeUri,
+                    engine = backupEngineControl,
+                    eventId = eventId,
+                )
+            } finally {
+                // ⚠️ 密码用完立刻清零，无论成败
+                password.fill('\u0000')
+            }
+
+            withContext(Dispatchers.Main) {
+                val msg = when (outcome) {
+                    is com.dsh.android.backup.BackupOrchestrator.Outcome.Success ->
+                        "备份成功（${outcome.record.name}）" +
+                            if (outcome.rotated > 0) "，清理了 ${outcome.rotated} 个旧包" else ""
+                    is com.dsh.android.backup.BackupOrchestrator.Outcome.Unconfigured ->
+                        "备份未完成：${outcome.reason}"
+                    is com.dsh.android.backup.BackupOrchestrator.Outcome.Blocked ->
+                        "备份受阻：${outcome.reason}"
+                    is com.dsh.android.backup.BackupOrchestrator.Outcome.Failed ->
+                        "备份失败（${outcome.stage}）：${outcome.reason}"
+                }
+                Log.i(DshApplication.TAG, msg)
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * 给备份编排器用的引擎控制。
+     *
+     * ⚠️ `stopAndConfirm` 必须**真的确认**（见接口 KDoc）：
+     *   只发停止信号就返回 true 会让快照在引擎还在写的时候开始，
+     *   拿到的就是不一致数据 —— 比没有备份更危险。
+     */
+    private val backupEngineControl = object : com.dsh.android.backup.BackupOrchestrator.EngineControl {
+        override suspend fun stopAndConfirm(): Boolean = withContext(Dispatchers.IO) {
+            val em = EngineManager.get(this@MainActivity)
+            if (!em.isRunning()) return@withContext true   // 本来就没跑
+            em.stop()
+            // ⚠️ stop() 内部有 waitFor(3s) + destroyForcibly，返回时进程已处理。
+            //   再确认一次，不信任单个返回值。
+            var waited = 0
+            while (em.isRunning() && waited < 5000) {
+                delay(100)
+                waited += 100
+            }
+            !em.isRunning()
+        }
+
+        override suspend fun restart() = withContext(Dispatchers.IO) {
+            EngineManager.get(this@MainActivity).start()
+        }
+    }
+
     private inner class StatusBridge : PageBridge {
         override fun onStatus(json: String) {
             val status = EngineStatus.parse(json) ?: return
@@ -2123,6 +2259,80 @@ class MainActivity : AppCompatActivity() {
          * ⚠️ 全程 `runCatching`：这个方法的返回值直接拼进页面 DOM，抛异常会让
          * JS 桥把错误吞掉、设置页那一行变成空白 —— 用户以为功能没做。
          */
+        // ── 备份桥（设计说明 §5.3：通过「安卓基座」设置入口提供）─────────
+
+        override fun backupStatus(): String = runCatching {
+            val st = com.dsh.android.backup.BackupConfig.status(this@MainActivity)
+            val pending = com.dsh.android.backup.BackupScheduler.nextPending(this@MainActivity)
+            JSONObject().apply {
+                put("hasPassword", st.hasPassword)
+                put("hasDir", st.hasDir)
+                put("autoEnabled", st.autoEnabled)
+                put("ready", st.ready)
+                put("lastSuccessAt", st.lastSuccessAt)
+                put("pending", pending?.status?.id ?: "")
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("error", t.message ?: "读取失败").toString()
+        }
+
+        override fun backupSetPassword(password: String): String = runCatching {
+            // ⚠️ 校验在原生侧再做一次：JS 侧的校验不可信（可能被绕过或改坏）
+            val arr = password.toCharArray()
+            val problem = com.dsh.android.backup.BackupCrypto.validatePassword(arr)
+            if (problem != null) {
+                arr.fill('\u0000')
+                return@runCatching JSONObject()
+                    .put("ok", false).put("error", problem).toString()
+            }
+            val ok = com.dsh.android.backup.BackupConfig.savePassword(this@MainActivity, arr)
+            arr.fill('\u0000')   // 用完立刻清零
+            JSONObject().apply {
+                put("ok", ok)
+                if (!ok) put("error", "系统密钥库不可用，无法保存密码（可继续手动备份）")
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "设置失败").toString()
+        }
+
+        override fun backupChooseDir() {
+            // ⚠️ 立即返回：真正的选择在主线程开 Activity，不能在桥线程阻塞
+            mainHandler.post { pickBackupDir() }
+        }
+
+        override fun backupSetAutoEnabled(enabled: Boolean): String = runCatching {
+            if (enabled) {
+                // 开启前必须两项都配好 —— 否则会出现「开了自动备份但每次都失败」
+                val st = com.dsh.android.backup.BackupConfig.status(this@MainActivity)
+                if (!st.hasPassword) {
+                    return@runCatching JSONObject()
+                        .put("ok", false).put("error", "请先设置备份密码").toString()
+                }
+                if (!st.hasDir) {
+                    return@runCatching JSONObject()
+                        .put("ok", false).put("error", "请先选择备份目录").toString()
+                }
+            }
+            com.dsh.android.backup.BackupConfig.setAutoEnabled(this@MainActivity, enabled)
+            JSONObject().put("ok", true).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "设置失败").toString()
+        }
+
+        override fun backupRunNow(): String = runCatching {
+            val st = com.dsh.android.backup.BackupConfig.status(this@MainActivity)
+            if (!st.hasPassword || !st.hasDir) {
+                return@runCatching JSONObject().put("ok", false)
+                    .put("error", "请先设置密码并选择目录").toString()
+            }
+            // ⚠️ 只是**受理**，不代表成功。成功与否看后续 backupStatus 的
+            //   lastSuccessAt —— 把「已受理」说成「成功」会让用户以为有备份。
+            mainHandler.post { runBackupNow() }
+            JSONObject().put("ok", true).put("started", true).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "启动失败").toString()
+        }
+
         override fun logSummary(): String = runCatching {
             val all = LogStore.entries()
             val prev = BootState.previous()

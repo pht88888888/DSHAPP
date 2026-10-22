@@ -321,4 +321,64 @@ interface PageBridge {
      * 基本类型与 String，返回对象会静默变成 `undefined`。
      */
     fun logSummary(): String
+
+    // ── 备份（设计说明 §5.3：通过「安卓基座」设置入口提供）──────────────
+    //
+    // ⚠️ 这一组全部**同步返回 JSON String**（同 [bubbleState]）：
+    //   `@JavascriptInterface` 只支持基本类型与 String，返回对象会静默变成
+    //   `undefined` —— 而那会让设置页显示空白，排查时看不出原因。
+    //
+    // ⚠️ 备份本身是**长操作**（加密几百 MB 可能几十秒）。所以：
+    //   - 查询类（status）同步返回
+    //   - 执行类（runNow / setPassword / chooseDir）**立即返回**，
+    //     真正的进度通过 [onStatus] 或后续 status 查询推送
+
+    /**
+     * 备份配置与最近状态。
+     *
+     * ```json
+     * {"hasPassword":true,"hasDir":true,"autoEnabled":true,
+     *  "lastSuccessAt":1792686000000,"pending":0,"running":false}
+     * ```
+     *
+     * ⚠️ **绝不返回密码本身**，只返回「设没设过」。
+     */
+    fun backupStatus(): String
+
+    /**
+     * 设置备份密码（Keystore 包裹后存，不存明文）。
+     *
+     * @param password 明文密码。**JS 侧传完应立即清空输入框**
+     * @return `{"ok":true}` 或 `{"ok":false,"error":"..."}`
+     *
+     * ⚠️ 密码**不写日志**（文档：「不由 AI 保管，不写日志」）。
+     *   本方法内部记事件时也只记「成功/失败」，不记内容。
+     */
+    fun backupSetPassword(password: String): String
+
+    /**
+     * 打开系统目录选择器（SAF）让用户选备份目录。
+     *
+     * ⚠️ 立即返回：真正的选择在原生 Activity 里做，
+     *   选完通过 [onStatus] 推一个事件回去。
+     */
+    fun backupChooseDir()
+
+    /**
+     * 开启/关闭自动备份。
+     *
+     * @return `{"ok":true}`；未设密码或目录时 `{"ok":false,"error":"..."}`
+     */
+    fun backupSetAutoEnabled(enabled: Boolean): String
+
+    /**
+     * 立即备份一次。
+     *
+     * @return `{"ok":true,"started":true}` —— **不代表备份成功**，
+     *   只代表已受理。成功与否看后续 [backupStatus] 的 lastSuccessAt。
+     *
+     * ⚠️ 这个区分很重要：把「已受理」说成「成功」会让用户以为有备份，
+     *   而实际可能失败在加密阶段。
+     */
+    fun backupRunNow(): String
 }
