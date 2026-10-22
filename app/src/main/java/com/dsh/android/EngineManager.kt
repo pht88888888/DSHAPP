@@ -4,6 +4,7 @@ import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
 import com.dsh.android.manage.ManageFsm
+import com.dsh.android.manage.ManageDiagCopy
 import com.dsh.android.manage.ManageEnv
 import com.dsh.android.manage.ManageHealth
 import com.dsh.android.manage.ManageLedger
@@ -6604,6 +6605,26 @@ class EngineManager private constructor(private val context: Context) {
         val nodeBin = bootstrap.nodeBinary
         val binJs = File(engineDir, "node_modules/@deepseek-ai/dsh/lib/bin.js")
         if (!nodeBin.isFile || !binJs.isFile) return null
+
+        // ── 在**诊断副本**上跑，不碰原 A ────────────────────────────────
+        //
+        // 设计说明 §6.2：锁定版本会调用 `prepareProfile`，并可能**重写 profile
+        // 配置、规范化 manifest 或清理链接**，因此**不得直接在原 A 上**把它
+        // 当只读命令运行。
+        //
+        // ⚠️ 原实现正是直接在原 A 上跑的（DSH_HOME 指向 dshHome），
+        //   如果 prepareProfile 真会写盘，那每次启动的体检都在改用户配置。
+        //
+        // ⚠️ 副本建不出来时**放弃这次体检**，不回退到原 A ——
+        //   「宁可这次不体检」远好过「改动用户配置」。
+        val diagHome = ManageDiagCopy.prepare(context, ManageEnv.Env.A, PROFILE_NAME)
+        if (diagHome == null) {
+            Log.w(TAG, "诊断副本建不出来，跳过本次体检（不在原 A 上跑）")
+            return null
+        }
+        // 记下原环境指纹，跑完比对 —— 这是「验证原 A 未被改动」的唯一手段
+        val before = ManageDiagCopy.fingerprint(context, ManageEnv.Env.A, PROFILE_NAME)
+
         return try {
             val prefix = bootstrap.prefixDir.absolutePath
             val pb = ProcessBuilder(
@@ -6613,8 +6634,11 @@ class EngineManager private constructor(private val context: Context) {
                 .directory(workspaceDir)
             pb.environment().apply {
                 put("PREFIX", prefix)
-                put("DSH_HOME", dshHome.absolutePath)
-                put("HOME", homeDir.absolutePath)
+                // ⚠️ 指向副本，不是原 A
+                put("DSH_HOME", diagHome.absolutePath)
+                // ⚠️ HOME 也指向副本的父级：引擎会在 HOME 下找 .npmrc 等，
+                //   指向原 HOME 会让它读到用户的真实配置
+                put("HOME", diagHome.parentFile?.absolutePath ?: homeDir.absolutePath)
                 put("TMPDIR", context.cacheDir.absolutePath)
                 put("PATH", "$prefix/bin:$prefix/bin/applets:/system/bin:/system/xbin")
                 put("SSL_CERT_FILE", "$prefix/etc/tls/cert.pem")
@@ -6666,10 +6690,27 @@ class EngineManager private constructor(private val context: Context) {
             }
             outThread.join(2000)
             errThread.join(2000)
+
+            // ── 校验：原 A 有没有被这次体检改动 ────────────────────────
+            //
+            // 设计说明 §6.2 要求「**验证原 A 哈希/元数据未变**」。
+            // 这一步不是锦上添花：如果 dump-config 真会写盘，那我们所有
+            // 「体检是只读的」假设都错了，必须让人看到。
+            //
+            // ⚠️ 不一致时**不阻止体检结果**（结论仍然有效），但要记一条
+            //   `manage.diagCopy.MUTATED` 事件 —— 那是最要紧的证据。
+            runCatching {
+                ManageDiagCopy.verifyUnchanged(context, ManageEnv.Env.A, PROFILE_NAME, before)
+            }.onFailure { Log.w(TAG, "校验原环境失败: ${it.message}") }
+
             DumpResult(proc.exitValue(), out.toString(), err.toString())
         } catch (t: Throwable) {
             Log.w(TAG, "启动前体检执行失败，跳过: ${t.message}")
             null
+        } finally {
+            // 副本用完就清：它含 profile 配置（可能带路径等敏感信息），
+            // 而 cache/ 只是"系统可回收"，不等于"已经清了"
+            runCatching { ManageDiagCopy.cleanup(context) }
         }
     }
 
