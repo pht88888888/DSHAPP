@@ -12,16 +12,21 @@
 
 ## 1. 载荷构成
 
-| 资产 | 内容 | 大小 |
-|---|---|---|
-| `engine.bin` | 官方 DSH 引擎 + 567 个 npm 依赖 | 55.0 MB |
-| `node-runtime.bin` | Node.js 运行时 | 30.1 MB |
-| `bootstrap-aarch64.zip` | Termux 基础环境（bash / coreutils / dpkg 等） | 23.1 MB |
-| `pnpm-android-arm64.zip` | pnpm 11 纯 JS 版 | 5.6 MB |
-| `ripgrep-android-arm64.zip` | ripgrep 交叉编译 | 2.0 MB |
-| `adb-wireless-arm64.zip` | Android platform-tools | 5.2 MB |
-| `sharp-wasm32.zip` | sharp（libvips wasm） | 3.5 MB |
-| `webview-compat.zip` | 本项目构建期生成的降级前端 | 9.2 MB |
+| 资产 | 内容 | 版本 | 大小 | sha256(前16) |
+|---|---|---|---|---|
+| `engine.bin` | 官方 DSH 引擎 + 558 个 npm 依赖 | 见 `engine/.stamp` | 55.0 MB | `adc7a3aa9eeef64e` |
+| `node-runtime.bin` | Node.js 运行时 | **v26.4.0**（Termux 包 `26.4.0-2`） | 30.1 MB | `ba16f7f4d0cc0b02` |
+| `bootstrap-aarch64.zip` | Termux 基础环境 | 2026-09-25 构建 | 23.1 MB | `b3739c14a2eb7421` |
+| `pnpm-android-arm64.zip` | pnpm 纯 JS 版 | **11.28.3** | 5.6 MB | `283fb781491c0672` |
+| `ripgrep-android-arm64.zip` | ripgrep 交叉编译 | 未记录 | 2.0 MB | `c53a30002ae9695b` |
+| `adb-wireless-arm64.zip` | Android platform-tools | 未记录 | 5.2 MB | `1a0776404f4b3797` |
+| `sharp-wasm32.zip` | sharp（libvips wasm） | 未记录 | 3.5 MB | `41ad7e41dd542bcc` |
+| `webview-compat.zip` | 本项目构建期生成的降级前端 | 构建期生成 | 9.2 MB | `54cf2e9841190de0` |
+
+> 版本从**二进制/常量**读出，不是照抄文档：
+> `strings bin/node | grep '^v[0-9]'` → `v26.4.0`；
+> `EngineManager.PNPM_VERSION = "11.28.3"`；
+> `TermuxBootstrap.NODE_VERSION = "26.4.0-2"`（Termux 包版本，与上游 v26.4.0 对应）。
 
 ---
 
