@@ -4,6 +4,7 @@ import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
 import com.dsh.android.manage.ManageFsm
+import com.dsh.android.manage.ManageLock
 import com.dsh.android.manage.ManageState
 import com.dsh.android.log.LogStore
 import com.dsh.android.log.CrashRecorder
@@ -7773,6 +7774,28 @@ class EngineManager private constructor(private val context: Context) {
     }
 
     fun stop() {
+        // ── 跨进程监督锁：整个停止段都持有 ─────────────────────────────
+        //
+        // 设计说明 §6.5.2：「使用跨进程监督锁及必要的环境写锁；
+        // 同环境冲突操作串行」。
+        //
+        // ⚠️ **停止段必须持锁到底**（含 `waitFor(3s)`）：这段里进程正在退出，
+        //   如果另一个进程此刻发起 start()，会撞上「进程还活着」的状态检查，
+        //   然后两个流程各自以为自己是唯一的管理者。
+        //
+        // ⚠️ 与 start() 的持锁范围**刻意不同**：start() 只锁状态转换那一小段，
+        //   因为整个启动要 11 秒，全程持锁会让 stop 等 11 秒。
+        //   stop 通常几百毫秒（进程正常退出），持锁到底的代价可接受。
+        //
+        // ⚠️ 拿不到锁时**仍然执行停止**：停是安全方向，挡一个停止请求
+        //   比放行危险得多（引擎还在跑、用户以为停了）。
+        val lockResult = runCatching { ManageLock.tryAcquire(context, "engine.stop") }.getOrNull()
+        val lockHandle = (lockResult as? ManageLock.Result.Acquired)?.handle
+        if (lockHandle == null) {
+            Log.w(TAG, "停止时未取得监督锁（${lockResult?.javaClass?.simpleName ?: "?"}），继续停止")
+        }
+
+        try {
         // ── 管理状态：先登记「要停止」的意图（write-ahead）────────────
         //
         // ⚠️ **必须在真正 destroy 之前**。顺序反了的话：
@@ -7828,6 +7851,12 @@ class EngineManager private constructor(private val context: Context) {
         // 守护线程同理：引擎都停了，再去切 adbd 没有意义，还白耗电
         WirelessDebugging.stopFixedPortGuard()
         _state.value = State.Idle
+        } finally {
+            // ⚠️ 必须在 finally 里释放：停止过程中任何一步抛异常都要放开锁，
+            //   否则这个进程剩下的生命周期里所有管理操作都被挡住 ——
+            //   而且没有报错，用户只会看到「正在切换环境」一直挂着。
+            lockHandle?.close()
+        }
     }
 
     /**
