@@ -38,6 +38,7 @@ import com.dsh.android.log.VersionInfo
 import com.dsh.android.log.CrashRecorder
 import com.dsh.android.log.EventLog
 import com.dsh.android.log.LogStore
+import com.dsh.android.manage.ManageHealth
 import com.dsh.android.log.LogUploader
 import com.dsh.android.log.RescueBoot
 import com.dsh.android.log.SafeDateFormat
@@ -206,6 +207,27 @@ class MainActivity : AppCompatActivity() {
         //   也就是说这不是错误，只是「解析 5.5MB 前端 + 挂载 React」比 12 秒慢，
         //   红层随后自己就收掉了。真正的错误由 `webViewMajor` 门槛与
         //   `State.Failed` 两条路各自负责提示。
+        // ── 四层健康判定：明确「坏在哪一层」──────────────────────────
+        //
+        // 设计说明 §6.2 要求「分别记录进程存活、DSH 服务就绪、Web 页面加载、
+        // Android 桥可用四层状态」，并明确「页面白屏而服务正常时**优先恢复页面**」。
+        //
+        // 走到这里的事实是：引擎**已经就绪**（能 loadUrl 才会 arm 这个超时），
+        // 所以进程与服务两层必然是 UP —— 出问题的是页面层。
+        //
+        // ⚠️ 显式走一遍 [ManageHealth] 而不是直接 if/else，是为了让日志里有
+        //   结构化的四层状态。原代码只写「超时」两个字，排查时分不清是
+        //   「服务没起」还是「页面没渲染」—— 而那正是两条完全不同的修复路径。
+        val health = ManageHealth.snapshot(
+            processAlive = true,      // 能走到这里 ⇒ 进程在（否则不会 loadUrl）
+            serviceReady = true,      // 同上：URL 已经拿到
+            pageLoaded = false,       // 就是这一层超时了
+            bridgeReady = false,      // 桥依赖页面，页面没起来它必然没通
+            detail = "界面就绪回调超时（${UI_READY_TIMEOUT_MS / 1000}s）",
+        )
+        val remedy = ManageHealth.remedy(health)
+        Log.w(DshApplication.TAG, "四层健康: ${health.summary()} → 建议=${remedy.id}")
+
         if (webError.isNotEmpty()) {
             showOverlay("界面加载失败", hint = "$webError（点一下这里可继续）", isError = true)
         } else {

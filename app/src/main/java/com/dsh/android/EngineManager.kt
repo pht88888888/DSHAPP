@@ -4,6 +4,7 @@ import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
 import com.dsh.android.manage.ManageFsm
+import com.dsh.android.manage.ManageHealth
 import com.dsh.android.manage.ManageLedger
 import com.dsh.android.manage.ManageLock
 import com.dsh.android.manage.ManageReconcile
@@ -8005,6 +8006,27 @@ class EngineManager private constructor(private val context: Context) {
         //   `expected = false`：不是我们主动停的。
         CrashRecorder.recordEngineExit(code, expected = false, detail = detail)
         EventLog.record("engine.exit", mapOf("code" to (code?.toString() ?: "?"), "wasReady" to "true"))
+
+        // ── 四层健康判定：这是**进程层**失败，不是页面层 ────────────────
+        //
+        // 设计说明 §6.2 要求分别记录四层状态。这里的事实是：
+        // 引擎**曾经就绪过**（wasReady=true）但现在退出了 ⇒ 进程层 DOWN，
+        // 其余三层都「还没轮到判断」（UNKNOWN，不是 DOWN）。
+        //
+        // ⚠️ 与「页面白屏」的区别正是本函数存在的意义：
+        //   白屏时进程和服务都是 UP，只需重载页面；
+        //   这里进程已经没了，必须走完整降级（ESCALATE）。
+        //   把两者混为一谈会导致「白屏也去重解包 15 秒」或
+        //   「进程死了却只重载页面（永远好不了）」。
+        val health = ManageHealth.snapshot(
+            processAlive = false,
+            serviceReady = false,
+            pageLoaded = false,
+            bridgeReady = false,
+            detail = "引擎运行期退出（$detail）",
+        )
+        Log.w(TAG, "四层健康: ${health.summary()} → 建议=${ManageHealth.remedy(health).id}")
+
         _state.value = State.Dead(detail)
     }
 
