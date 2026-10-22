@@ -7708,6 +7708,32 @@ class EngineManager private constructor(private val context: Context) {
             runCatching {
                 ManageState.finishTransition(context, ManageState.Env.A)
             }.onFailure { Log.w(TAG, "记录启动完成失败: ${it.message}") }
+
+            // ── 自动备份调度（设计说明 §5.3.4）──────────────────────────
+            //
+            // 「每个新的正常进入事件安排一版 A 自动备份」。
+            //
+            // ⚠️ **这里只登记请求，不执行备份**。执行要停引擎取一致快照，
+            //   而此刻用户刚打开 App、正等着用 —— 立即停引擎会把体验毁掉。
+            //   真正的执行由 MainActivity 在「界面已就绪且用户无操作」后触发。
+            //
+            // ⚠️ eventId 用启动时刻：同一次启动内它不变，所以页面刷新、
+            //   旋转、回前台都不会新建请求（它们不重新走 start()）。
+            //
+            // ⚠️ origin 必须是 USER_ENTRY：备份流程自己重启引擎时会走
+            //   维护续启路径，那条路不能触发新备份，否则形成
+            //   「备份→重启→备份」的无限循环（见 BackupScheduler 的 KDoc）。
+            runCatching {
+                val eventId = "boot-$startMs"
+                val (created, why) = com.dsh.android.backup.BackupScheduler.onEnteredA(
+                    context, eventId, com.dsh.android.backup.BackupScheduler.Origin.USER_ENTRY,
+                )
+                if (created) {
+                    Log.i(TAG, "已登记自动备份请求（$eventId）")
+                } else {
+                    Log.d(TAG, "自动备份未触发: $why")
+                }
+            }.onFailure { Log.w(TAG, "登记自动备份失败: ${it.message}") }
             // 事件时间线里记一笔「从起进程到就绪花了多久」。
             // ⚠️ 这是「打开 App 慢」这类模糊反馈唯一能定量的地方：没有它，
             //   用户说「卡」，我们只能猜是引擎慢、解包慢还是网络慢。

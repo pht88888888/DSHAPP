@@ -1568,6 +1568,42 @@ class MainActivity : AppCompatActivity() {
      *   通知交给 `EngineService.updateStatus()`（内部只走 NotificationManager），
      *   底色则 `runOnUiThread` 切回主线程再设。gecko 版由 [WebHost] 统一切主线程。
      */
+    /**
+     * 界面就绪后，若有待办的自动备份请求，执行它。
+     *
+     * ## ⚠️ 为什么延迟执行而不是在引擎就绪时立刻做
+     *
+     * 备份需要停引擎取一致快照。引擎刚就绪时用户正在等界面出来，
+     * 此刻停引擎会让用户看到「刚打开就卡住」。
+     *
+     * 所以延迟 [AUTO_BACKUP_DELAY_MS] 秒 —— 给用户一点时间看到界面、
+     * 确认能用，再在后台做备份。这个延迟是**体验与及时性的折中**。
+     *
+     * ⚠️ 只在配置完整时执行；没配好就什么都不做（不打扰用户）。
+     *   文档：「用户未配置不阻止 Agent 基础使用，但不得标成功」。
+     */
+    private fun maybeRunAutoBackup() {
+        if (!com.dsh.android.backup.BackupConfig.isReady(this)) {
+            // 没配置好：什么都不做。首次使用时会去设置页引导。
+            return
+        }
+        // 崩溃对账：上次做到一半的请求标失败，不重复发布
+        val reconciled = com.dsh.android.backup.BackupScheduler.reconcile(this)
+        if (reconciled > 0) {
+            Log.w(DshApplication.TAG, "备份对账：$reconciled 个未完成请求已标记失败")
+        }
+        val pending = com.dsh.android.backup.BackupScheduler.nextPending(this) ?: return
+        Log.i(DshApplication.TAG, "有待办备份（${pending.eventId}），${AUTO_BACKUP_DELAY_MS / 1000}s 后执行")
+        mainHandler.postDelayed({
+            // 再查一次：这期间用户可能已经手动备份了，或改了配置
+            if (com.dsh.android.backup.BackupConfig.isReady(this) &&
+                com.dsh.android.backup.BackupScheduler.nextPending(this) != null
+            ) {
+                runBackupNow()
+            }
+        }, AUTO_BACKUP_DELAY_MS)
+    }
+
     /** 打开备份目录选择器（主线程）。 */
     private fun pickBackupDir() {
         runCatching { backupDirLauncher.launch(null) }
@@ -1731,6 +1767,14 @@ class MainActivity : AppCompatActivity() {
         override fun onUiReady() {
             Log.i(DshApplication.TAG, "插件已激活（onUiReady）")
             engine.notifyUiReady()
+            // ── 自动备份：界面确认就绪后才考虑 ────────────────────────
+            //
+            // ⚠️ 用 onUiReady 而不是 EngineManager 的「引擎就绪」：
+            //   引擎就绪只说明服务起来了，页面可能还是白的。此时停引擎备份，
+            //   用户会看到「刚打开就卡住」——而备份的价值远低于「能正常用」。
+            //
+            //   onUiReady 是插件激活的回调，说明页面真的挂上了。
+            mainHandler.post { maybeRunAutoBackup() }
         }
 
         /**
@@ -3944,6 +3988,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     internal companion object {
+        /**
+         * 界面就绪后等多久才执行自动备份。
+         *
+         * ⚠️ 太短会让用户「刚打开就卡住」（备份要停引擎取一致快照）；
+         *   太长则用户可能已经切走、进程被回收。
+         *   30 秒是「界面肯定已经可用、用户多半在思考或输入」的窗口。
+         */
+        const val AUTO_BACKUP_DELAY_MS = 30_000L
+
         /** 键盘高度缓存的 SharedPreferences 文件名。 */
         const val IME_PREFS = "dsh_ime"
 
