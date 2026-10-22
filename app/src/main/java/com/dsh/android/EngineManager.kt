@@ -3,6 +3,7 @@ package com.dsh.android
 import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
+import com.dsh.android.manage.ManageState
 import com.dsh.android.log.LogStore
 import com.dsh.android.log.CrashRecorder
 import com.dsh.android.log.BootState
@@ -6769,6 +6770,23 @@ class EngineManager private constructor(private val context: Context) {
         // 「打开 App 慢」这类反馈只有靠这个数才能定位到具体阶段。
         val startMs = System.currentTimeMillis()
         EventLog.record("engine.start")
+
+        // ── 管理状态：记录「要启动了」的意图（write-ahead）──────────────
+        //
+        // 设计说明 §6.5.2 要求「持久记录 desired/observed、转换 ID、epoch」
+        // 与「先记录足以恢复的意图，关键副作用后记录结果」。
+        //
+        // ⚠️ **必须在这里、而不是启动成功之后**：进程如果在解包/体检阶段被杀，
+        //   下次启动要能看到「上一次有未完成的启动」这个事实。
+        //   只在成功后记录的话，被杀那次完全不留痕迹 —— 而它恰恰是最需要
+        //   留下痕迹的那一次。
+        //
+        // ⚠️ 只记状态，不在这里加锁：锁的持有范围是「状态转换」，
+        //   而整个 start() 长达 11 秒（引擎自身 7~10 秒），全程持锁会让
+        //   stop/修复 被挡十几秒。锁由调用方在真正需要互斥的短区间里取。
+        runCatching {
+            ManageState.beginTransition(context, "engine.start", ManageState.Env.A)
+        }.onFailure { Log.w(TAG, "记录启动意图失败: ${it.message}") }
         // ⚠️ 每次启动都清掉「主动停止」标记，否则 stop() 之后再也起不来
         //   （EOF 会被当成用户停止而不再上报死亡，这里反过来：新一轮启动了，
         //   旧标记已经没有意义）。
@@ -7511,6 +7529,17 @@ class EngineManager private constructor(private val context: Context) {
             //   ⚠️ 上面那段 gateway 检测已经 `return@withContext` 走了，
             //   所以走到这里就是**真·成功**，可以放心清。
             RescueBoot.clearFailure()
+            // 管理状态：转换完成，observed 追上 desired
+            //
+            // ⚠️ 与 beginTransition 成对：那一处写「意图」，这里写「结果」。
+            //   中途被杀时两者不一致（desired=A 但 phase 停在 STARTING），
+            //   下次启动据此判断「上次没走完」。
+            //
+            // ⚠️ 放在 RescueBoot.clearFailure() **之后**：清失败记录意味着
+            //   「这一次确实成功了」，两个事实必须同时成立才写 ACTIVE。
+            runCatching {
+                ManageState.finishTransition(context, ManageState.Env.A)
+            }.onFailure { Log.w(TAG, "记录启动完成失败: ${it.message}") }
             // 事件时间线里记一笔「从起进程到就绪花了多久」。
             // ⚠️ 这是「打开 App 慢」这类模糊反馈唯一能定量的地方：没有它，
             //   用户说「卡」，我们只能猜是引擎慢、解包慢还是网络慢。
