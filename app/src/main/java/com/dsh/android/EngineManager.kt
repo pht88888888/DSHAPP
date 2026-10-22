@@ -5,6 +5,7 @@ import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
 import com.dsh.android.manage.ManageFsm
 import com.dsh.android.manage.ManageLock
+import com.dsh.android.manage.ManageReconcile
 import com.dsh.android.manage.ManageState
 import com.dsh.android.log.LogStore
 import com.dsh.android.log.CrashRecorder
@@ -6786,6 +6787,27 @@ class EngineManager private constructor(private val context: Context) {
         // ⚠️ 只记状态，不在这里加锁：锁的持有范围是「状态转换」，
         //   而整个 start() 长达 11 秒（引擎自身 7~10 秒），全程持锁会让
         //   stop/修复 被挡十几秒。锁由调用方在真正需要互斥的短区间里取。
+        // ── 启动对账：处理上次留下的未完成转换 ─────────────────────────
+        //
+        // 设计说明 §6.5.2：「宿主重建后**先取得监督权，再对账磁盘记录、
+        // 实际进程、事务与激活组合**」。
+        //
+        // 现实场景：用户点「停止」，进程刚 destroy 但还没确认，App 被系统杀。
+        // 下次启动时磁盘上留着 phase=QUIESCING。不对账的话
+        // ManageFsm.requestStart 会因此拒绝启动 —— 用户看到「App 打不开」。
+        //
+        // ⚠️ **必须在 requestStart 之前**：对账的作用就是把状态清干净，
+        //   让后面的状态机检查能通过。顺序反了等于对账白做。
+        //
+        // ⚠️ 只在 READ_ONLY 时不做任何写入（见 ManageReconcile 的 KDoc）。
+        runCatching {
+            val rec = ManageReconcile.reconcile(context, engineProcessAlive = false)
+            if (rec.action != ManageReconcile.Action.CLEAN) {
+                Log.i(TAG, "启动对账: ${rec.action.id} —— ${rec.detail}")
+            }
+            ManageReconcile.cleanStaleTemp(context)
+        }.onFailure { Log.w(TAG, "启动对账失败: ${it.message}") }
+
         runCatching {
             // ⚠️ 走状态机而不是直接 beginTransition：
             //   requestStart() 会先判「进程是否还活着」「上一次转换是否未完成」，
