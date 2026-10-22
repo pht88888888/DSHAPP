@@ -4,6 +4,7 @@ import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
 import com.dsh.android.manage.ManageFsm
+import com.dsh.android.manage.EmergencyEnv
 import com.dsh.android.manage.ManageDiagCopy
 import com.dsh.android.manage.ManageEnv
 import com.dsh.android.manage.ManageHealth
@@ -17,7 +18,9 @@ import com.dsh.android.log.BootState
 import com.dsh.android.log.RescueBoot
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -294,6 +297,72 @@ class EngineManager private constructor(private val context: Context) {
      *
      * @param versionStamp 资产版本标识；与已解包版本一致时直接跳过。
      */
+    /**
+     * 部署 E 环境（应急环境的独立依赖树）。
+     *
+     * ## 为什么需要它
+     *
+     * 设计说明 §3.1：「一号、二号各有**独立的 DSH 依赖树**，不能只复制启动文件
+     * 却共享可变依赖」，§6.5.4：「E 尽量保持**已部署可启动**，不能依赖故障
+     * 发生后才解包」。
+     *
+     * 事后解包的问题不是慢，而是不可靠：磁盘快满时解到一半 ENOSPC、
+     * 资产损坏时直接失败 —— 而那时用户正急着救数据。
+     *
+     * ## ⚠️ 磁盘代价
+     *
+     * 独立依赖树 = 再解包一份 engine（压缩 55 MB → 解包约 120~160 MB）。
+     * 所以 [EmergencyEnv.shouldDeploy] 会先查空间；不足就**不部署**并如实报状态，
+     * 而不是硬塞把用户磁盘占满。
+     *
+     * ## 调用时机
+     *
+     * 在**正常启动成功之后**（不是启动路径上）：用户正常用 App 时后台准备 E，
+     * 而不是让每次启动都多等 15 秒。
+     *
+     * @param versionStamp 一号内核的版本戳（E 跟它同版本 —— 文档允许
+     *   「用同一个已验证官方版本分别部署两套独立依赖树」）
+     */
+    suspend fun deployEmergencyEnv(versionStamp: String) = withContext(Dispatchers.IO) {
+        val (should, why) = EmergencyEnv.shouldDeploy(
+            context, versionStamp, primaryReady = engineDir.isDirectory,
+        )
+        if (!should) {
+            Log.i(TAG, "E 环境不部署：$why")
+            return@withContext
+        }
+        Log.i(TAG, "开始部署 E 环境：$why")
+        EventLog.record("env.e.deploy.start", mapOf("stamp" to versionStamp))
+
+        val staging = EmergencyEnv.begin(context)
+        if (staging == null) {
+            Log.w(TAG, "E 部署：无法创建 staging")
+            return@withContext
+        }
+
+        try {
+            // ⚠️ 复用同一份 `engine.bin` 资产，解到 E 自己的 staging。
+            //   不解两份资产：APK 里只有一份，且它是只读的。
+            context.assets.open(ASSET_NAME).use { raw ->
+                TarGz.extract(CountingInputStream(raw), staging) { }
+            }
+            val ok = EmergencyEnv.commit(context, versionStamp)
+            if (ok) {
+                Log.i(TAG, "E 环境部署完成")
+            } else {
+                Log.w(TAG, "E 环境部署失败（详见事件日志）")
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "E 部署异常: ${t.message}")
+            EmergencyEnv.abort(context)
+            EventLog.record("env.e.deploy.error", mapOf("reason" to (t.message ?: "?")))
+        }
+    }
+
+    /** E 环境当前状态（给诊断与设置页用）。 */
+    fun emergencyEnvState(primaryStamp: String): EmergencyEnv.State =
+        EmergencyEnv.state(context, primaryStamp)
+
     suspend fun ensureExtracted(versionStamp: String) = withContext(Dispatchers.IO) {
         lastAssetStamp = versionStamp
         if (stampFile.isFile && stampFile.readText().trim() == versionStamp) {
@@ -7741,6 +7810,28 @@ class EngineManager private constructor(private val context: Context) {
                 "engine.ready",
                 mapOf("ms" to (System.currentTimeMillis() - startMs).toString(), "port" to portOf(url)),
             )
+
+            // ── E 环境：正常启动成功后**异步**部署 ────────────────────────
+            //
+            // 设计说明 §6.5.4：「E 尽量保持已部署可启动，不能依赖故障发生后
+            // 才解包」。所以要在正常时期准备。
+            //
+            // ⚠️ **异步**：解包要 15 秒 + 120~160 MB 磁盘。放在启动路径上会让
+            //   每次启动都多等十几秒 —— 而 E 是「以后可能用到」的东西，
+            //   不该让当下付代价。
+            //
+            // ⚠️ 用 `launch` 而不是 `await`：这里是 suspend 上下文，
+            //   起一个独立的协程让它自己跑完。
+            //
+            // ⚠️ 只在「一号确实就绪」的分支里调 —— 走上面那个 gateway 降级
+            //   分支时（`return@withContext`）不该部署，因为那时一号本身有问题。
+            val stampForE = lastAssetStamp
+            if (!stampForE.isNullOrEmpty()) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    runCatching { deployEmergencyEnv(stampForE) }
+                        .onFailure { Log.w(TAG, "E 环境部署失败: ${it.message}") }
+                }
+            }
         } else if (userStopped || process !== proc) {
             // ⚠️ **我们自己停掉的，不是启动失败。**（2026-10-15 修，同族第 25 例）
             //
