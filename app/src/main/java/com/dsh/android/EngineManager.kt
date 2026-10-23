@@ -7080,7 +7080,15 @@ class EngineManager private constructor(private val context: Context) {
         //   旧进程在飞的事件都不该再影响新进程的悬浮窗状态。
         runCatching {
             com.dsh.android.bubble.BubbleEventGate.rotateLease("engine.start profile=$targetProfile")
-        }.onFailure { Log.w(TAG, "悬浮租约轮换失败: ${it.message}") }
+            // ⚠️ 同时清空会话聚合与插件仲裁（文档 §4.11）：
+            //   「切换环境时撤销旧租约、事件订阅和排队控制，**清除旧任务状态**；
+            //     可以保留已缓存外观，但**不得继续显示旧任务正在运行**」。
+            //
+            //   不清聚合器的话，旧环境的「运行中」会让球一直转，
+            //   而那个任务早就不存在了 —— 用户会以为卡住了。
+            com.dsh.android.bubble.SessionAggregator.clear("engine.start profile=$targetProfile")
+            com.dsh.android.bubble.PluginArbiter.clearForEnvSwitch("engine.start")
+        }.onFailure { Log.w(TAG, "悬浮状态清理失败: ${it.message}") }
         if (targetProfile != PROFILE_NAME) {
             Log.w(TAG, "以救援 profile 启动（--profile $targetProfile）：不加载任何第三方插件")
             EventLog.record("engine.start.rescue", mapOf("profile" to targetProfile))

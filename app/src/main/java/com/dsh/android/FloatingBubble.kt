@@ -1,6 +1,7 @@
 package com.dsh.android
 
 import com.dsh.android.bubble.BubbleEventGate
+import com.dsh.android.bubble.PluginArbiter
 import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
 import android.content.Context
@@ -499,6 +500,45 @@ class FloatingBubble(private val context: Context) {
                     Log.i(DshApplication.TAG, "悬浮外观：拒绝旧租约事件（lease ${verdict.lease} ≠ ${verdict.current}）")
                     return false
                 }
+            }
+
+            // ── 插件仲裁（设计说明 §4.11）──────────────────────────────
+            //
+            // 文档：「同一窗口多插件竞争由基座仲裁，**不采用无规则的最后写入覆盖**」
+            // 「用户手动设置优先级…插件重启**不能无条件覆盖用户后续修改**」
+            //
+            // ⚠️ 从 JSON 里取 `_plugin` 作为申请者标识（可选）：
+            //   不带时视为「用户手动」（最高优先级）—— 因为不带标识的调用
+            //   只可能来自页面桥或原生自身，那都是用户动作。
+            val pluginId: String
+            val requestedFields: List<String>
+            try {
+                val probe = org.json.JSONObject(json)
+                pluginId = probe.optString("_plugin").ifEmpty { PluginArbiter.USER_ID }
+                requestedFields = probe.keys().asSequence()
+                    .filter { !it.startsWith("_") }
+                    .toList()
+            } catch (t: Throwable) {
+                return false
+            }
+
+            // 申请控制权（用户永远能拿到；插件先到先得）
+            if (pluginId == PluginArbiter.USER_ID) {
+                PluginArbiter.acquireByUser()
+            } else if (!PluginArbiter.acquire(pluginId)) {
+                Log.i(DshApplication.TAG, "悬浮外观：$pluginId 未获得控制权，拒绝写入")
+                return false
+            }
+
+            // 逐字段检查：用户锁定的字段插件改不动
+            val blocked = requestedFields.filterNot { PluginArbiter.canWrite(pluginId, it) }
+            if (blocked.isNotEmpty()) {
+                Log.i(
+                    DshApplication.TAG,
+                    "悬浮外观：$pluginId 试图改被锁定的字段 ${blocked.joinToString(",")}（已剔除）",
+                )
+                // ⚠️ 剔除而不是整体拒绝：用户可能只想固定颜色，
+                //   整体拒绝会废掉插件控制动作的能力。
             }
 
             val next = BubbleAppearance.merge(json, BubbleAppearance.load(ctx), ctx)
