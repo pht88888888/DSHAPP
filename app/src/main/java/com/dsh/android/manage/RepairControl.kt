@@ -174,6 +174,15 @@ object RepairControl {
 
         /** 有不可逆副作用但用户没确认。 */
         data object IrreversibleNotAcknowledged : Verdict
+
+        /**
+         * 快照建立失败 —— **中止修复**。
+         *
+         * ⚠️ 单独一个分支而不是复用 `NoApproval`：
+         *   两者的原因完全不同（一个是「没批准」，一个是「批准了但没法保证可恢复」），
+         *   复用会让日志与用户提示都指向错误方向。
+         */
+        data class SnapshotFailed(val reason: String) : Verdict
     }
 
     /**
@@ -329,6 +338,20 @@ object RepairControl {
             return Result.Rejected(v)
         }
 
+        // ── 修复前建立快照（验收矩阵第 5 条）────────────────────────────
+        //
+        // 文档：「修复前建立**声明范围内的一致快照**，失败可在该范围恢复」。
+        //
+        // ⚠️ **快照失败就中止修复**：没有快照就修是不安全的 ——
+        //   用户批准了「删配置」，删完发现不对却回不去，那是灾难。
+        //   宁可这次不修（返回 Rejected），也不要冒险。
+        val snapshot = RepairSnapshot.create(context, plan)
+        if (snapshot == null) {
+            Log.w(TAG, "快照建立失败，中止修复")
+            EventLog.record("repair.aborted.noSnapshot", mapOf("planId" to plan.planId))
+            return Result.Rejected(Verdict.SnapshotFailed("无法建立快照"))
+        }
+
         val done = mutableListOf<Step>()
         val failed = mutableListOf<Pair<Step, String>>()
 
@@ -365,7 +388,18 @@ object RepairControl {
                 "failed" to failed.size.toString(),
             ),
         )
-        return Result.Executed(done, failed)
+
+        // ⚠️ **全部成功才丢快照**：有失败时保留，让调用方能回滚。
+        //   丢掉的话「失败后想回滚」就无从下手 —— 而那时正是最需要快照的时候。
+        if (failed.isEmpty()) {
+            RepairSnapshot.discard(snapshot)
+        } else {
+            Log.i(TAG, "修复有失败项，快照已保留：${snapshot.snapshotId}")
+        }
+        // 顺手清理旧快照（保留最近 3 份）
+        RepairSnapshot.cleanupOld(context)
+
+        return Result.Executed(done, failed, snapshot)
     }
 
     /**
@@ -383,6 +417,8 @@ object RepairControl {
         data class Executed(
             val done: List<Step>,
             val failed: List<Pair<Step, String>>,
+            /** 快照（成功时为已丢弃的引用；有失败时可用来回滚）。 */
+            val snapshot: RepairSnapshot.Snapshot? = null,
         ) : Result {
             val fullySucceeded: Boolean get() = failed.isEmpty()
 
@@ -410,6 +446,7 @@ object RepairControl {
         is Verdict.EpochChanged -> "epoch 已变：${v.approved} → ${v.current}"
         is Verdict.ChannelMismatch -> "通道不符：${v.approved} → ${v.current}"
         Verdict.IrreversibleNotAcknowledged -> "有不可逆副作用但用户未确认"
+        is Verdict.SnapshotFailed -> "快照失败：${v.reason}" 
     }
 
     /*
