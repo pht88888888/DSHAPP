@@ -264,8 +264,8 @@ object CameraCapability {
                         val surface = r.surface
                         // ⚠️ 用 TEMPLATE_STILL_CAPTURE：相机会针对静态照片优化
                         //   （曝光、对焦策略与预览不同）。
-                        d.createCaptureSession(
-                            listOf(surface),
+                        configureSession(
+                            d, surface,
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(s: CameraCaptureSession) {
                                     session = s
@@ -577,7 +577,16 @@ object CameraCapability {
         }
 
         try {
-            val r = android.media.MediaRecorder()
+            // ⚠️ `MediaRecorder()` 无参构造在 API 31 起被弃用，
+            //   替代品 `MediaRecorder(Context)` 需要 API 31+。
+            val r = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                // ⚠️ 直接传 `recordVideo` 的参数 `context` ——
+                //   不要写成 `this@CameraCapability.let { context }`（那会遮蔽参数名，误读）
+                android.media.MediaRecorder(context)
+            } else {
+                @Suppress("DEPRECATION")
+                android.media.MediaRecorder()
+            }
             recorder = r
 
             // ② 配置
@@ -606,8 +615,8 @@ object CameraCapability {
                     device = d
                     try {
                         val surface = r.surface
-                        d.createCaptureSession(
-                            listOf(surface),
+                        configureSession(
+                            d, surface,
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(s: CameraCaptureSession) {
                                     session = s
@@ -703,6 +712,40 @@ object CameraCapability {
      * ⚠️ 必须有：`onImageAvailable` 在镜头故障/对焦失败时可能**永不回调**。
      */
     const val CAPTURE_TIMEOUT_MS = 10_000L
+
+    /**
+     * 建捕获会话（**版本自适应**）。
+     *
+     * ⚠️ `createCaptureSession(List<Surface>, …)` 在 API 30 起被弃用，
+     *   替代品 `createCaptureSession(SessionConfiguration)` 需要 **API 28+**，
+     *   而本项目 `minSdk = 26`。
+     *
+     * 所以必须分支：
+     * - API 28+：用 `SessionConfiguration`（非弃用路径）
+     * - API 26-27：只能用旧方法（弃用但**未移除**，功能完全一致）
+     *
+     * ⚠️ 不用 `@Suppress("DEPRECATION")` 一把压掉：那样在 API 28+ 上
+     *   也会走弃用路径，而弃用路径在某些新机型上有已知的输出配置问题。
+     */
+    private fun configureSession(
+        device: CameraDevice,
+        surface: android.view.Surface,
+        callback: CameraCaptureSession.StateCallback,
+        handler: android.os.Handler,
+    ) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            val config = android.hardware.camera2.params.SessionConfiguration(
+                android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR,
+                listOf(android.hardware.camera2.params.OutputConfiguration(surface)),
+                java.util.concurrent.Executor { handler.post(it) },
+                callback,
+            )
+            device.createCaptureSession(config)
+        } else {
+            @Suppress("DEPRECATION")
+            device.createCaptureSession(listOf(surface), callback, handler)
+        }
+    }
 
     /**
      * 拍照。

@@ -69,7 +69,26 @@ object ManageLockOrder {
     }
 
     /** 当前线程已持有的层级（按获取顺序）。 */
-    private val held = ThreadLocal.withInitial { mutableListOf<Level>() }
+    // ⚠️ **不用 `ThreadLocal.withInitial`**：它的 `Supplier<T>` 在 Android 的
+    //   平台上签名返回可空 `T?`，于是 `stack()` 的类型是
+    //   `MutableList<Level>?` —— 40+ 处「可空接收者上的不安全调用」警告，
+    //   而且真的可能在运行时 NPE。
+    //
+    //   显式 `ThreadLocal<MutableList<Level>>` 标注也压不住（平台签名如此）。
+    //
+    //   改用**普通 ThreadLocal + 显式判空**：语义完全等价（第一次访问时创建），
+    //   但类型干净、没有 NPE 风险，也不需要任何警告抑制。
+    private val held = ThreadLocal<MutableList<Level>>()
+
+    /** 取当前线程的持锁栈（首次访问时创建）。 */
+    private fun stack(): MutableList<Level> {
+        var s = held.get()
+        if (s == null) {
+            s = mutableListOf()
+            held.set(s)
+        }
+        return s
+    }
 
     /**
      * 检查能否获取某一层。
@@ -81,7 +100,7 @@ object ManageLockOrder {
      *   而那通常是设计问题（而不是需要可重入锁）。
      */
     fun checkAcquire(level: Level): String? {
-        val cur = held.get()
+        val cur = stack()
         val highest = cur.maxByOrNull { it.rank }
         if (highest != null && highest.rank >= level.rank) {
             return "已持有「${highest.label}」，不能再获取「${level.label}」" +
@@ -109,7 +128,7 @@ object ManageLockOrder {
             )
             return null
         }
-        held.get().add(level)
+        stack().add(level)
         return Handle(level)
     }
 
@@ -126,7 +145,7 @@ object ManageLockOrder {
         override fun close() {
             if (closed) return
             closed = true
-            val cur = held.get()
+            val cur = stack()
             val idx = cur.lastIndexOf(level)
             if (idx >= 0) cur.removeAt(idx)
         }
@@ -154,17 +173,17 @@ object ManageLockOrder {
      * @return null = 没持锁，可以等；非 null = 持着锁，**不能等**
      */
     fun checkNotHoldingWhileWaiting(): String? {
-        val cur = held.get()
+        val cur = stack()
         if (cur.isEmpty()) return null
         return "当前持有「${cur.joinToString("、") { it.label }}」，不能在此等待用户输入"
     }
 
     /** 当前线程持有的层级（诊断用）。 */
-    fun currentLevels(): List<Level> = held.get().toList()
+    fun currentLevels(): List<Level> = stack().toList()
 
     /** 清空（仅测试与异常兜底用）。 */
     fun reset() {
-        held.get().clear()
+        stack().clear()
     }
 
     /**
