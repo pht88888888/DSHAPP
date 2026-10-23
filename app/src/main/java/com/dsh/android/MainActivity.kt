@@ -2736,6 +2736,405 @@ class MainActivity : AppCompatActivity() {
             JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
         }
 
+        // ── 设备能力桥 ──────────────────────────────────────────────────
+
+        /** 权限判定（复用系统 API，供 DeviceCapability 用）。 */
+        private fun granted(perm: String): Boolean =
+            checkSelfPermission(perm) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        override fun deviceCapabilities(): String = runCatching {
+            val probes = com.dsh.android.device.DeviceCapability.probeAll(
+                this@MainActivity, ::granted,
+            )
+            com.dsh.android.device.DeviceCapability.toJson(probes)
+        }.getOrElse { t ->
+            JSONObject().put("error", t.message ?: "?").toString()
+        }
+
+        override fun deviceRequestPermission(cap: String): String = runCatching {
+            val c = com.dsh.android.device.DeviceCapability.Cap.of(cap)
+                ?: return@runCatching JSONObject()
+                    .put("ok", false).put("error", "未知能力: $cap").toString()
+
+            // 先查硬件：没有硬件的设备上申请权限毫无意义
+            val probe = com.dsh.android.device.DeviceCapability.probe(this@MainActivity, c, ::granted)
+            if (probe.availability == com.dsh.android.device.DeviceCapability.Availability.NO_HARDWARE) {
+                return@runCatching JSONObject()
+                    .put("ok", false).put("error", "本机无此硬件").toString()
+            }
+            val missing = probe.missingPerms
+            if (missing.isEmpty()) {
+                return@runCatching JSONObject()
+                    .put("ok", true).put("already", true).toString()
+            }
+            // ⚠️ 立即返回：真正的申请在主线程弹框，结果异步回来
+            mainHandler.post { requestPermissions(missing.toTypedArray(), PERM_REQ_DEVICE) }
+            com.dsh.android.device.DeviceCapability.recordRequest(c, granted = false)
+            JSONObject().apply {
+                put("ok", true)
+                put("requested", org.json.JSONArray().apply { missing.forEach { put(it) } })
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun deviceRequestStatus(): String = runCatching {
+            JSONObject().apply {
+                put("active", com.dsh.android.device.CapabilityRequests.activeCount())
+                put("camera", JSONObject().apply {
+                    put("used", com.dsh.android.device.CapabilityRequests
+                        .activeCount(com.dsh.android.device.DeviceCapability.Cap.CAMERA))
+                    put("limit", 2)
+                })
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("error", t.message ?: "?").toString()
+        }
+
+        override fun deviceCancelAll(cap: String): String = runCatching {
+            val c = com.dsh.android.device.DeviceCapability.Cap.of(cap)
+                ?: return@runCatching JSONObject()
+                    .put("ok", false).put("error", "未知能力: $cap").toString()
+            val n = com.dsh.android.device.CapabilityRequests.cancelAll(this@MainActivity, c)
+            JSONObject().put("ok", true).put("cancelled", n).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        // ── 受管媒体桥 ──────────────────────────────────────────────────
+
+        override fun mediaList(): String = runCatching {
+            val items = com.dsh.android.media.MediaRegistry.list(this@MainActivity)
+            JSONObject().apply {
+                put("total", com.dsh.android.media.MediaRegistry.totalBytes(this@MainActivity))
+                put("items", org.json.JSONArray().apply {
+                    items.forEach { (h, b) ->
+                        put(JSONObject().put("handle", h).put("bytes", b))
+                    }
+                })
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("error", t.message ?: "?").toString()
+        }
+
+        override fun mediaImport(base64: String): String = runCatching {
+            // ⚠️ base64 解码在主线程外做（大素材会卡住 UI）
+            val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+            when (val r = com.dsh.android.media.MediaRegistry.import(this@MainActivity, bytes)) {
+                is com.dsh.android.media.MediaRegistry.ImportResult.Ok ->
+                    JSONObject().apply {
+                        put("ok", true)
+                        put("handle", r.handle)
+                        put("kind", r.kind.id)
+                        put("bytes", r.bytes)
+                        put("deduped", r.deduped)
+                    }.toString()
+                is com.dsh.android.media.MediaRegistry.ImportResult.UnsupportedType ->
+                    JSONObject().put("ok", false).put("kind", "unsupported")
+                        .put("error", "不支持的格式：${r.detected}").toString()
+                is com.dsh.android.media.MediaRegistry.ImportResult.TooLarge ->
+                    JSONObject().put("ok", false).put("kind", "too-large")
+                        .put("error", "文件过大（${r.bytes} > ${r.max}）").toString()
+                is com.dsh.android.media.MediaRegistry.ImportResult.QuotaExceeded ->
+                    JSONObject().put("ok", false).put("kind", "quota")
+                        .put("error", "配额已满（${r.total / 1024 / 1024}MB）").toString()
+                is com.dsh.android.media.MediaRegistry.ImportResult.Failed ->
+                    JSONObject().put("ok", false).put("error", r.reason).toString()
+            }
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun mediaRemove(handle: String): String = runCatching {
+            val ok = com.dsh.android.media.MediaRegistry.remove(this@MainActivity, handle)
+            JSONObject().put("ok", ok).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        // ── 磁盘清理桥 ──────────────────────────────────────────────────
+
+        override fun diskStatus(): String = runCatching {
+            val free = filesDir.usableSpace
+            JSONObject().apply {
+                put("freeMb", free / 1024 / 1024)
+                put("limitMb", com.dsh.android.manage.DiskCleanup.LOW_WATER_BYTES / 1024 / 1024)
+                put("lowWater", com.dsh.android.manage.DiskCleanup.isLowWater(this@MainActivity))
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("error", t.message ?: "?").toString()
+        }
+
+        override fun diskCleanup(): String = runCatching {
+            // 目标：达到低水位之上
+            val target = com.dsh.android.manage.DiskCleanup.LOW_WATER_BYTES
+            val r = com.dsh.android.manage.DiskCleanup.freeUntil(this@MainActivity, target)
+            JSONObject().apply {
+                put("ok", true)
+                put("freedMb", r.freedBytes / 1024 / 1024)
+                put("deleted", r.deleted.size)
+                put("skipped", r.skipped.size)
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        // ── 实际采集动作 ────────────────────────────────────────────────
+
+        /** 正在跑的相机操作（防止并发）。 */
+        @Volatile private var cameraBusy = false
+
+        /** 音频采集会话。 */
+        @Volatile private var audioSession: com.dsh.android.device.AudioCapture.Session? = null
+        /** 录音累积的 PCM（有上限，防 OOM）。 */
+        private val audioBuf = java.io.ByteArrayOutputStream()
+        private val AUDIO_BUF_MAX = 4 * 1024 * 1024   // 4MB ≈ 130 秒 16kHz/mono
+
+        /** 定位会话。 */
+        @Volatile private var locationSession: com.dsh.android.device.LocationCapability.ContinuousSession? = null
+
+        override fun cameraCapture(): String = runCatching {
+            // ① 配额检查（走统一请求管理）
+            when (val out = com.dsh.android.device.CapabilityRequests.request(
+                this@MainActivity,
+                com.dsh.android.device.DeviceCapability.Cap.CAMERA,
+                mapOf("mode" to "capture"),
+            )) {
+                is com.dsh.android.device.CapabilityRequests.Outcome.QuotaExceeded ->
+                    return@runCatching JSONObject().put("ok", false)
+                        .put("error", "相机已被占用（配额 ${out.limit}）").toString()
+                is com.dsh.android.device.CapabilityRequests.Outcome.Merged ->
+                    return@runCatching JSONObject().put("ok", true)
+                        .put("merged", true).put("started", true).toString()
+                else -> Unit
+            }
+            if (cameraBusy) {
+                return@runCatching JSONObject().put("ok", false)
+                    .put("error", "上一次拍照还没结束").toString()
+            }
+            cameraBusy = true
+
+            com.dsh.android.device.CameraCapability.capturePhoto(this@MainActivity) { r ->
+                cameraBusy = false
+                when (r) {
+                    is com.dsh.android.device.CameraCapability.CaptureResult.Ok -> {
+                        // 把照片导入受管资源区（拿句柄）
+                        runCatching {
+                            val bytes = r.photo.file.readBytes()
+                            com.dsh.android.media.MediaRegistry.import(this@MainActivity, bytes)
+                            // ⚠️ 导入后删掉临时文件（受管区已有副本）
+                            r.photo.file.delete()
+                        }
+                        Log.i(DshApplication.TAG, "拍照完成：${r.photo.width}x${r.photo.height}")
+                    }
+                    else -> Log.w(DshApplication.TAG, "拍照失败：$r")
+                }
+            }
+            JSONObject().put("ok", true).put("started", true).toString()
+        }.getOrElse { t ->
+            cameraBusy = false
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun cameraRecord(durationMs: Int): String = runCatching {
+            if (cameraBusy) {
+                return@runCatching JSONObject().put("ok", false)
+                    .put("error", "相机正忙").toString()
+            }
+            cameraBusy = true
+            // 时长上限 60 秒（与 RecordConfig 默认一致）
+            val dur = durationMs.coerceIn(1_000, 60_000)
+            val cfg = com.dsh.android.device.CameraCapability.RecordConfig(maxDurationMs = dur.toLong())
+
+            com.dsh.android.device.CameraCapability.recordVideo(
+                this@MainActivity, cfg,
+                onStarted = { Log.i(DshApplication.TAG, "开始录像（${dur}ms）") },
+            ) { r ->
+                cameraBusy = false
+                when (r) {
+                    is com.dsh.android.device.CameraCapability.RecordResult.Ok ->
+                        Log.i(DshApplication.TAG, "录像完成：${r.video.sizeBytes} 字节")
+                    is com.dsh.android.device.CameraCapability.RecordResult.MaxDurationReached ->
+                        Log.i(DshApplication.TAG, "录像达到上限，已保存")
+                    else -> Log.w(DshApplication.TAG, "录像失败：$r")
+                }
+            }
+            JSONObject().put("ok", true).put("started", true).toString()
+        }.getOrElse { t ->
+            cameraBusy = false
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun audioStart(): String = runCatching {
+            if (audioSession?.isRunning() == true) {
+                return@runCatching JSONObject().put("ok", true)
+                    .put("already", true).toString()
+            }
+            audioBuf.reset()
+            val sess = com.dsh.android.device.AudioCapture.start(
+                this@MainActivity,
+                sink = { data, size ->
+                    // ⚠️ 有上限：不设的话长时间录音会 OOM
+                    synchronized(audioBuf) {
+                        if (audioBuf.size() + size <= AUDIO_BUF_MAX) {
+                            audioBuf.write(data, 0, size)
+                        }
+                    }
+                },
+                onEnd = { reason -> Log.i(DshApplication.TAG, "录音结束：${reason.id}") },
+            )
+            audioSession = sess
+            JSONObject().put("ok", true).put("started", sess.isRunning()).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun audioStop(): String = runCatching {
+            audioSession?.stop()
+            audioSession = null
+            val n = synchronized(audioBuf) { audioBuf.size() }
+            JSONObject().put("ok", true).put("bytes", n).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun audioPlay(base64: String): String = runCatching {
+            val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+            // ⚠️ 用与采集**完全对应**的格式（formatForCapture）——
+            //   否则 16kHz 数据按 44.1kHz 播放会变成快进 2.76 倍
+            val fmt = com.dsh.android.device.AudioPlayback.formatForCapture()
+            val sess = com.dsh.android.device.AudioPlayback.session(this@MainActivity, fmt)
+            if (!sess.isAvailable()) {
+                return@runCatching JSONObject().put("ok", false)
+                    .put("error", "本机不支持该音频格式").toString()
+            }
+            val err = sess.start()
+            if (err != null) {
+                sess.stop()
+                return@runCatching JSONObject().put("ok", false).put("error", err).toString()
+            }
+            // 一次性写完再停（短音频场景）
+            val written = sess.write(bytes)
+            sess.stop()
+            JSONObject().put("ok", written > 0).put("bytes", written).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun locationOnce(): String = runCatching {
+            com.dsh.android.device.LocationCapability.requestSingle(
+                this@MainActivity, ::granted,
+            ) { r ->
+                when (r) {
+                    is com.dsh.android.device.LocationCapability.SingleResult.Ok ->
+                        Log.i(
+                            DshApplication.TAG,
+                            "定位：${r.fix.latitude},${r.fix.longitude}" +
+                                " ${r.fix.accuracyLabel()} ${r.fix.sourceLabel()}",
+                        )
+                    else -> Log.w(DshApplication.TAG, "定位失败：$r")
+                }
+            }
+            JSONObject().put("ok", true).put("started", true).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun locationStart(): String = runCatching {
+            locationSession?.let {
+                if (it.isRunning()) {
+                    return@runCatching JSONObject().put("ok", true)
+                        .put("already", true).toString()
+                }
+            }
+            val sess = com.dsh.android.device.LocationCapability.ContinuousSession(
+                this@MainActivity,
+                onFix = { f ->
+                    Log.d(DshApplication.TAG, "持续定位：${f.accuracyLabel()}")
+                },
+                onEnd = { reason -> Log.i(DshApplication.TAG, "持续定位结束：${reason.id}") },
+            )
+            val err = sess.start()
+            if (err != null) {
+                return@runCatching JSONObject().put("ok", false).put("error", err).toString()
+            }
+            locationSession = sess
+            JSONObject().put("ok", true).put("started", true).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun locationStop(): String = runCatching {
+            locationSession?.stop()
+            locationSession = null
+            JSONObject().put("ok", true).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        // ── 语义事件（姿态类）──────────────────────────────────────────
+
+        /** 语义事件检测器与会话。 */
+        @Volatile private var motionDetector: com.dsh.android.device.MotionEvents.Detector? = null
+        @Volatile private var motionSession: com.dsh.android.device.SensorCapability.Session? = null
+        /** 重力低通滤波（设备无 TYPE_GRAVITY 时用）。 */
+        @Volatile private var gravityFilter: com.dsh.android.device.MotionEvents.GravityFilter? = null
+
+        override fun motionStart(): String = runCatching {
+            if (motionSession?.isRunning() == true) {
+                return@runCatching JSONObject().put("ok", true)
+                    .put("already", true).toString()
+            }
+            val types = com.dsh.android.device.MotionEvents.recommendedSensors(this@MainActivity)
+            if (types.isEmpty()) {
+                return@runCatching JSONObject().put("ok", false)
+                    .put("error", "本机无重力/加速度传感器").toString()
+            }
+            // 有 TYPE_GRAVITY 就直接用（系统已滤波）；否则要自己滤波
+            val hasGravity = types.contains(android.hardware.Sensor.TYPE_GRAVITY)
+            if (!hasGravity) gravityFilter = com.dsh.android.device.MotionEvents.GravityFilter()
+
+            val det = com.dsh.android.device.MotionEvents.Detector { occ ->
+                Log.i(DshApplication.TAG, "语义事件：${occ.event.id}（${occ.detail}）")
+            }
+            motionDetector = det
+
+            val sess = com.dsh.android.device.SensorCapability.subscribe(
+                this@MainActivity, types,
+                onSample = { sample ->
+                    // ⚠️ 只在有 3 个分量时喂（加速度/重力都是 3 轴）
+                    if (sample.values.size >= 3) {
+                        val g = gravityFilter?.feed(
+                            sample.values[0], sample.values[1], sample.values[2],
+                        )
+                        if (g != null) {
+                            det.feed(g[0], g[1], g[2], System.currentTimeMillis())
+                        } else {
+                            det.feed(
+                                sample.values[0], sample.values[1], sample.values[2],
+                                System.currentTimeMillis(),
+                            )
+                        }
+                    }
+                },
+                onEnd = { Log.i(DshApplication.TAG, "语义事件检测结束") },
+            )
+            motionSession = sess
+            JSONObject().put("ok", true).put("started", sess.isRunning()).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun motionStop(): String = runCatching {
+            motionSession?.stop()
+            motionSession = null
+            motionDetector = null
+            gravityFilter = null
+            JSONObject().put("ok", true).toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
         override fun layoutState(): String = runCatching {
             // ⚠️ 主动重算一次：桥被调时窗口尺寸一定是最终的，
             //   比依赖「onCreate 时算的值」更准（分屏启动时 onCreate 的度量可能不准）。
@@ -4391,6 +4790,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     internal companion object {
+        /** 设备能力权限请求码。 */
+        private const val PERM_REQ_DEVICE = 0x4A01
+
         /**
          * 界面就绪后等多久才执行自动备份。
          *

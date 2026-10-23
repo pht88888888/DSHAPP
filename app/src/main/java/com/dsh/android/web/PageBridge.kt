@@ -481,4 +481,165 @@ interface PageBridge {
      * ⚠️ 设置后会**立即重算**并推送新布局 —— 不能让用户等下一次旋转才生效。
      */
     fun layoutSetMode(mode: String): String
+
+    // ── 设备能力（设计说明 §4.14.1：能力发现 + 按需授权）──────────────
+    //
+    // ⚠️ 这一组刻意**只做「发现」与「状态查询」**，不做实际采集 ——
+    //   采集是「用户主动动作」（拍照/录音），不该由页面脚本单方面发起。
+    //   页面能做的只是「问能不能用」和「把结果告诉用户」。
+
+    /**
+     * 发现全部设备能力。
+     *
+     * ```json
+     * [{"cap":"camera","label":"相机","availability":"ready","detail":""},
+     *  {"cap":"mic","label":"麦克风","availability":"need-permission",
+     *   "missing":["android.permission.RECORD_AUDIO"]}]
+     * ```
+     *
+     * ⚠️ 返回**三态**（ready / need-permission / no-hardware）而不是布尔：
+     *   用户对这三种状态的操作完全不同。
+     */
+    fun deviceCapabilities(): String
+
+    /**
+     * 申请某项能力的权限。
+     *
+     * @param cap 能力 id（`camera` / `mic` / `location` / `bluetooth` / `sensor`）
+     * @return `{"ok":true,"requested":["..."]}` —— **不保证授予**，
+     *   结果要再查 [deviceCapabilities]
+     *
+     * ⚠️ 只是**发起**申请（会弹系统框）。真正的结果异步回来，
+     *   所以这里不返回「是否授予」—— 那会是假的。
+     */
+    fun deviceRequestPermission(cap: String): String
+
+    /**
+     * 当前进行中的能力请求数（配额状态）。
+     *
+     * ```json
+     * {"active":2,"camera":{"used":1,"limit":2}}
+     * ```
+     */
+    fun deviceRequestStatus(): String
+
+    /**
+     * 取消某类能力的全部请求（撤权/用户取消时调）。
+     *
+     * @return `{"ok":true,"cancelled":3}`
+     */
+    fun deviceCancelAll(cap: String): String
+
+    // ── 受管媒体资源（设计说明 §4.13：资源句柄）──────────────────────
+
+    /**
+     * 列出受管资源区的素材。
+     *
+     * ```json
+     * {"total":1234567,"items":[{"handle":"res:abc…","bytes":12345}]}
+     * ```
+     *
+     * ⚠️ **只返回句柄，不返回路径**：插件拿不到真实文件路径。
+     */
+    fun mediaList(): String
+
+    /**
+     * 导入一份素材（base64）。
+     *
+     * @param base64 素材内容
+     * @return `{"ok":true,"handle":"res:abc…","kind":"png","bytes":1234,"deduped":false}`
+     *   或 `{"ok":false,"error":"...","kind":"unsupported"}` 等
+     *
+     * ⚠️ 类型由**文件头魔数**判定，不信扩展名。
+     */
+    fun mediaImport(base64: String): String
+
+    /** 删除一份素材（按句柄）。 */
+    fun mediaRemove(handle: String): String
+
+    // ── 磁盘清理（设计说明 §6.5.4：低水位）──────────────────────────
+
+    /**
+     * 磁盘状态与建议。
+     *
+     * ```json
+     * {"freeMb":150,"lowWater":true,"limitMb":200}
+     * ```
+     */
+    fun diskStatus(): String
+
+    /**
+     * 按次序清理（用户主动点「清理」时调）。
+     *
+     * @return `{"ok":true,"freedMb":80,"deleted":12,"skipped":2}`
+     *
+     * ⚠️ 只清**可再生**内容（缓存/旧日志/备份临时产物），
+     *   **不删用户数据** —— 那需要用户自己决定。
+     */
+    fun diskCleanup(): String
+
+    // ── 实际采集动作（设计说明 §4.14.1a：正向闭环）────────────────────
+    //
+    // ⚠️ 这些会**真的占用硬件**（相机/麦克风），所以必须显式调用，
+    //   且每项都有超时与资源释放。
+
+    /**
+     * 拍一张照片。
+     *
+     * @return `{"ok":true,"handle":"res:…","width":1280,"height":720,"orientation":90}`
+     *
+     * ⚠️ 异步：真正的结果通过 [onStatus] 或后续 `mediaList()` 体现。
+     *   本方法返回 `{"started":true}` 表示**已受理**，不代表拍到了。
+     */
+    fun cameraCapture(): String
+
+    /**
+     * 录一段视频。
+     *
+     * @param durationMs 录制时长（上限 60000）
+     * @return `{"started":true,"handle":null}` —— 完成后再查 `mediaList()`
+     */
+    fun cameraRecord(durationMs: Int): String
+
+    /**
+     * 开始录音（语音输入用）。
+     *
+     * @return `{"started":true}` —— 数据通过 `audioPoll()` 拉取
+     */
+    fun audioStart(): String
+
+    /** 停止录音并返回累积的采样数。 */
+    fun audioStop(): String
+
+    /**
+     * 播放一段 PCM（base64）。
+     *
+     * @return `{"ok":true,"bytes":N}`
+     */
+    fun audioPlay(base64: String): String
+
+    /**
+     * 单次定位。
+     *
+     * @return `{"started":true}` —— 结果通过后续查询或事件获取
+     */
+    fun locationOnce(): String
+
+    /** 开始持续定位（退后台自动暂停）。 */
+    fun locationStart(): String
+
+    /** 停止持续定位。 */
+    fun locationStop(): String
+
+    /**
+     * 开始语义事件检测（摇动之外的翻转/抬腕/静止）。
+     *
+     * ⚠️ 摇动已有独立实现（`ShakeDetector`），这里补的是**姿态类**事件。
+     *   文档把两者都归为「语义事件」但算法不同：
+     *   摇动看**运动**（积分速度），翻转/抬腕看**姿态**（重力方向）。
+     */
+    fun motionStart(): String
+
+    /** 停止语义事件检测。 */
+    fun motionStop(): String
 }
