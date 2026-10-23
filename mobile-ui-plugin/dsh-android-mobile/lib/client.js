@@ -3547,9 +3547,42 @@ window.__ModuleLoader__.load({
 			// 只在「曾经是移动模式、现在不是」时调用（平板旋转、跨断点缩放）。
 			// 纯鼠标桌面**永不进入**移动模式 → 对该场景是恒等操作（零风险）。
 			// CSS 部分已由 data-mobile 属性移除自动失效，这里只收拾 JS 留下的痕迹。
+			/**
+			 * 拆解移动模式留下的**一切**。
+			 *
+			 * ## 文档要求（开发指导 §G5 任务 3）
+			 *
+			 * > 不兼容 DOM 的局部输入区/顶栏增强关闭并回官方界面；
+			 * > **清理样式、监听、观察器与借用控件**。
+			 *
+			 * 四类必须逐项清理，缺一类都会留下「半套样式」——
+			 * 那比完全不适配更难看，而且用户会以为是官方 bug。
+			 *
+			 * | 类别 | 清理方式 |
+			 * |---|---|
+			 * | 观察器 | `disconnect()` |
+			 * | 定时器 | `clearTimeout` / `cancelAnimationFrame` |
+			 * | 样式 | 移除自建节点 + 复位内联覆盖 + 删 CSS 变量 |
+			 * | 借用控件 | 恢复官方 toggle 的折叠状态 |
+			 *
+			 * ⚠️ **不复位 `mpShellBuilt`**：全局监听器只该注册一次，
+			 *   复位它会让重进窄屏时重复注册（三个都泄漏）。
+			 *   重进的外壳重建由 `mpBuildShellForMobile()`（幂等）负责。
+			 */
 			function mpTeardownMobile() {
+				// ── ① 观察器 ──────────────────────────────────────────
 				if (mpCollapseObs) { mpCollapseObs.disconnect(); mpCollapseObs = null; }
+				// ── ② 定时器 ──────────────────────────────────────────
 				if (mpCollapseFallback !== null) { clearTimeout(mpCollapseFallback); mpCollapseFallback = null; }
+				// ⚠️ 关闭抽屉的定时器：拆解时若还在飞，回调会去点官方 toggle、
+				//   操作已经清理掉的 DOM —— 那会在退出移动模式后**莫名其妙折叠一次侧栏**。
+				if (mpCloseTimer !== null) { clearTimeout(mpCloseTimer); mpCloseTimer = null; }
+				// ⚠️ 居中留白的 rAF：不取消的话回调会在属性摘除后继续写 CSS 变量，
+				//   把「居中偏移」留在官方布局上。
+				if (mpCenterRaf) {
+					try { cancelAnimationFrame(mpCenterRaf); } catch (e) { /* 静默 */ }
+					mpCenterRaf = 0;
+				}
 				mpClosing = false;
 				try {
 					// ① 自建节点：汉堡按钮 / 遮罩 / 设置页返回条 / 分组小标题
@@ -3577,7 +3610,24 @@ window.__ModuleLoader__.load({
 					document.querySelectorAll(".qSYn7G_card").forEach((c) => {
 						try { c.style.display = ""; } catch (e) { /* 静默 */ }
 					});
-					// ④ 标记位：清掉以便再次进入窄屏时能重新处理
+					// ④ CSS 变量：清掉移动模式写在 root 上的自定义属性
+				//
+				// ⚠️ 这些变量虽然也在 `mpSyncHeaderCenter()` 的退出分支里清，
+				//   但那是**依赖外部调用**——teardown 应该自洽，
+				//   不能假设调用方一定先调了别的函数。
+				//   不清理的后果：官方布局上留着 `--mp-hdr-h`（顶栏高度），
+				//   而官方 CSS 不认这个变量，但它会**继承给子元素**，
+				//   任何用到同名变量的样式都会拿到错误值。
+				try {
+					const root = document.documentElement;
+					["--mp-hdr-h", "--mp-hdr-padl"].forEach((k) => {
+						try {
+							if (root.style.getPropertyValue(k)) root.style.removeProperty(k);
+						} catch (e) { /* 静默 */ }
+					});
+				} catch (e) { /* 静默 */ }
+
+				// ⑤ 标记位：清掉以便再次进入窄屏时能重新处理
 					document.querySelectorAll("[data-mp-ready]").forEach((n) => { try { delete n.dataset.mpReady; } catch (e) {} });
 					document.querySelectorAll("[data-mp-plugin-group]").forEach((n) => { try { delete n.dataset.mpPluginGroup; } catch (e) {} });
 					document.querySelectorAll("[data-mp-group]").forEach((n) => { try { delete n.dataset.mpGroup; } catch (e) {} });
