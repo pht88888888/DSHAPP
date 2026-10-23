@@ -41,10 +41,94 @@ class EngineService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * 锁屏/亮屏接收器（开发指导 §G6：「**隐藏/锁屏/节能暂停无用解码与循环**」）。
+     *
+     * ## ⚠️ 为什么注册在服务里而不是 Activity
+     *
+     * 悬浮球在**后台**显示（用户切走了 App），而锁屏恰恰发生在后台。
+     * Activity 在后台时可能已被销毁，它的接收器也就没了 —— 而球还在，
+     * 视频还在解码。
+     *
+     * 前台服务（`START_STICKY`）是唯一「锁屏时仍然活着」的组件。
+     *
+     * ⚠️ 用**动态注册**而不是清单静态声明：`ACTION_SCREEN_ON/OFF` 是
+     *   受保护广播，静态声明收不到（Android 8+ 的限制）。
+     *
+     * ⚠️ 注册时机：`onCreate` 一次即可。服务被系统重建时会重新走 `onCreate`。
+     */
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    Log.i(DshApplication.TAG, "锁屏：暂停悬浮球视频解码")
+                    runCatching { FloatingBubble.onScreenLocked(this@EngineService) }
+                        .onFailure { Log.w(DshApplication.TAG, "锁屏暂停失败: ${it.message}") }
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    Log.i(DshApplication.TAG, "亮屏：恢复悬浮球视频解码")
+                    runCatching { FloatingBubble.onScreenUnlocked(this@EngineService) }
+                        .onFailure { Log.w(DshApplication.TAG, "亮屏恢复失败: ${it.message}") }
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    // ⚠️ 解锁（不只是亮屏）单独一个事件：亮屏后仍可能是锁屏界面，
+                    //   那时球不可见，没必要恢复解码。真正该恢复的是「已解锁」。
+                    Log.i(DshApplication.TAG, "解锁：恢复悬浮球视频解码")
+                    runCatching { FloatingBubble.onScreenUnlocked(this@EngineService) }
+                        .onFailure { Log.w(DshApplication.TAG, "解锁恢复失败: ${it.message}") }
+                }
+                // ── 节能模式（开发指导 §G6 / 验收矩阵第 15 条）──────────────
+                //
+                // 文档：「隐藏、锁屏和**节能**时停止不必要的绘制、解码和物理循环」。
+                //
+                // ⚠️ 用**两个信号**而不是一个：
+                //   - POWER_SAVE_MODE_CHANGED：系统进入/退出省电模式
+                //   - ACTION_BATTERY_LOW：电量低（此时系统可能还没切省电，但用户需要）
+                //
+                //   只监听前者的话，「电量 5% 但还没开省电」的情况会继续耗电，
+                //   而那正是最需要停的时刻。
+                android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> {
+                    val saving = powerManager?.isPowerSaveMode ?: false
+                    Log.i(DshApplication.TAG, "省电模式变化: $saving")
+                    runCatching { FloatingBubble.onPowerSave(this@EngineService, saving) }
+                        .onFailure { Log.w(DshApplication.TAG, "省电切换失败: ${it.message}") }
+                }
+                Intent.ACTION_BATTERY_LOW -> {
+                    Log.i(DshApplication.TAG, "电量低：进入节能暂停")
+                    runCatching { FloatingBubble.onPowerSave(this@EngineService, true) }
+                        .onFailure { Log.w(DshApplication.TAG, "电量低暂停失败: ${it.message}") }
+                }
+            }
+        }
+    }
+
+    /**
+     * 电源管理器（取不到时返回 null）。
+     *
+     * ⚠️ 用 `getSystemService` 而不是缓存字段：服务可能被系统重建，
+     *   缓存会在重建后失效。这个调用本身很便宜（系统缓存了实例）。
+     */
+    private val powerManager: android.os.PowerManager?
+        get() = getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+
     override fun onCreate() {
         super.onCreate()
         createChannel()
         acquireWakeLock()
+        // 锁屏/亮屏监听（见 screenReceiver 的说明）
+        runCatching {
+            registerReceiver(
+                screenReceiver,
+                android.content.IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_USER_PRESENT)
+                    // 节能（见 screenReceiver 里的说明）
+                    addAction(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+                    addAction(Intent.ACTION_BATTERY_LOW)
+                },
+            )
+        }.onFailure { Log.w(DshApplication.TAG, "注册锁屏监听失败: ${it.message}") }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -62,6 +146,10 @@ class EngineService : Service() {
 
     override fun onDestroy() {
         alive = false
+        // ⚠️ 必须注销：不注销会泄漏接收器，而服务被系统重建时会再注册一个，
+        //   于是锁屏时收到**两次**暂停（虽然幂等，但日志会重复，排查时误导）。
+        runCatching { unregisterReceiver(screenReceiver) }
+            .onFailure { Log.w(DshApplication.TAG, "注销锁屏监听失败: ${it.message}") }
         releaseWakeLock()
         super.onDestroy()
     }

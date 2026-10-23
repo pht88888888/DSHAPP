@@ -434,6 +434,49 @@ class FloatingBubble(private val context: Context) {
         }
 
         /**
+         * **进入节能模式**（开发指导 §G6 / 验收矩阵第 15 条）。
+         *
+         * 文档：「隐藏、锁屏和**节能**时停止不必要的**绘制、解码和物理循环**」。
+         *
+         * ## ⚠️ 三样都要停，不只是视频
+         *
+         * | 项 | 为什么 |
+         * |---|---|
+         * | 视频解码 | 最耗电（VP9 软解能吃一个核） |
+         * | 帧动画 | `postDelayed` 每帧唤醒 CPU，短间隔时几乎不睡 |
+         * | **物理循环** | `postOnAnimation` 每帧算重力/碰撞，即使球静止也在跑 |
+         *
+         * 第三项最容易被漏：球停在那里看起来「没动」，但物理 tick 仍在
+         * 每帧执行 —— 那是持续的 CPU 占用。
+         *
+         * ## ⚠️ 与锁屏的区别
+         *
+         * 锁屏是**用户看不到**，节能是**系统要省电**。两者都该停，
+         * 但节能时可能屏幕还亮着（用户在看别的 App）——
+         * 所以球**保留最后一帧画面**，不 release（那样球会消失）。
+         */
+        fun onPowerSave(context: Context, saveMode: Boolean) {
+            val inst = instance ?: return
+            if (saveMode) {
+                inst.videoLayer?.pause()
+                inst.stopFramePlayer()
+                inst.stopThrow()
+                // ⚠️ 不停 shake 与 ime 监听：它们是「用户可能随时用」的输入响应，
+                //   停了会让球在节能期间完全没反应，用户以为坏了。
+                EventLog.record("bubble.powersave.on")
+                Log.i(TAG, "节能模式：已暂停解码、帧动画与物理循环")
+            } else {
+                inst.videoLayer?.resume()
+                // 帧动画与物理由各自的下一次触发自然恢复：
+                // 帧动画靠 applyAppearance / 动作切换，物理靠用户拖动。
+                // ⚠️ 不主动重启它们：节能结束后球可能是静止的，
+                //   主动重启物理循环反而会凭空开始运动。
+                EventLog.record("bubble.powersave.off")
+                Log.i(TAG, "节能模式：已恢复解码")
+            }
+        }
+
+        /**
          * 状态更新入口。由 `EngineService.updateStatus()` 顺带调用。
          *
          * ⚠️ 可能在**任意线程**被调用（JS 桥线程），内部自己切主线程。
