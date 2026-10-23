@@ -2908,10 +2908,70 @@ window.__ModuleLoader__.load({
 			}, 50);
 		}
 
+		/**
+		 * 检查官方 DOM 是否还兼容我们的增强（开发指导 §G5 任务 3）。
+		 *
+		 * 文档：「**不兼容 DOM 的局部输入区/顶栏增强关闭并回官方界面**；
+		 * 清理样式、监听、观察器与借用控件」。
+		 *
+		 * ## ⚠️ 判据用「元素是否存在」而不是「选择器是否匹配过」
+		 *
+		 * 官方前端升级后 class 名会变（CSS Module 的 hash 每次发版都变），
+		 * 但「输入区还在不在」「顶栏还在不在」这个**事实**更稳。
+		 * 用选择器判会导致「官方改了个 class 名，我们就以为整个界面没了」。
+		 *
+		 * ## ⚠️ 不兼容时是「回官方界面」而不是「跳过增强」
+		 *
+		 * 两者不同：跳过增强会留下**半套样式**（比如改了背景色但没改布局），
+		 * 比完全不管更难看，而且用户会以为是官方 bug。
+		 *
+		 * @returns {boolean} true = 可以继续用移动增强；false = 必须回官方界面
+		 */
+		function mpIsDomCompatible() {
+			try {
+				// 输入区：官方用 contenteditable 或 textarea
+				const hasInput = !!document.querySelector(
+					'[contenteditable="true"], textarea, [role="textbox"]'
+				);
+				// 顶栏：官方侧栏 + 顶栏容器
+				const hasTopBar = !!document.querySelector('.hHd-Xa_root') ||
+					!!document.querySelector('.wSkVaW_viewArea');
+				// 侧栏列：抽屉机制依赖它
+				const hasSidebar = !!document.querySelector('.pI_x6G_sidebarCol');
+
+				if (!hasInput || !hasTopBar || !hasSidebar) {
+					// ⚠️ 只记一次（避免 observer 每帧刷屏）
+					if (!mpDomIncompatReported) {
+						mpDomIncompatReported = true;
+						console.warn(
+							"[dsh-android-mobile] 官方 DOM 不兼容，已回退官方界面：",
+							"input=" + hasInput, "topBar=" + hasTopBar, "sidebar=" + hasSidebar
+						);
+					}
+					return false;
+				}
+				// 恢复兼容后又坏了再报一次
+				mpDomIncompatReported = false;
+				return true;
+			} catch (e) {
+				// ⚠️ 判据本身出错时**保守地认为不兼容**（fail closed）：
+				//   宁可回官方界面（难看但能用），也不要带着半套样式硬撑。
+				return false;
+			}
+		}
+
+		/** 是否已经报过「DOM 不兼容」（避免刷屏）。 */
+		var mpDomIncompatReported = false;
+
 		function mpSyncMobileAttr() {				// ⚠️ 修复 40：改由 mpIsMobile()（窄屏 且 非鼠标设备）决定 data-mobile，
 				// 全部 CSS 作用域都挂在这个属性上 → CSS 与 JS 永远同一个判据。
 				// 离开移动模式时顺手拆掉我们留下的痕迹（平板旋转 / 跨断点缩放）。
-				const on = mpIsMobile();
+				//
+				// ⚠️ **DOM 不兼容时强制回官方界面**（开发指导 §G5 任务 3）：
+				//   即使 mpIsMobile() 说该用移动布局，只要 DOM 不兼容就不能增强 ——
+				//   否则会留下半套样式（比完全不管更难看）。
+				const compatible = mpIsDomCompatible();
+				const on = mpIsMobile() && compatible;
 				const has = document.documentElement.hasAttribute("data-mobile");
 				if (on && !has) {
 					document.documentElement.setAttribute("data-mobile", "");
