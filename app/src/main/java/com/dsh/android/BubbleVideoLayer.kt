@@ -76,6 +76,23 @@ class BubbleVideoLayer(
     /** 页面加载失败后是否已经报过（避免刷日志）。 */
     private var warned = false
 
+    /**
+     * **受管内容的白名单目录**。
+     *
+     * ⚠️ 两个目录都必须放行：
+     * - `bubble-player/`：我们生成的播放器页面
+     * - `bubble-videos/`：视频素材（页面通过 `<video src>` 引用）
+     *
+     * ⚠️ 用**目录列表**而不是单个 root：页面和素材在不同目录，
+     *   只放行一个会让另一个加载失败（表现为黑屏，且不报错）。
+     */
+    private val mediaRoots: List<java.io.File> by lazy {
+        listOf(
+            java.io.File(context.filesDir, PLAYER_DIR),
+            java.io.File(context.filesDir, com.dsh.android.BubbleVideos.DIR),
+        )
+    }
+
     /** 是否已经创建过 WebView（创建很贵，只在真有视频素材时做）。 */
     val created: Boolean get() = web != null
 
@@ -127,10 +144,78 @@ class BubbleVideoLayer(
             // 视频要自动播放：muted + 允许无手势播放（WebView 侧由 muted 兜住）。
             mediaPlaybackRequiresUserGesture = false
             domStorageEnabled = false
+
+            // ── 安全加固（开发指导 §G6）──────────────────────────────────
+            //
+            // 文档：「媒体 WebView **只加载受管内容，不开放任意网页或插件脚本
+            // 执行口**」。
+            //
+            // ⚠️ **下面每一项都必须显式关**，不能依赖默认值 ——
+            //   其中两条的默认值在旧 API 上是**开**的：
+            //
+            //   | 设置 | 默认 | 风险 |
+            //   |---|---|---|
+            //   | allowFileAccessFromFileURLs | API<16 为 true | file:// 页面可读**其他** file:// |
+            //   | allowUniversalAccessFromFileURLs | API<16 为 true | file:// 页面可读**任意**本地文件并发网络请求 |
+            //
+            //   本页面是通过 `file://` 加载的（见下面的 loadUrl），所以这两条
+            //   一旦为 true，页面里任何脚本都能把 `/data/data/com.dsh.android/`
+            //   下的凭据文件读出来 —— 而页面里有我们注入的 `BubbleNative` 桥。
+            //
+            //   当前页面内容是我们自己生成的（受管），但**纵深防御**：
+            //   万一素材路径被替换成攻击者可控的内容，这几道门能挡住升级。
+            allowFileAccess = true              // 需要读我们自己的 html/视频文件
+            allowContentAccess = false          // 不需要 content:// 
+            allowFileAccessFromFileURLs = false // ⚠️ 关键：file:// 不能读其他 file://
+            allowUniversalAccessFromFileURLs = false // ⚠️ 关键：file:// 不能读任意文件
+            blockNetworkLoads = true            // ⚠️ 媒体层不需要任何网络
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            // 关掉「安全浏览」：它会在后台拉 Google 的名单，而我们这里
+            // 只加载本地受管内容，没有这个需求（也少一个网络出口）。
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                safeBrowsingEnabled = false
+            }
         }
 
         w.addJavascriptInterface(Bridge(), "BubbleNative")
         w.webViewClient = object : WebViewClient() {
+            /**
+             * **拦截一切非受管导航**（开发指导 §G6）。
+             *
+             * 文档：「媒体 WebView **只加载受管内容，不开放任意网页**」。
+             *
+             * ⚠️ 为什么必须拦：页面里有我们注入的 `BubbleNative` 桥，
+             *   如果页面被导航到任意网址，那个网站的脚本就能调用桥 ——
+             *   那是「把桥交给了外部内容」。
+             *
+             * ⚠️ 判据用「是不是我们的文件」而不是「是不是 file://」：
+             *   后者允许加载 `/data/data/com.dsh.android/` 下任意文件
+             *   （比如凭据），那正是要防的。
+             */
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+            ): Boolean {
+                val url = request?.url?.toString() ?: return true   // 拿不到就拦
+                return !isManagedUrl(url)
+            }
+
+            /**
+             * 拦掉**所有子资源**加载，只放行受管文件。
+             *
+             * ⚠️ 与 `shouldOverrideUrlLoading` 分工不同：那个只管「页面导航」，
+             *   这个管 `<video src=...>`、`<img src=...>` 这类子资源。
+             *   只拦导航的话，页面里的 `<img src="https://evil/x.png">` 仍会发出去
+             *   —— 那是一个**网络信标**，能泄露用户在线状态。
+             */
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+            ): android.webkit.WebResourceResponse? {
+                val url = request?.url?.toString() ?: return blockedResponse()
+                return if (isManagedUrl(url)) null else blockedResponse()
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageReady = true
                 // 补播：页面加载期间来的 play() 会丢，这里补上。
@@ -139,6 +224,18 @@ class BubbleVideoLayer(
                     playInternal(a, src, loop)
                 }
             }
+        }
+
+        // ⚠️ 禁止创建新窗口：`target=_blank` 或 `window.open()` 会绕过
+        //   WebViewClient 的导航拦截（新窗口有自己的 client）。
+        //   返回 false = 不创建，且**不**把 URL 交给系统浏览器。
+        w.webChromeClient = object : android.webkit.WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?,
+            ): Boolean = false
         }
 
         container.addView(
@@ -152,6 +249,39 @@ class BubbleVideoLayer(
         w.loadUrl("file://" + html.absolutePath)
         Log.i(TAG, "悬浮球视频层已创建: ${html.absolutePath}")
     }
+
+    /**
+     * 这个 URL 是否属于**受管内容**。
+     *
+     * 判据（三条都要满足）：
+     * 1. 必须是 `file://`
+     * 2. 解析后的**真实路径**必须在我们给这个层准备的目录内
+     * 3. 不能是目录本身
+     *
+     * ⚠️ 用 `canonicalPath` 而不是字符串前缀比较：`file:///a/b/../../etc/passwd`
+     *   这种路径字符串前缀能过、真实路径却在外面 —— 那是典型的路径穿越。
+     */
+    private fun isManagedUrl(url: String): Boolean {
+        if (!url.startsWith("file://")) return false
+        return try {
+            val path = java.net.URI(url).path ?: return false
+            val f = java.io.File(path).canonicalFile
+            // 必须严格在**某个**白名单目录之下
+            // （相等不算 —— 那些是目录，不该被当页面加载）
+            return mediaRoots.any { root ->
+                val r = try { root.canonicalFile } catch (t: Throwable) { return@any false }
+                f.path.startsWith(r.path + java.io.File.separator)
+            }
+        } catch (t: Throwable) {
+            // ⚠️ 解析失败一律**拒绝**（fail closed）：宁可白屏也不要放行
+            Log.w(TAG, "媒体层：URL 解析失败，拒绝加载（$url）")
+            false
+        }
+    }
+
+    /** 被拦下的请求返回一个空响应（而不是让 WebView 自己去请求）。 */
+    private fun blockedResponse(): android.webkit.WebResourceResponse =
+        android.webkit.WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
 
     /**
      * 切到某个动作并开始播放。
@@ -433,7 +563,11 @@ class BubbleVideoLayer(
       preload({ action: action, src: src, loop: !!loop });
       return 'ok';
     },
-    pause: function(){ try { active.pause(); } catch (e) {} return 'ok'; },
+    // ⚠️ 必须暂停**两个**元素：页面是 A/B 双缓冲（`active` + `standby`），
+    //   只暂停 active 的话 standby 仍在解码 —— 而它恰恰是「预加载下一个动作」
+    //   的那个，会一直循环解码直到被 promote。实测这是「球隐藏了但还在发热」
+    //   的一个来源。
+    pause: function(){ try { active.pause(); } catch (e) {} try { standby.pause(); } catch (e) {} return 'ok'; },
     resume: function(){ var p = active.play(); if (p && p.catch) { p.catch(function(){}); } return 'ok'; },
     current: function(){ return curAction; },
     ready: function(){ return active.readyState; }

@@ -1,5 +1,6 @@
 package com.dsh.android
 
+import com.dsh.android.log.EventLog
 import com.dsh.android.bubble.BubbleEventGate
 import com.dsh.android.bubble.PluginArbiter
 import com.dsh.android.bubble.SessionAggregator
@@ -402,6 +403,35 @@ class FloatingBubble(private val context: Context) {
 
         /** 设置页关掉开关时立即生效，不用等下次切后台。 */
         fun hideNow() = onAppForeground()
+
+        /**
+         * **锁屏/亮屏时暂停或恢复视频解码**（开发指导 §G6）。
+         *
+         * 文档：「**隐藏/锁屏/节能暂停无用解码与循环**」。
+         *
+         * ## ⚠️ 为什么需要单独一条路径
+         *
+         * `hide()` 会 `release()` 整个 WebView —— 那是「球不显示了」。
+         * 但**锁屏时球仍在**（后台悬浮窗不受锁屏影响），WebView 继续解码。
+         * 用户看不到任何东西，却在持续耗电。
+         *
+         * 实测场景：用户开着球锁屏睡觉，早上发现手机烫且掉了 20% 电。
+         *
+         * ⚠️ 用暂停而不是 release：解锁后要立刻能播，而 release 后重建
+         * 要 200~500ms（重新加载页面 + 解码首帧），用户会看到黑一下。
+         */
+        fun onScreenLocked(context: Context) {
+            val inst = instance ?: return
+            inst.videoLayer?.pause()
+            EventLog.record("bubble.screen.off")
+        }
+
+        /** 亮屏/解锁：恢复解码。 */
+        fun onScreenUnlocked(context: Context) {
+            val inst = instance ?: return
+            inst.videoLayer?.resume()
+            EventLog.record("bubble.screen.on")
+        }
 
         /**
          * 状态更新入口。由 `EngineService.updateStatus()` 顺带调用。
