@@ -2692,6 +2692,50 @@ class MainActivity : AppCompatActivity() {
 
         // ── 布局桥（设计说明 §4.9）──────────────────────────────────────
 
+        // ── 悬浮字段锁定（设计说明 §4.11）────────────────────────────────
+
+        override fun bubbleLockedFields(): String = runCatching {
+            // 从磁盘恢复一次，保证与持久化状态一致
+            com.dsh.android.bubble.PluginArbiter.restoreUserLocks(this@MainActivity)
+            val owner = com.dsh.android.bubble.PluginArbiter.currentOwner()
+            JSONObject().apply {
+                // ⚠️ 只暴露「锁了哪些字段」，不暴露内部数据结构
+                put("locked", org.json.JSONArray().apply {
+                    // 遍历已知字段，只报锁定的
+                    com.dsh.android.bubble.BubbleFieldNames.ALL.forEach { f ->
+                        if (com.dsh.android.bubble.PluginArbiter.isFieldLocked(f)) put(f)
+                    }
+                })
+                put("owner", owner?.pluginId ?: "")
+                put("ownerIsUser", owner?.isUser ?: false)
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("locked", org.json.JSONArray())
+                .put("error", t.message ?: "?").toString()
+        }
+
+        override fun bubbleSetFieldLocked(field: String, locked: Boolean): String = runCatching {
+            if (!com.dsh.android.bubble.BubbleFieldNames.isKnown(field)) {
+                return@runCatching JSONObject()
+                    .put("ok", false).put("error", "未知字段: $field").toString()
+            }
+            if (locked) {
+                com.dsh.android.bubble.PluginArbiter.lockFieldByUser(this@MainActivity, field)
+            } else {
+                com.dsh.android.bubble.PluginArbiter.unlockFieldByUser(this@MainActivity, field)
+            }
+            JSONObject().apply {
+                put("ok", true)
+                put("locked", org.json.JSONArray().apply {
+                    com.dsh.android.bubble.BubbleFieldNames.ALL.forEach { f ->
+                        if (com.dsh.android.bubble.PluginArbiter.isFieldLocked(f)) put(f)
+                    }
+                })
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
         override fun layoutState(): String = runCatching {
             // ⚠️ 主动重算一次：桥被调时窗口尺寸一定是最终的，
             //   比依赖「onCreate 时算的值」更准（分屏启动时 onCreate 的度量可能不准）。

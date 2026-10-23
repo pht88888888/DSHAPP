@@ -1,5 +1,6 @@
 package com.dsh.android.bubble
 
+import android.content.Context
 import android.util.Log
 import com.dsh.android.log.EventLog
 
@@ -75,6 +76,45 @@ object PluginArbiter {
 
     /** 用户手动的固定 ID。 */
     const val USER_ID = "__user__"
+
+    private const val PREFS = "dsh_bubble_arbiter"
+    private const val KEY_LOCKED_FIELDS = "user_locked_fields"
+
+    /**
+     * 从磁盘恢复用户锁定的字段。
+     *
+     * ## ⚠️ 为什么必须持久化
+     *
+     * 文档：「**用户手动设置优先级和重置语义明确**」。
+     *
+     * 「重置语义明确」的前提是**它记得住**。不持久化的话：
+     * - 用户锁了「颜色」，重启 App 后锁定没了
+     * - 插件立刻把颜色改回去
+     * - 用户会觉得「这个设置根本没用」
+     *
+     * 而且文档说「插件重启**不能无条件覆盖用户后续修改**」——
+     * App 重启后插件当然也会重启，那时如果锁定丢了，就等于被覆盖了。
+     *
+     * ⚠️ **在 App 启动时调用一次**（[clearForEnvSwitch] 不清它，见那里的说明）。
+     */
+    fun restoreUserLocks(context: Context) {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_LOCKED_FIELDS, null) ?: return
+        synchronized(this) {
+            userLockedFields.clear()
+            raw.split('\u0000').filter { it.isNotEmpty() }.forEach { userLockedFields.add(it) }
+            if (userLockedFields.isNotEmpty()) {
+                Log.i(TAG, "仲裁：从磁盘恢复 ${userLockedFields.size} 个用户锁定字段")
+            }
+        }
+    }
+
+    /** 把用户锁定字段写盘。 */
+    private fun persistUserLocks(context: Context) {
+        val joined = synchronized(this) { userLockedFields.joinToString("\u0000") }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_LOCKED_FIELDS, joined).apply()
+    }
 
     /** 当前持有者；`null` = 无人控制（任何插件都可以拿）。 */
     @Volatile
@@ -186,15 +226,60 @@ object PluginArbiter {
      * 文档：「用户手动设置优先级和**重置语义明确**」——
      * 所以这里只有「锁」与「解锁」两个显式动作，没有隐式的自动解锁。
      */
-    fun lockFieldByUser(field: String) {
+    fun lockFieldByUser(context: Context, field: String) {
         userLockedFields.add(field)
+        persistUserLocks(context)
         EventLog.record("bubble.arbiter.lockField", mapOf("field" to field))
     }
 
     /** 用户解锁一个字段。 */
-    fun unlockFieldByUser(field: String) {
+    fun unlockFieldByUser(context: Context, field: String) {
         userLockedFields.remove(field)
+        persistUserLocks(context)
         EventLog.record("bubble.arbiter.unlockField", mapOf("field" to field))
+    }
+
+    /**
+     * 插件被停用/卸载时的清理。
+     *
+     * ## 文档要求（§4.11）
+     *
+     * > **插件停止/卸载时立即撤销运行控制**；已保存外观仅按用户明确的
+     * > 保留策略继续使用，否则回退基础入口。
+     *
+     * ⚠️ **与 [release] 的区别**：`release` 是插件**主动**放弃控制权；
+     *   本函数是基座**被动**发现「这个插件已经不在了」。
+     *   两者都要做，因为：
+     *   - 正常卸载时插件会先调 `release`（礼貌路径）
+     *   - 插件崩溃/被强杀时不会调，只能靠基座发现（[sweepDeadOwners]）
+     */
+    fun onPluginUnloaded(pluginId: String) {
+        synchronized(this) {
+            val cur = owner ?: return
+            if (cur.pluginId != pluginId) return
+            owner = null
+            Log.i(TAG, "仲裁：插件 $pluginId 已卸载，撤销其控制权")
+            EventLog.record("bubble.arbiter.pluginUnloaded", mapOf("plugin" to pluginId))
+        }
+    }
+
+    /**
+     * 清扫「持有者还占着但插件已经不在了」的情况。
+     *
+     * @param isAlive 调用方提供的存活判定（由它决定怎么查 —— 本对象不依赖
+     *   插件管理器，避免形成循环依赖）
+     *
+     * ⚠️ 用户持有（[USER_ID]）**不清扫**：用户不是一个会「死掉」的插件。
+     */
+    fun sweepDeadOwners(isAlive: (String) -> Boolean) {
+        synchronized(this) {
+            val cur = owner ?: return
+            if (cur.isUser) return
+            if (isAlive(cur.pluginId)) return
+            owner = null
+            Log.i(TAG, "仲裁：持有者 ${cur.pluginId} 已不存在，撤销控制权")
+            EventLog.record("bubble.arbiter.swept", mapOf("plugin" to cur.pluginId))
+        }
     }
 
     /** 该字段是否被用户锁定。 */

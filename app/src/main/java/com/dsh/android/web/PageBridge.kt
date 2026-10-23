@@ -446,6 +446,30 @@ interface PageBridge {
      * ⚠️ 返回的 `layout` **只会是 mobile / official**，不会是 auto
      *   （auto 是设置，不是实际布局）。
      */
+    /**
+     * 查询用户锁定的悬浮字段。
+     *
+     * ```json
+     * {"locked":["avatar","edgeImage"],"owner":"__user__"}
+     * ```
+     *
+     * ⚠️ 文档要求「用户手动设置优先级和**重置语义明确**」——
+     *   重置的前提是能查到当前锁了什么。
+     */
+    fun bubbleLockedFields(): String
+
+    /**
+     * 锁定/解锁一个悬浮字段。
+     *
+     * @param field 字段名（与 `BubbleAppearance` 的 JSON 键一致）
+     * @param locked true = 锁定（插件改不动），false = 解锁
+     * @return `{"ok":true,"locked":[...]}`
+     *
+     * ⚠️ 锁定后**立即持久化**：不持久化的话重启就丢，
+     *   而插件在重启后也会重新下发外观，等于用户设置被覆盖。
+     */
+    fun bubbleSetFieldLocked(field: String, locked: Boolean): String
+
     fun layoutState(): String
 
     /**
