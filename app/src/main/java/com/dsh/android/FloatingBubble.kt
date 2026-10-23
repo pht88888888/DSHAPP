@@ -2,6 +2,7 @@ package com.dsh.android
 
 import com.dsh.android.bubble.BubbleEventGate
 import com.dsh.android.bubble.PluginArbiter
+import com.dsh.android.bubble.SessionAggregator
 import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
 import android.content.Context
@@ -2097,7 +2098,50 @@ class FloatingBubble(private val context: Context) {
      *   打断（每帧都从当前下标重新排一次 postDelayed）—— 表现为"宠物动作一卡一卡"。
      */
     private fun syncRunState(status: EngineStatus) {
-        applyRunState(deriveRunState(status))
+        // ── 多会话聚合（设计说明 §4.11 / 验收矩阵第 18 条）──────────────
+        //
+        // 文档要求「多会话事件有**明确跟随/聚合规则**」。
+        //
+        // ⚠️ 先把这份状态喂进聚合器，再由聚合器选「该显示哪个」：
+        //   直接 applyRunState(deriveRunState(status)) 是「最后写入者赢」——
+        //   多个会话并发时报的状态会互相覆盖，用户看到球在「干活中」与
+        //   「等你确认」之间乱跳，而实际上有个会话**一直在等他确认**。
+        //
+        // ⚠️ sessionId 为空时的处理：**照旧走单状态路径**。
+        //   空串意味着页面拿不到当前会话（首帧、官方 DOM 变了、旧版页面），
+        //   这时如果硬塞进聚合器，会让「无归属状态」参与竞争，
+        //   反而把真实会话的状态挤掉。
+        val sid = status.sessionId
+        if (sid.isEmpty()) {
+            applyRunState(deriveRunState(status))
+            return
+        }
+
+        // 把这份状态转成聚合器认识的形式
+        val kind = when (deriveRunState(status)) {
+            BubbleAppearance.RUN_WAITING -> SessionAggregator.KIND_WAITING
+            BubbleAppearance.RUN_WORKING -> SessionAggregator.KIND_WORKING
+            BubbleAppearance.RUN_THINKING -> SessionAggregator.KIND_THINKING
+            else -> SessionAggregator.KIND_IDLE
+        }
+        SessionAggregator.update(sid, status.running, kind, status.text)
+
+        // 由聚合器选代表
+        val rep = SessionAggregator.representative()
+        if (rep == null) {
+            // 所有会话都空闲 ⇒ 显示 idle
+            applyRunState(BubbleAppearance.RUN_IDLE)
+            return
+        }
+        // 把聚合器的结论映射回动作
+        applyRunState(
+            when (rep.kind) {
+                SessionAggregator.KIND_WAITING -> BubbleAppearance.RUN_WAITING
+                SessionAggregator.KIND_WORKING -> BubbleAppearance.RUN_WORKING
+                SessionAggregator.KIND_THINKING -> BubbleAppearance.RUN_THINKING
+                else -> BubbleAppearance.RUN_IDLE
+            },
+        )
     }
 
     /**

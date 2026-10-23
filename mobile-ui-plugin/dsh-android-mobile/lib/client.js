@@ -4210,6 +4210,34 @@ window.__ModuleLoader__.load({
 			return "#FFFFFF";
 		}
 
+		/**
+		 * 当前会话 ID（拿不到返回空串）。
+		 *
+		 * ## ⚠️ 为什么需要它
+		 *
+		 * 引擎可同时跑多个会话（子代理、后台任务），而悬浮窗只有一个显示位。
+		 * 原生侧的 `SessionAggregator` 靠 sessionId 区分「这是哪个会话在报状态」——
+		 * 没有它，多个会话的状态会互相覆盖，用户会看到球在「干活中」与
+		 * 「等你确认」之间乱跳。
+		 *
+		 * 取法与顶栏重命名一致：`sessions.list.getSnapshot().current`。
+		 * 那是官方 `SessionManager.buildListSnapshot()` 算出的当前会话。
+		 *
+		 * ⚠️ 拿不到时返回**空串而不是 null**：原生侧判空串即可，
+		 *   少一层类型转换。也不抛错 —— 状态上报不能因为取不到 ID 就整个失败。
+		 */
+		function mpCurrentSessionId() {
+			try {
+				const sessions = mpSessionsOf();
+				if (!sessions || !sessions.list || typeof sessions.list.getSnapshot !== "function") return "";
+				const snap = sessions.list.getSnapshot();
+				const id = snap && snap.current;
+				return typeof id === "string" ? id : "";
+			} catch (e) {
+				return "";
+			}
+		}
+
 		function mpCollectStatus() {
 			const running = mpIsEngineRunning();
 			const { activity, text } = mpCurrentActivity();
@@ -4221,6 +4249,8 @@ window.__ModuleLoader__.load({
 				body: mpTailAssistantText(400),
 				title: title,
 				bg: mpPageBackground(),
+				// 多会话聚合用（设计说明 §4.11 / 验收矩阵第 18 条）
+				sessionId: mpCurrentSessionId(),
 			};
 		}
 

@@ -294,6 +294,21 @@ data class EngineStatus(
     val running: Boolean,
     /** 当前活动标题，如「正在运行命令 · sleep 10」；空闲时是上一组的「执行了命令」。 */
     val text: String,
+
+    /**
+     * 上报这份状态的**会话 ID**（拿不到时为空串）。
+     *
+     * ## 为什么需要它
+     *
+     * 设计说明 §4.11 / 验收矩阵第 18 条要求「多会话事件有明确跟随/聚合规则」。
+     * 引擎可同时跑多个会话，而悬浮窗只有一个显示位 —— 没有 sessionId 时，
+     * `SessionAggregator` 无法区分「这是哪个会话在报状态」，
+     * 多个会话的状态会互相覆盖。
+     *
+     * ⚠️ 空串 = 页面拿不到当前会话（首帧、官方 DOM 变了、或非 App 环境）。
+     *   此时聚合器会把它当成「无归属状态」处理，**不影响主显示**。
+     */
+    val sessionId: String = "",
     /** 最后一条助手消息（运行中含正在流式的思考内容）。 */
     val body: String,
     /** 会话标题，用作通知副标题。 */
@@ -330,6 +345,10 @@ data class EngineStatus(
             EngineStatus(
                 running = o.optBoolean("running", false),
                 text = o.optString("text", ""),
+                // 多会话聚合用（设计说明 §4.11 / 验收矩阵第 18 条）。
+                // ⚠️ 旧版页面不报这个字段 ⇒ 空串 ⇒ 聚合器当「无归属状态」处理，
+                //   不破坏兼容。
+                sessionId = o.optString("sessionId", ""),
                 body = o.optString("body", ""),
                 title = o.optString("title", ""),
                 bg = o.optString("bg", ""),
