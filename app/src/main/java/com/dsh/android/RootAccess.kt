@@ -232,7 +232,7 @@ object RootAccess {
      */
     private fun probe(): Result {
         val su = SU_CANDIDATES.firstOrNull { File(it).exists() }
-            ?: return Result(State.ABSENT, "设备上没有 su（已查: ${SU_CANDIDATES.joinToString()}）")
+            ?: return Result(State.ABSENT, DshApplication.instance.getString(R.string.root_su_absent, SU_CANDIDATES.joinToString()))
 
         return try {
             val pb = ProcessBuilder(su, "-c", "id -u")
@@ -254,7 +254,7 @@ object RootAccess {
                 //    用户会以为授权没生效。见 TENTATIVE_CACHE_TTL_MS。
                 return Result(
                     State.DENIED,
-                    "su 等待超时（${PROBE_TIMEOUT_SEC}s）—— 多半是 root 授权框弹出来了没人点",
+                    DshApplication.instance.getString(R.string.root_su_timeout, PROBE_TIMEOUT_SEC),
                     tentative = true,
                 )
             }
@@ -263,10 +263,10 @@ object RootAccess {
             if (uid == "0") {
                 Result(State.GRANTED, "su=$su, id -u → 0")
             } else {
-                Result(State.DENIED, "su=$su 可执行但身份不是 root（id -u → ${uid.ifEmpty { "空" }}）")
+                Result(State.DENIED, DshApplication.instance.getString(R.string.root_su_not_root, su, uid.ifEmpty { DshApplication.instance.getString(R.string.root_uid_empty) }))
             }
         } catch (t: Throwable) {
-            Result(State.DENIED, "执行 su 失败: ${t.message}")
+            Result(State.DENIED, DshApplication.instance.getString(R.string.root_su_failed, t.message))
         }
     }
 }

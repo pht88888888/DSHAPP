@@ -1,5 +1,7 @@
 package com.dsh.android.log
 
+import com.dsh.android.DshApplication
+import com.dsh.android.R
 import android.util.Log as AndroidLog
 import org.json.JSONObject
 import java.io.File
@@ -165,11 +167,11 @@ object LogUploader {
         val ep = endpoint
         if (ep.isNullOrBlank()) {
             // 未配置 → 明确失败，不静默。见类注释。
-            onResult(false, "尚未配置日志服务器，已保存到本地（可在日志界面导出）")
+            onResult(false, DshApplication.instance.getString(R.string.logs_server_unconfigured))
             return
         }
         if (!uploading.compareAndSet(false, true)) {
-            onResult(false, "已有上传在进行中，请稍候")
+            onResult(false, DshApplication.instance.getString(R.string.logs_upload_busy))
             return
         }
         executor.execute {
@@ -185,7 +187,7 @@ object LogUploader {
                 if (ok) runCatching { bundle.delete() }
                 onResult(ok, msg)
             } catch (t: Throwable) {
-                onResult(false, "上传失败：${t.message}")
+                onResult(false, DshApplication.instance.getString(R.string.logs_upload_error, t.message))
             } finally {
                 uploading.set(false)
             }
@@ -496,18 +498,18 @@ object LogUploader {
                 // 服务器若回了 id，把它显示给用户 —— 反馈问题时报这个编号最快。
                 val id = runCatching { JSONObject(body).optString("id", "") }.getOrDefault("")
                 LogStore.app('I', "Upload", "诊断包上传成功: ${bundle.name} code=$code id=$id")
-                Pair(true, if (id.isNotEmpty()) "上传成功，编号 $id" else "上传成功（HTTP $code）")
+                Pair(true, if (id.isNotEmpty()) DshApplication.instance.getString(R.string.logs_upload_success_id, id) else DshApplication.instance.getString(R.string.logs_upload_success_http, code))
             } else {
                 // ⚠️ `errorStream` 本身可能为 null（连接就断了），readText 的结果也是可空的，
                 //   所以这里必须补一个 `?: ""`，否则拼接时拿到的是 null 字面量。
                 val err = runCatching { conn.errorStream?.bufferedReader()?.readText()?.take(300) }
                     .getOrNull().orEmpty()
                 LogStore.app('W', "Upload", "诊断包上传失败: ${bundle.name} code=$code $err")
-                Pair(false, "上传失败：HTTP $code ${err.take(120)}")
+                Pair(false, DshApplication.instance.getString(R.string.logs_upload_http_error, code, err.take(120)))
             }
         } catch (t: Throwable) {
             LogStore.app('W', "Upload", "诊断包上传异常: ${bundle.name} ${t.message}")
-            Pair(false, "上传失败：${t.message ?: t.javaClass.simpleName}（已留在本地，稍后自动重试）")
+            Pair(false, DshApplication.instance.getString(R.string.logs_upload_retry, t.message ?: t.javaClass.simpleName))
         } finally {
             runCatching { conn?.disconnect() }
         }

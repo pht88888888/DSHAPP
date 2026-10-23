@@ -1,5 +1,6 @@
 package com.dsh.android.browser
 
+import com.dsh.android.R
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.Context
@@ -176,7 +177,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(5), dp(8), dp(5))
             background = rounded(0xFF232936.toInt(), 8)
-            text = "你"
+            text = context.getString(R.string.browser_you)
             isClickable = true
             setOnClickListener { toggleControl() }
         }
@@ -333,7 +334,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         for ((i, tab) in tabs.withIndex()) {
             val label = TextView(context).apply {
                 val text = tab.title.ifEmpty { tab.webView.title.orEmpty() }
-                    .ifEmpty { tab.webView.url?.removePrefix("https://")?.removePrefix("http://") ?: "新标签页" }
+                    .ifEmpty { tab.webView.url?.removePrefix("https://")?.removePrefix("http://") ?: context.getString(R.string.browser_new_tab) }
                 this.text = text.take(14)
                 textSize = 10.5f
                 isSingleLine = true
@@ -520,11 +521,11 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             }
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             dm.enqueue(req)
-            toast("开始下载：$name")
+            toast(context.getString(R.string.browser_download_starting, name))
             Log.i(TAG, "下载已入队: $url → Download/$name")
         } catch (t: Throwable) {
             Log.w(TAG, "下载失败: ${t.message}")
-            toast("下载失败：${t.message}")
+            toast(context.getString(R.string.browser_download_failed, t.message))
         }
     }
 
@@ -596,10 +597,10 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         android.app.AlertDialog.Builder(context)
-            .setTitle("打开网址")
+            .setTitle(context.getString(R.string.browser_open_url))
             .setView(input)
-            .setPositiveButton("前往") { _, _ -> loadUrl(input.text.toString()) }
-            .setNegativeButton("取消", null)
+            .setPositiveButton(context.getString(R.string.browser_go)) { _, _ -> loadUrl(input.text.toString()) }
+            .setNegativeButton(context.getString(R.string.ui_cancel), null)
             .show()
     }
 
@@ -647,7 +648,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         val canForward = wv?.canGoForward() == true
         backBtn.alpha = if (canBack) 1f else 0.3f
         forwardBtn.alpha = if (canForward) 1f else 0.3f
-        statusChip.text = if (control == Control.AI) "AI 操作中" else "你"
+        statusChip.text = if (control == Control.AI) context.getString(R.string.browser_ai_control) else context.getString(R.string.browser_you)
         statusChip.setTextColor(
             if (control == Control.AI) 0xFFE0A33A.toInt() else 0xFF7EC8A0.toInt(),
         )

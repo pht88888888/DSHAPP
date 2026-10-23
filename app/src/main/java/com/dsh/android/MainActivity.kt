@@ -208,12 +208,12 @@ class MainActivity : AppCompatActivity() {
         //   红层随后自己就收掉了。真正的错误由 `webViewMajor` 门槛与
         //   `State.Failed` 两条路各自负责提示。
         if (webError.isNotEmpty()) {
-            showOverlay("界面加载失败", hint = "$webError（点一下这里可继续）", isError = true)
+            showOverlay(getString(R.string.boot_ui_failed), hint = getString(R.string.boot_error_continue, webError), isError = true)
         } else {
             showOverlay(
-                "界面加载较慢",
-                hint = "已等 ${UI_READY_TIMEOUT_MS / 1000} 秒仍未就绪，页面可能还在解析。" +
-                    "稍等一下；点一下这里可继续",
+                getString(R.string.boot_ui_slow),
+                hint = getString(R.string.boot_ui_waiting, UI_READY_TIMEOUT_MS / 1000) +
+                    getString(R.string.boot_wait_continue),
                 isError = true,
             )
         }
@@ -498,9 +498,11 @@ class MainActivity : AppCompatActivity() {
             invalidateOverlayTimeout()
             overlayDismissed = false
             showOverlay(
-                "界面反复出错",
-                hint = "Web 内核$reason 了 $rendererRestarts 次，已停止自动恢复。" +
-                    "点一下这里收起提示；若界面仍然空白，请重开 App",
+                getString(R.string.boot_ui_repeated_errors),
+                hint = getString(R.string.boot_renderer_stopped,
+                    getString(if (didCrash) R.string.renderer_crashed else R.string.renderer_reclaimed),
+                    rendererRestarts) +
+                    getString(R.string.boot_dismiss_reopen),
                 isError = true,
             )
             return
@@ -669,9 +671,9 @@ class MainActivity : AppCompatActivity() {
                     return@postDelayed
                 }
                 showOverlay(
-                    "界面没能恢复",
-                    hint = "已自动重载 $attempt 次，Web 内核仍未提交首帧。" +
-                        "点一下这里收起提示；若界面仍然空白，请重开 App",
+                    getString(R.string.boot_ui_recovery_failed),
+                    hint = getString(R.string.boot_renderer_no_frame, attempt) +
+                        getString(R.string.boot_dismiss_reopen),
                     isError = true,
                 )
             }
@@ -1393,7 +1395,7 @@ class MainActivity : AppCompatActivity() {
     private fun handleDownloadStream(stream: DownloadStream) {
         val filename = stream.filename.ifBlank { "dsh-download" }
         val target = downloadTargetDir()
-        Toast.makeText(this, "开始下载 $filename", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.download_starting, filename), Toast.LENGTH_SHORT).show()
 
         lifecycleScope.launch(Dispatchers.IO) {
             val result = runCatching {
@@ -1405,11 +1407,11 @@ class MainActivity : AppCompatActivity() {
                 result
                     .onSuccess { file ->
                         Log.i(DshApplication.TAG, "Session 日志已保存: ${file.absolutePath} (${file.length()} 字节)")
-                        Toast.makeText(this@MainActivity, "已保存到 ${file.absolutePath}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.download_saved, file.absolutePath), Toast.LENGTH_LONG).show()
                     }
                     .onFailure { e ->
                         Log.w(DshApplication.TAG, "下载失败: ${stream.url}", e)
-                        Toast.makeText(this@MainActivity, "下载失败：${e.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.download_failed, e.message), Toast.LENGTH_LONG).show()
                     }
             }
         }
@@ -1428,7 +1430,7 @@ class MainActivity : AppCompatActivity() {
         val filename = URLUtil.guessFileName(url, req.contentDisposition, req.mimeType)
         val cookie = cookieForDownload(url)
         val target = downloadTargetDir()
-        Toast.makeText(this, "开始下载 $filename", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.download_starting, filename), Toast.LENGTH_SHORT).show()
 
         lifecycleScope.launch(Dispatchers.IO) {
             val result = runCatching {
@@ -1456,11 +1458,11 @@ class MainActivity : AppCompatActivity() {
                 result
                     .onSuccess { file ->
                         Log.i(DshApplication.TAG, "Session 日志已保存: ${file.absolutePath} (${file.length()} 字节)")
-                        Toast.makeText(this@MainActivity, "已保存到 ${file.absolutePath}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.download_saved, file.absolutePath), Toast.LENGTH_LONG).show()
                     }
                     .onFailure { e ->
                         Log.w(DshApplication.TAG, "下载失败: $url", e)
-                        Toast.makeText(this@MainActivity, "下载失败：${e.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.download_failed, e.message), Toast.LENGTH_LONG).show()
                     }
             }
         }
@@ -2349,7 +2351,7 @@ class MainActivity : AppCompatActivity() {
                 put("error", all.count { it.level == 'E' })
                 put("crash", CrashRecorder.sceneCount())
                 put("pending", LogUploader.pendingCount(File(filesDir, DshApplication.LOG_DIR)))
-                put("lastExit", prev.describe())
+                put("lastExit", prev.describe(this@MainActivity))
                 put("uploadConfigured", LogUploader.configured)
                 put("version", VersionInfo.summary())
             }.toString()
@@ -2358,7 +2360,7 @@ class MainActivity : AppCompatActivity() {
             // 返回一个结构完整的空对象而不是空串：页面侧可以直接读字段，
             // 不用先判空 —— 少一个出错分支。
             """{"total":0,"warn":0,"error":0,"crash":0,"pending":0,""" +
-                """"lastExit":"读取失败","uploadConfigured":false,"version":""}"""
+                """"lastExit":${JSONObject.quote(getString(R.string.ui_read_failed))},"uploadConfigured":false,"version":""}"""
         }
     }
 
@@ -2821,18 +2823,18 @@ class MainActivity : AppCompatActivity() {
             engine.state.collect { state ->
                 when (state) {
                     is EngineManager.State.Idle -> {
-                        showOverlay("准备中…", hint = "正在初始化本地环境")
+                        showOverlay(getString(R.string.boot_preparing), hint = getString(R.string.boot_initializing))
                     }
                     is EngineManager.State.Extracting -> {
                         // 首次启动唯一有真实百分比的一段（实测约 15.5s）
                         showOverlay(
-                            "首次启动，正在解包引擎 ${state.percent}%",
-                            hint = "只需这一次，之后启动会快很多",
+                            getString(R.string.boot_unpacking, state.percent),
+                            hint = getString(R.string.boot_first_launch_hint),
                             progress = state.percent / 100f,
                         )
                     }
                     is EngineManager.State.Starting -> {
-                        showOverlay("正在启动引擎…", hint = "加载 Node 运行时与本地服务")
+                        showOverlay(getString(R.string.boot_starting_engine), hint = getString(R.string.boot_loading_runtime))
                     }
                     is EngineManager.State.Ready -> {
                         // 门槛在这里才定：引擎就绪 ⇒ ensureWebViewCompat() 已经跑过，
@@ -2847,9 +2849,9 @@ class MainActivity : AppCompatActivity() {
                                     "前端无法解析，跳过加载",
                             )
                             showOverlay(
-                                "系统 WebView 内核过旧",
-                                hint = "当前内核 $webViewMajor，需要 $minMajor+；" +
-                                    "请在应用商店更新「Android System WebView」后重开 App",
+                                getString(R.string.boot_webview_outdated),
+                                hint = getString(R.string.boot_webview_version, webViewMajor, minMajor) +
+                                    getString(R.string.boot_webview_update),
                                 isError = true,
                             )
                             return@collect
@@ -2863,7 +2865,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         // ⚠️ 这里**不能**收起 overlay：引擎就绪只代表 HTTP 服务起来了，
                         //   页面还没加载、插件更没激活。实测后面还有约 3.8 秒。
-                        showOverlay("正在加载界面…", hint = "渲染 Web GUI")
+                        showOverlay(getString(R.string.boot_loading_interface), hint = getString(R.string.boot_rendering_gui))
                         // ⚠️ 引擎**重启**过时必须无视 URL 去重（见
                         //   `forceReloadOnReady` 的说明）：端口与 token 没变时
                         //   URL 相等，而页面连的其实是已经死掉的旧端口。
@@ -2882,7 +2884,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     is EngineManager.State.Failed -> {
                         showOverlay(
-                            "引擎启动失败",
+                            getString(R.string.boot_engine_failed),
                             hint = state.message,
                             isError = true,
                         )
@@ -2935,9 +2937,9 @@ class MainActivity : AppCompatActivity() {
                             resetFirstFrameAwait()
                             overlayDismissed = false
                             showOverlay(
-                                "引擎反复停止",
-                                hint = "${state.message}（已自动重启 $MAX_ENGINE_RESTARTS 次）。" +
-                                    "可点下面的「安全模式」推开损坏的插件配置",
+                                getString(R.string.boot_engine_repeated_stops),
+                                hint = getString(R.string.boot_engine_restart_count, state.message, MAX_ENGINE_RESTARTS) +
+                                    getString(R.string.boot_safe_mode_hint),
                                 isError = true,
                             )
                             return@collect
@@ -2952,7 +2954,7 @@ class MainActivity : AppCompatActivity() {
                         //   正常的启动过程（完整证据见 [overlayWaitGeneration] 的 KDoc）。
                         invalidateOverlayTimeout()
                         overlayDismissed = false
-                        showOverlay("引擎已停止，正在重新启动…", hint = state.message)
+                        showOverlay(getString(R.string.boot_engine_restarting), hint = state.message)
                         // ⚠️ 页面此刻是**活的**，但它连的是已经没人监听的端口 ——
                         //   必须等引擎起来后重新加载，否则界面永远连不上。
                         // ⚠️ 清掉 webViewPainted 让新一轮的「等首帧」重新生效。
@@ -2983,7 +2985,7 @@ class MainActivity : AppCompatActivity() {
                                 throw c
                             } catch (t: Throwable) {
                                 Log.e(DshApplication.TAG, "引擎自动重启失败", t)
-                                showOverlay("引擎重启失败", hint = t.message, isError = true)
+                                showOverlay(getString(R.string.boot_engine_restart_failed), hint = t.message, isError = true)
                             }
                         }
                     }
@@ -2997,7 +2999,7 @@ class MainActivity : AppCompatActivity() {
                     is EngineManager.UiStage.None -> Unit
                     is EngineManager.UiStage.PageLoaded -> {
                         // 实测 onPageFinished 之后还有约 1.7s 插件激活期
-                        showOverlay("正在准备界面…", hint = "激活移动端适配插件")
+                        showOverlay(getString(R.string.boot_preparing_interface), hint = getString(R.string.boot_mobile_plugin))
                     }
                     is EngineManager.UiStage.UiReady -> {
                         // ⚠️ 这里**不能**直接收起 —— DOM 就绪 ≠ 像素上屏。
@@ -3050,7 +3052,7 @@ class MainActivity : AppCompatActivity() {
                 throw c
             } catch (t: Throwable) {
                 Log.e(DshApplication.TAG, "引擎启动异常", t)
-                showOverlay("引擎启动异常", hint = t.message, isError = true)
+                showOverlay(getString(R.string.boot_engine_error), hint = t.message, isError = true)
             }
         }
     }
@@ -3208,9 +3210,9 @@ class MainActivity : AppCompatActivity() {
         resetFirstFrameAwait()
         overlayDismissed = false
         showOverlay(
-            "连续多次没能启动，正在自动进入安全模式…",
-            hint = "已自动推开可能损坏的插件配置并重新解包引擎（约 15 秒）。" +
-                "你的会话、凭据、工作区都不会丢；被推开的配置都改名保留着。",
+            getString(R.string.boot_auto_safe_mode),
+            hint = getString(R.string.boot_auto_safe_mode_hint) +
+                getString(R.string.boot_safe_data_kept),
         )
         lifecycleScope.launch {
             try {
@@ -3225,7 +3227,7 @@ class MainActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 Log.e(DshApplication.TAG, "[rescue-auto] 安全模式启动失败", t)
                 binding.overlaySafeMode.isEnabled = true
-                showOverlay("安全模式启动失败", hint = t.message, isError = true)
+                showOverlay(getString(R.string.boot_safe_mode_failed), hint = t.message, isError = true)
             } finally {
                 // 放开重入锁：`enterSafeMode` 已把层级记成 SAFE_MODE，判据此后
                 // 不会再成立，所以这里放开是安全的（不会导致反复触发）。
@@ -3375,9 +3377,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 showOverlay(
-                    "有插件加载不了，正在进入救援模式…",
-                    hint = "本次启动不加载任何第三方插件，界面马上就能用。" +
-                        "你的会话、凭据、工作区都不会丢。",
+                    getString(R.string.boot_entering_rescue),
+                    hint = getString(R.string.boot_rescue_hint) +
+                        getString(R.string.boot_data_kept),
                 )
                 // ⚠️ 先武装首帧等待 + 清「已收起」标记：这一轮之后要重新加载界面，
                 //   同 [autoEnterSafeMode] 的两条论证。
@@ -3391,7 +3393,7 @@ class MainActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 Log.e(DshApplication.TAG, "[web-rescue] 降级失败", t)
                 webRescueInFlight.set(false)
-                showOverlay("进入救援模式失败", hint = t.message, isError = true)
+                showOverlay(getString(R.string.boot_rescue_failed), hint = t.message, isError = true)
             }
         }
         return true
@@ -3413,8 +3415,8 @@ class MainActivity : AppCompatActivity() {
         resetFirstFrameAwait()
         overlayDismissed = false
         showOverlay(
-            "正在进入安全模式…",
-            hint = "推开损坏的插件配置并重新解包引擎（约 15 秒）",
+            getString(R.string.boot_entering_safe_mode),
+            hint = getString(R.string.boot_safe_mode_working),
         )
         lifecycleScope.launch {
             try {
@@ -3432,7 +3434,7 @@ class MainActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 Log.e(DshApplication.TAG, "安全模式启动失败", t)
                 binding.overlaySafeMode.isEnabled = true
-                showOverlay("安全模式启动失败", hint = t.message, isError = true)
+                showOverlay(getString(R.string.boot_safe_mode_failed), hint = t.message, isError = true)
             }
         }
     }
@@ -3460,37 +3462,37 @@ class MainActivity : AppCompatActivity() {
             banner.visibility = View.GONE
             return
         }
-        val when_ = RescueBoot.stateSinceText()?.let { "（$it 起）" }.orEmpty()
+        val when_ = RescueBoot.stateSinceText()?.let { getString(R.string.rescue_since, it) }.orEmpty()
         // ⚠️ 把「gateway 下线」这一种单独说出来。它和「起不来」是**两回事**：
         //   引擎起来了、界面也加载了（用户看得见），但会话/模型列表/目录选择全废。
         //   若横幅仍说「上次启动没能起来」，用户会对着一堆打不开的功能想：
         //   「不是起来了吗？」—— 正是本项目缺陷族「结论与它描述的对象不符」。
         val gw = RescueBoot.lastFailure()?.gatewayCulprit
         val gatewayLine = if (gw != null) {
-            "\n启动时 typert gateway 整体下线（插件 " + (gw.ifEmpty { "（包名未解析到）" }) +
-                " 注册不上），会话、模型列表与目录选择都不可用。"
+            getString(R.string.rescue_gateway_prefix) + (gw.ifEmpty { getString(R.string.rescue_package_unknown) }) +
+                getString(R.string.rescue_gateway_suffix)
         } else {
             ""
         }
         val text = when (st.tier) {
             RescueBoot.Tier.RESCUE ->
-                "⚠️ 救援模式$when_\n" +
-                    "引擎没能正常启动，或启动后 typert gateway 整体下线，" +
-                    "已用最小配置启动（你的插件配置没被删）。$gatewayLine\n" +
-                    "AI 可以帮你找出并修好那个插件 —— 直接问它就行。"
+                getString(R.string.rescue_mode_heading, when_) +
+                    getString(R.string.rescue_mode_reason) +
+                    getString(R.string.rescue_mode_minimal, gatewayLine) +
+                    getString(R.string.rescue_mode_ask_ai)
             RescueBoot.Tier.ISOLATED ->
-                "⚠️ 已隔离可疑插件$when_\n" +
-                    "启动时发现 ${st.removedBundles.size} 个插件会让引擎起不来，已把它们改名隔离" +
-                    "（没有删除），其余插件照常工作。\n" +
-                    "想让 AI 复查或恢复，直接问它就行。"
+                getString(R.string.rescue_isolated_heading, when_) +
+                    getString(R.string.rescue_isolated_count, st.removedBundles.size) +
+                    getString(R.string.rescue_isolated_kept) +
+                    getString(R.string.rescue_isolated_ask_ai)
             RescueBoot.Tier.QUARANTINED ->
-                "⚠️ 已隔离坏插件$when_\n" +
-                    "启动时定位到 ${st.quarantinedNames.size} 个插件会让引擎起不来，" +
-                    "已用官方 patch 把它们禁用（文件一个没删、其余插件照常）。\n" +
-                    "想让 AI 复查或放回来，直接问它就行。"
+                getString(R.string.rescue_quarantined_heading, when_) +
+                    getString(R.string.rescue_quarantined_count, st.quarantinedNames.size) +
+                    getString(R.string.rescue_quarantined_kept) +
+                    getString(R.string.rescue_quarantined_ask_ai)
             RescueBoot.Tier.SAFE_MODE ->
-                "⚠️ 安全模式$when_\n" +
-                    "已推开全部第三方插件配置并重新解包引擎。"
+                getString(R.string.rescue_safe_mode_heading, when_) +
+                    getString(R.string.rescue_safe_mode_description)
             RescueBoot.Tier.NORMAL -> return
         }
         binding.rescueBannerText.text = text
@@ -3527,68 +3529,68 @@ class MainActivity : AppCompatActivity() {
         val st = RescueBoot.tier()
         val f = RescueBoot.lastFailure()
         val sb = StringBuilder()
-        sb.append("当前层级：").append(st.tier.label).append('\n')
-        RescueBoot.stateSinceText()?.let { sb.append("自 ").append(it).append('\n') }
-        if (st.reason.isNotBlank()) sb.append("原因：").append(st.reason).append('\n')
+        sb.append(getString(R.string.rescue_current_tier)).append(st.tier.displayLabel(this)).append('\n')
+        RescueBoot.stateSinceText()?.let { sb.append(getString(R.string.rescue_since_prefix)).append(it).append('\n') }
+        if (st.reason.isNotBlank()) sb.append(getString(R.string.rescue_reason_prefix)).append(st.reason).append('\n')
         if (st.removedBundles.isNotEmpty()) {
-            sb.append("\n已隔离的插件（").append(st.removedBundles.size).append(" 个）：\n")
+            sb.append(getString(R.string.rescue_isolated_list)).append(st.removedBundles.size).append(getString(R.string.rescue_list_count_suffix))
             st.removedBundles.forEach { sb.append("  · ").append(it).append('\n') }
         }
         if (st.quarantinedNames.isNotEmpty()) {
-            sb.append("\n已定向禁用的插件条目（").append(st.quarantinedNames.size).append(" 个）：\n")
+            sb.append(getString(R.string.rescue_disabled_list)).append(st.quarantinedNames.size).append(getString(R.string.rescue_list_count_suffix))
             st.quarantinedNames.forEach { sb.append("  · ").append(it).append('\n') }
-            sb.append("  （靠 quarantine.patch.yml 的 disabled: true 生效，")
-                .append("文件一个没删）\n")
+            sb.append(getString(R.string.rescue_disabled_patch))
+                .append(getString(R.string.rescue_files_kept))
         }
         st.restorePoint?.let {
-            sb.append("\n原始配置备份：").append(it)
-            sb.append("（想让 AI 恢复就告诉它这个路径）").append('\n')
+            sb.append(getString(R.string.rescue_backup_location)).append(it)
+            sb.append(getString(R.string.rescue_backup_ask_ai)).append('\n')
         }
         if (f == null) {
-            sb.append("\n（没有记录到启动失败详情）")
+            sb.append(getString(R.string.rescue_no_failure_details))
         } else {
             // ⚠️ 标题按事实分岔，不写死「启动失败」：`gatewayCulprit` 非空表示
             //   这一次引擎**起来了**（只是 gateway 废了），说「启动失败」是错的。
             val gatewayOnly = f.gatewayCulprit != null && (f.requiredDidNotActivate ?: 0) <= 0
-            sb.append(if (gatewayOnly) "\n上次启动（引擎已就绪，但 gateway 下线）：\n" else "\n上次启动失败：\n")
-            sb.append("  时间：").append(
+            sb.append(if (gatewayOnly) getString(R.string.rescue_last_gateway_failure) else getString(R.string.rescue_last_start_failure))
+            sb.append(getString(R.string.rescue_failure_time)).append(
                 SafeDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(f.at)),
             ).append('\n')
             sb.append("  bootId：").append(f.bootId).append('\n')
-            sb.append("  连续失败：").append(f.consecutiveFailures).append(" 次\n")
+            sb.append(getString(R.string.rescue_failure_streak)).append(f.consecutiveFailures).append(getString(R.string.rescue_failure_count_suffix))
             f.gatewayCulprit?.let {
                 // ⚠️ 措辞必须带「如果为空 = 没解析到」，不能只说「注册不上的插件：」
                 //   后面跟一片空白 —— 那会被读成「插件名就是空的」。
-                sb.append("  ⚠️ typert gateway 整体下线，注册不上的插件：")
-                    .append(it.ifEmpty { "（引擎报了这句话，但包名没解析出来）" })
+                sb.append(getString(R.string.rescue_gateway_plugin))
+                    .append(it.ifEmpty { getString(R.string.rescue_gateway_unknown) })
                     .append('\n')
-                sb.append("     （会话、模型列表、目录选择都会报 " +
+                sb.append(getString(R.string.rescue_gateway_affected) +
                     "「its strict definition was withdrawn」）\n")
             }
             f.requiredDidNotActivate?.let {
-                sb.append("  引擎报「未激活的必需插件」：").append(it).append(" 个\n")
+                sb.append(getString(R.string.rescue_required_inactive)).append(it).append(getString(R.string.rescue_item_count_suffix))
             }
             f.failedCountMismatch?.let {
-                sb.append("  ⚠️ 引擎报的失败数与实际列出条数不一致：").append(it).append('\n')
+                sb.append(getString(R.string.rescue_failure_count_mismatch)).append(it).append('\n')
             }
             if (f.failedPlugins.isNotEmpty()) {
-                sb.append("  引擎列出的失败插件（").append(f.failedPlugins.size).append(" 个，").append(
-                    "⚠️ 这是引擎列出的，**不一定是元凶** —— 元凶常常不在这个名单里）\n",
+                sb.append(getString(R.string.rescue_failed_plugin_list)).append(f.failedPlugins.size).append(getString(R.string.rescue_item_count_comma)).append(
+                    getString(R.string.rescue_failed_plugin_caveat),
                 )
             }
         }
-        sb.append("\n想修的话，直接问 AI：把上面这些告诉它就行。")
+        sb.append(getString(R.string.rescue_details_ask_ai))
         runOnUiThread {
             val builder = androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("启动失败详情")
+                .setTitle(getString(R.string.rescue_details_title))
                 .setMessage(sb.toString())
-                .setPositiveButton("知道了", null)
+                .setPositiveButton(getString(R.string.ui_got_it), null)
             // ⚠️ 「放回来」必须是**独立按钮 + 二次确认**，不能并进「知道了」：
             //   它会让用户**回到那个打不开的状态**，是一个可能把人再坑一次的
             //   动作。现有的「退出并重试」刻意不删任何东西（I5），这里同理 ——
             //   动作与后果都要显式。
             if (st.quarantinedNames.isNotEmpty()) {
-                builder.setNeutralButton("放回被禁用的插件") { _, _ ->
+                builder.setNeutralButton(getString(R.string.rescue_restore_plugins)) { _, _ ->
                     confirmRestoreQuarantine(st.quarantinedNames.size)
                 }
             }
@@ -3609,13 +3611,13 @@ class MainActivity : AppCompatActivity() {
     private fun confirmRestoreQuarantine(count: Int) {
         runOnUiThread {
             androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("放回 $count 个被禁用的插件？")
+                .setTitle(getString(R.string.rescue_restore_confirm, count))
                 .setMessage(
-                    "放回后它们会重新加载。如果其中一个正是导致 App 打不开的那个，" +
-                        "下次启动可能又会失败（届时会自动重新禁用，但需要再等一轮）。\n\n" +
-                        "建议先让 AI 看过日志、确认插件已修好再放回。",
+                    getString(R.string.rescue_restore_risk) +
+                        getString(R.string.rescue_restore_failure) +
+                        getString(R.string.rescue_restore_advice),
                 )
-                .setPositiveButton("确认放回") { _, _ ->
+                .setPositiveButton(getString(R.string.rescue_restore_action)) { _, _ ->
                     RescueBoot.clearQuarantine()
                     RescueBoot.setTier(
                         RescueBoot.Tier.NORMAL,
@@ -3625,7 +3627,7 @@ class MainActivity : AppCompatActivity() {
                     engine.requestRestart("用户放回被禁用的插件")
                     refreshRescueBanner()
                 }
-                .setNegativeButton("取消", null)
+                .setNegativeButton(getString(R.string.ui_cancel), null)
                 .show()
         }
     }
@@ -3687,7 +3689,7 @@ class MainActivity : AppCompatActivity() {
                 Log.e(DshApplication.TAG, "打开日志界面失败", it)
                 Toast.makeText(
                     this,
-                    "无法打开日志界面：${it.message ?: it.javaClass.simpleName}",
+                    getString(R.string.logs_open_failed, it.message ?: it.javaClass.simpleName),
                     Toast.LENGTH_LONG,
                 ).show()
             }
@@ -3881,7 +3883,7 @@ class MainActivity : AppCompatActivity() {
             // ⚠️ 找不到 composer 时必须让用户知道。静默失败的话，气泡会把输入框
             //   清空、看起来"发出去了"，而 App 里其实一个字都没进去。
             if (result != null && result.contains("NO_INPUT")) {
-                Toast.makeText(this, "输入框未就绪，请打开 App 重试", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, getString(R.string.bubble_input_not_ready), Toast.LENGTH_LONG).show()
             }
         }
 
@@ -3906,7 +3908,7 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(BUBBLE_STOP_JS) { result ->
             Log.i(DshApplication.TAG, "气泡停止结果: $result")
             if (result != null && result.contains("NOT_RUNNING")) {
-                Toast.makeText(this, "AI 当前没在运行", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.bubble_ai_not_running), Toast.LENGTH_SHORT).show()
             }
         }
         return true

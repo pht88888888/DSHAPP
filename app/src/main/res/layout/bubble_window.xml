@@ -186,7 +186,7 @@
                     android:layout_weight="1"
                     android:ellipsize="end"
                     android:maxLines="2"
-                    android:text="空闲"
+                    android:text="@string/notification_idle"
                     android:textColor="#1A1D21"
                     android:textSize="13sp"
                     android:textStyle="bold" />
@@ -197,7 +197,7 @@
                     android:layout_height="wrap_content"
                     android:background="?android:attr/selectableItemBackgroundBorderless"
                     android:padding="6dp"
-                    android:text="打开"
+                    android:text="@string/bubble_open"
                     android:textColor="#3B6FE0"
                     android:textSize="12sp" />
 
@@ -213,7 +213,7 @@
                     android:layout_marginStart="2dp"
                     android:background="?android:attr/selectableItemBackgroundBorderless"
                     android:padding="6dp"
-                    android:text="收起"
+                    android:text="@string/bubble_collapse"
                     android:textColor="#8A9099"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -274,7 +274,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:background="@drawable/bubble_input_bg"
-                    android:hint="发消息给 AI…"
+                    android:hint="@string/bubble_message_hint"
                     android:importantForAutofill="no"
                     android:inputType="textMultiLine|textCapSentences"
                     android:maxLines="4"
@@ -297,7 +297,7 @@
                     android:minWidth="56dp"
                     android:paddingStart="12dp"
                     android:paddingEnd="12dp"
-                    android:text="发送"
+                    android:text="@string/bubble_send"
                     android:textColor="#FFFFFF"
                     android:textSize="13sp" />
 
@@ -316,7 +316,7 @@
                     android:minWidth="56dp"
                     android:paddingStart="12dp"
                     android:paddingEnd="12dp"
-                    android:text="停止"
+                    android:text="@string/bubble_stop"
                     android:textColor="#FFFFFF"
                     android:textSize="13sp"
                     android:visibility="gone" />

@@ -111,7 +111,13 @@ class EngineService : Service() {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        if (existing != null) {
+            existing.name = getString(R.string.notification_channel_name)
+            existing.description = getString(R.string.notification_channel_desc)
+            manager.createNotificationChannel(existing)
+            return
+        }
         val channel = NotificationChannel(
             CHANNEL_ID,
             getString(R.string.notification_channel_name),

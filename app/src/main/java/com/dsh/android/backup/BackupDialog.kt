@@ -91,9 +91,9 @@ object BackupDialog {
                 .filter { it.id in ids }
                 .sumOf { UserDataExporter.sizeOf(context, it).bytes }
             total.text = if (ids.isEmpty()) {
-                "未选中任何内容"
+                context.getString(R.string.backup_nothing_selected)
             } else {
-                "合计约 ${UserDataExporter.humanSize(bytes)}"
+                context.getString(R.string.backup_total_size, UserDataExporter.humanSize(bytes))
             }
             action.isEnabled = ids.isNotEmpty()
             action.alpha = if (ids.isEmpty()) 0.4f else 1f
@@ -110,7 +110,7 @@ object BackupDialog {
                     val cb = boxes[id] ?: continue
                     val item = UserDataExporter.ITEMS.first { it.id == id }
                     if (!sz.exists) {
-                        cb.text = "${item.label}（空）"
+                        cb.text = context.getString(R.string.backup_empty_item, item.label)
                         cb.isEnabled = false
                         cb.isChecked = false
                     } else {
@@ -267,7 +267,7 @@ object BackupDialog {
         fileLine.visibility = View.VISIBLE
         fileLine.text = zip.name
         action.isEnabled = false
-        total.text = "正在解析备份…"
+        total.text = context.getString(R.string.backup_reading)
 
         val dialog = AlertDialog.Builder(context).setView(view).setCancelable(true).create()
         val boxes = LinkedHashMap<String, CheckBox>()
@@ -281,14 +281,14 @@ object BackupDialog {
             view.post {
                 list.removeAllViews()
                 if (found.isEmpty()) {
-                    total.text = "这个包里没有可恢复的 DSH 数据"
+                    total.text = context.getString(R.string.backup_no_restorable_data)
                     return@post
                 }
                 for (f in found) {
                     val cb = CheckBox(context).apply {
                         // 默认全勾 —— 用户主动点了「导入」，意图就是恢复
                         isChecked = true
-                        text = "${f.label}  ·  ${f.entries} 个文件, ${UserDataExporter.humanSize(f.bytes)}"
+                        text = context.getString(R.string.backup_item_summary, f.label, f.entries, UserDataExporter.humanSize(f.bytes))
                         setTextColor(0xFFE8EDF5.toInt())
                         textSize = 13.5f
                         setPadding(0, 12, 0, 12)
@@ -296,7 +296,7 @@ object BackupDialog {
                     boxes[f.id] = cb
                     list.addView(cb)
                 }
-                total.text = "共 ${found.size} 类可恢复"
+                total.text = context.getString(R.string.backup_restorable_count, found.size)
                 action.isEnabled = true
             }
         }, "dsh-backup-inspect").start()
@@ -332,24 +332,24 @@ object BackupDialog {
 
     /** 导出结果的提示文案（调用方拿去 Toast）。 */
     fun exportResultText(context: Context, file: File?): String = if (file == null) {
-        "导出失败（详情见日志 BackupDialog）"
+        context.getString(R.string.backup_export_failed_detail)
     } else {
         // ⚠️ 给**完整路径**：用户要用文件管理器找到它、或从聊天软件发出去
-        "已导出：${file.absolutePath}\n（${UserDataExporter.humanSize(file.length())}）"
+        context.getString(R.string.backup_exported, file.absolutePath, UserDataExporter.humanSize(file.length()))
     }
 
     /** 导入结果的提示文案。 */
     fun importResultText(context: Context, r: UserDataImporter.Result?): String = when {
-        r == null -> "导入失败（备份包读不了，详情见日志）"
-        r.entries == 0 -> "没有导入任何文件（勾选项在包里不存在）"
+        r == null -> context.getString(R.string.backup_import_failed_detail)
+        r.entries == 0 -> context.getString(R.string.backup_no_imported_files)
         else -> buildString {
-            append("已恢复 ${r.entries} 个文件（${UserDataExporter.humanSize(r.bytes)}）")
-            if (r.failed > 0) append("，${r.failed} 个失败")
+            append(context.getString(R.string.backup_restored_count, r.entries, UserDataExporter.humanSize(r.bytes)))
+            if (r.failed > 0) append(context.getString(R.string.backup_failed_count, r.failed))
             // 跨 flavor 导入时改写了配置里的绝对路径 —— 明确告诉用户，
             // 否则他不知道为什么能跨版本用
-            if (r.fixedPaths > 0) append("\n已自动修正 ${r.fixedPaths} 个配置文件的路径（跨版本兼容）")
-            r.backupDir?.let { append("\n原有数据已备份到：${it.name}") }
-            append("\n请重启 App 让引擎重新加载。")
+            if (r.fixedPaths > 0) append(context.getString(R.string.backup_fixed_paths, r.fixedPaths))
+            r.backupDir?.let { append(context.getString(R.string.backup_original_saved, it.name)) }
+            append(context.getString(R.string.backup_restart_hint))
         }
     }
 }

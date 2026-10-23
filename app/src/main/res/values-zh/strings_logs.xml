@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 日志界面 -->
+    <string name="logs_title">运行日志</string>
+    <string name="logs_close">关闭</string>
+    <string name="logs_level_all">全部</string>
+    <string name="logs_level_warn">警告+</string>
+    <string name="logs_level_error">仅错误</string>
+    <string name="logs_src_all">全部来源</string>
+    <string name="logs_src_app">应用</string>
+    <string name="logs_src_engine">引擎</string>
+    <string name="logs_src_web">网页</string>
+    <string name="logs_src_crash">崩溃</string>
+    <string name="logs_search_hint">搜索（tag、关键字、时间）</string>
+    <string name="logs_export">导出诊断包</string>
+    <string name="logs_upload">上传给开发者</string>
+    <string name="logs_copy">复制全部</string>
+    <string name="logs_refresh">刷新</string>
+    <string name="logs_clear">清空</string>
+    <string name="logs_plugins">插件</string>
+
+    <!--
+      ══ 插件开关（App 打不开时的自救）══════════════════════════════════════
+
+      ⚠️ 这一组文案的读者是「界面已经打不开、正着急的用户」，所以必须：
+      ① 说清**摘掉插件不会丢数据**（他最怕的是这个）；
+      ② 说清**为什么值得摘**（进去之后才能让 AI 修）；
+      ③ 不用「bundle」这类内部词，除非同时给出人话解释。
+    -->
+    <string name="logs_plugins_title">插件（%1$d 个）</string>
+    <string name="logs_plugins_apply">应用</string>
+    <string name="logs_plugins_none">当前没有第三方插件。\n\n界面若仍然打不开，问题不在插件上 —— 请把诊断包发给开发者。</string>
+    <string name="logs_plugins_unreadable">读不到插件清单（profiles/web/package.json 不是合法 JSON 或被删了）。\n\n这正是界面打不开的常见原因。请进对话后让 AI 修它；若进不去，请把诊断包发给开发者。</string>
+    <string name="logs_plugins_failed">改动没能生效</string>
+    <string name="logs_plugins_unchanged">没有改动</string>
+    <string name="logs_plugins_restart_title">需要重启才能生效</string>
+    <string name="logs_plugins_restart_msg">已改动 %1$d 项插件。\n\n重启后生效（约十几秒）。你的会话、凭据、工作区都不会丢。</string>
+    <string name="logs_plugins_restart_now">立即重启</string>
+    <string name="logs_plugins_restarting">正在重启…</string>
+    <string name="logs_plugins_restart_failed">重启失败：%1$s</string>
+
+    <!--
+      空态文案。
+
+      ⚠️ 刻意给一句**可执行**的话而不是「暂无数据」：用户在这个界面看到空白时
+      会以为功能坏了。说清「什么情况下才会有内容」，并提示他能做什么。
+    -->
+    <string name="logs_empty">暂无日志。\n\n引擎启动、插件加载、崩溃现场都会记在这里。\n若刚重启过应用，稍等几秒再点「刷新」。</string>
+
+    <!-- 清空前的确认 -->
+    <string name="logs_clear_confirm">清空日志？\n\n会删除已落盘的日志与崩溃现场，无法恢复。\n（正在运行的应用会继续记录新日志）</string>
+    <string name="logs_cleared">日志已清空</string>
+    <string name="logs_copied">已复制 %1$d 行日志</string>
+    <string name="logs_copy_failed">复制失败：%1$s</string>
+    <string name="logs_exporting">正在生成诊断包…</string>
+    <string name="logs_export_ok">诊断包已保存：\n%1$s</string>
+    <string name="logs_export_failed">诊断包生成失败：%1$s</string>
+    <string name="logs_uploading">正在上传诊断包…</string>
+    <string name="logs_upload_progress">正在上传（%1$d 份待传）…</string>
+    <string name="logs_no_pending">没有待上传的诊断包</string>
+
+    <!-- 浮层上的日志入口。⚠️ 文案必须常驻可见，不能只在失败态出现（见 MainActivity） -->
+    <string name="overlay_logs_entry">查看日志</string>
+
+    <!-- 设置页里的日志入口 -->
+    <string name="settings_logs_entry">运行日志与诊断</string>
+</resources>

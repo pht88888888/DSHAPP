@@ -158,21 +158,21 @@ class LogViewerActivity : AppCompatActivity() {
         //   可能是被系统回收、被 ROM 冻结、断电。所以分三档说，且只有真找到
         //   崩溃现场文件时才说「崩溃」。见 BootState 的诚实分级说明。
         summary.text = when {
-            hard > 0 -> "⚠ 发现 $hard 份崩溃现场（共 $scenes 份现场文件），详见「崩溃」筛选"
-            prev.unstable -> "⚠ 连续 ${prev.consecutiveUncleanCount} 次未正常结束，疑似启动即崩"
-            prev.known && !prev.clean -> "上次非正常结束（无堆栈；可能是崩溃/被系统回收/断电），共 $scenes 份现场文件"
+            hard > 0 -> getString(R.string.logs_crash_summary, hard, scenes)
+            prev.unstable -> getString(R.string.logs_unclean_streak, prev.consecutiveUncleanCount)
+            prev.known && !prev.clean -> getString(R.string.logs_unclean_exit, scenes)
             // ⚠️ **不能举例子。** 原来这里写「（非崩溃类：渲染进程被回收、引擎退出等）」，
             //   而真机 162 份现场里非硬崩溃类共 99 份，其中 `engine-start-failed` 占
             //   81 份（82%）—— 举例举的是占比最小的那一类，把最大的一类漏掉了。
             //   例子是猜测，类别是事实。
-            scenes > 0 -> "共 $scenes 份现场文件（非崩溃类：${CrashRecorder.summarizeKinds(sceneFiles)}）"
-            else -> "未发现崩溃现场"
+            scenes > 0 -> getString(R.string.logs_scene_summary, scenes, CrashRecorder.summarizeKinds(sceneFiles))
+            else -> getString(R.string.logs_no_crash_scenes)
         }
 
         env.text = "${VersionInfo.summary()} · ${VersionInfo.deviceSummary()}"
-        env.append("\n内存 ${LogStore.entries().size} 条 · 本次启动 ${BootState.bootId}")
+        env.append(getString(R.string.logs_memory_summary, LogStore.entries().size, BootState.bootId))
         val pending = runCatching { LogUploader.pendingCount(logsDir()) }.getOrDefault(0)
-        if (pending > 0) env.append(" · $pending 份待上传")
+        if (pending > 0) env.append(getString(R.string.logs_pending_summary, pending))
     }
 
     // ── 加载与筛选 ───────────────────────────────────────────────────────────
@@ -239,7 +239,7 @@ class LogViewerActivity : AppCompatActivity() {
         CrashRecorder.listScenes().take(MAX_CRASH_ROWS).mapIndexed { i, f ->
             val head = runCatching {
                 f.bufferedReader().useLines { it.take(HEAD_LINES).joinToString("\n") }
-            }.getOrDefault("(无法读取)")
+            }.getOrDefault(getString(R.string.logs_unreadable))
             // ⚠️ **必须用 CrashRecorder.kindOf，不能用 substringAfterLast('-')。**
             //   文件名契约是 `<yyyyMMdd-HHmmss>-<kind>.txt`，而**时间戳自己也含 `-`**；
             //   切尾段得到的是类别名的后半截：`engine-start-failed`→`failed`、
@@ -252,7 +252,7 @@ class LogViewerActivity : AppCompatActivity() {
                 t = f.lastModified(),
                 level = if (CrashRecorder.isHardCrash(f)) 'E' else 'W',
                 tag = "crash/$kind",
-                msg = "$head\n…（只显示前 $HEAD_LINES 行；完整内容见 crash/${f.name}）",
+                msg = getString(R.string.logs_preview_truncated, head, HEAD_LINES, f.name),
                 seq = -(i + 1L),
                 // 这一行代表一个**现场文件**，不是一条日志 —— 它没有「写入线程」。
                 // ⚠️ 不能填 Thread.currentThread().name：那会显示成 UI 线程，纯属编造。
@@ -313,7 +313,7 @@ class LogViewerActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.logRefresh).setOnClickListener {
             renderHeader()
             reload()
-            toast("已刷新")
+            toast(getString(R.string.logs_refreshed))
         }
         findViewById<TextView>(R.id.logCopy).setOnClickListener { copyAll() }
         findViewById<TextView>(R.id.logPlugins).setOnClickListener { showPluginSheet() }
@@ -356,7 +356,7 @@ class LogViewerActivity : AppCompatActivity() {
             AlertDialog.Builder(this)
                 .setTitle(R.string.logs_plugins)
                 .setMessage(R.string.logs_plugins_unreadable)
-                .setPositiveButton("知道了", null)
+                .setPositiveButton(getString(R.string.ui_got_it), null)
                 .show()
             return
         }
@@ -366,7 +366,7 @@ class LogViewerActivity : AppCompatActivity() {
             AlertDialog.Builder(this)
                 .setTitle(R.string.logs_plugins)
                 .setMessage(getString(R.string.logs_plugins_none))
-                .setPositiveButton("知道了", null)
+                .setPositiveButton(getString(R.string.ui_got_it), null)
                 .show()
             return
         }
@@ -380,7 +380,7 @@ class LogViewerActivity : AppCompatActivity() {
             .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
                 checked[which] = isChecked
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(getString(R.string.ui_cancel), null)
             .setPositiveButton(R.string.logs_plugins_apply) { _, _ ->
                 applyPluginToggles(profileDir, third, checked)
             }
@@ -417,7 +417,7 @@ class LogViewerActivity : AppCompatActivity() {
             AlertDialog.Builder(this)
                 .setTitle(R.string.logs_plugins_failed)
                 .setMessage(failures.joinToString("\n\n"))
-                .setPositiveButton("知道了", null)
+                .setPositiveButton(getString(R.string.ui_got_it), null)
                 .show()
             return
         }
@@ -429,7 +429,7 @@ class LogViewerActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(R.string.logs_plugins_restart_title)
             .setMessage(getString(R.string.logs_plugins_restart_msg, changed))
-            .setNegativeButton("稍后", null)
+            .setNegativeButton(getString(R.string.ui_later), null)
             .setPositiveButton(R.string.logs_plugins_restart_now) { _, _ ->
                 restartEngine()
             }
@@ -445,7 +445,7 @@ class LogViewerActivity : AppCompatActivity() {
             finish()
         }.onFailure {
             DshLog.e(DshApplication.TAG, "重启引擎失败: ${it.message}", it)
-            toast(getString(R.string.logs_plugins_restart_failed, it.message ?: "未知错误"))
+            toast(getString(R.string.logs_plugins_restart_failed, it.message ?: getString(R.string.ui_unknown_error)))
         }
     }
 
@@ -459,15 +459,15 @@ class LogViewerActivity : AppCompatActivity() {
      */
     private fun copyAll() {
         if (rows.isEmpty()) {
-            toast("当前筛选下没有日志")
+            toast(getString(R.string.logs_filter_empty))
             return
         }
         val text = rows.joinToString("\n") { formatRow(it) }
         runCatching {
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("DSH 日志", text))
+            cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.logs_clipboard_label), text))
             toast(getString(R.string.logs_copied, rows.size))
-        }.onFailure { toast(getString(R.string.logs_copy_failed, it.message ?: "未知错误")) }
+        }.onFailure { toast(getString(R.string.logs_copy_failed, it.message ?: getString(R.string.ui_unknown_error))) }
     }
 
     /**
@@ -506,7 +506,7 @@ class LogViewerActivity : AppCompatActivity() {
                     //   这句正好违反它。现在改为指向**真实原因的去处**：
                     //   `DiagnosticBundle.build` 的 catch 已把异常落进 `app.log`
                     //   （tag `Diagnostic`），用户/分析者按 tag 一搜就能看到。
-                    toast(getString(R.string.logs_export_failed, "见日志里的 Diagnostic 条目"))
+                    toast(getString(R.string.logs_export_failed, getString(R.string.logs_diagnostic_hint)))
                 }
             }
         }, "dsh-log-export").apply { isDaemon = true }.start()
@@ -546,7 +546,7 @@ class LogViewerActivity : AppCompatActivity() {
             }.getOrNull()
             if (bundle == null) {
                 // 同上：不猜原因，指向真实原因的去处（`app.log` 的 `Diagnostic` 条目）。
-                handler.post { toast(getString(R.string.logs_export_failed, "见日志里的 Diagnostic 条目")) }
+                handler.post { toast(getString(R.string.logs_export_failed, getString(R.string.logs_diagnostic_hint))) }
                 return@Thread
             }
             // 入待传队列：上传失败时它留在 pending/，下次启动自动重试。
@@ -572,12 +572,12 @@ class LogViewerActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(R.string.logs_clear)
             .setMessage(R.string.logs_clear_confirm)
-            .setNegativeButton("取消", null)
-            .setPositiveButton("清空") { _, _ ->
+            .setNegativeButton(getString(R.string.ui_cancel), null)
+            .setPositiveButton(getString(R.string.logs_clear)) { _, _ ->
                 Thread({
                     val n = LogStore.clearAll(logsDir())
                     handler.post {
-                        toast("已清空 $n 个文件，${getString(R.string.logs_cleared)}")
+                        toast(getString(R.string.logs_files_cleared, n, getString(R.string.logs_cleared)))
                         renderHeader()
                         reload()
                     }

@@ -421,7 +421,13 @@ object AdbPairingNotifier {
     private fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        if (existing != null) {
+            existing.name = context.getString(R.string.pairing_channel_name)
+            existing.description = context.getString(R.string.pairing_channel_desc)
+            manager.createNotificationChannel(existing)
+            return
+        }
         // ⚠️ 必须 HIGH：配对是**需要用户立刻操作**的一次性交互，
         //    用引擎那条 IMPORTANCE_LOW 的渠道会静默躺在通知栏里没人看见。
         val channel = NotificationChannel(

@@ -111,18 +111,18 @@ object PluginManifest {
         if (isProtected(name)) {
             // ⚠️ 这一条不是防御性编程，是真会发生：列表里本来就不显示官方
             //   bundle，但用户可能从日志里看到名字后手动要求 —— 说清为什么不行。
-            return false to "官方插件 $name 不能摘掉（摘了界面本身就没有了）"
+            return false to DshApplication.instance.getString(R.string.plugin_core_required, name)
         }
 
         val f = File(profileDir, "package.json")
         val root = runCatching { JSONObject(f.readText()) }.getOrElse {
-            return false to "插件清单不是合法 JSON（${it.message}）—— 请先让 AI 修好它"
+            return false to DshApplication.instance.getString(R.string.plugin_manifest_invalid, it.message)
         }
 
         val current = bundlesOf(root)
         val target = if (remove) current - name else (current + name).distinct()
         if (target == current) {
-            return true to if (remove) "$name 本来就不在清单里" else "$name 本来就在清单里"
+            return true to if (remove) DshApplication.instance.getString(R.string.plugin_already_absent, name) else DshApplication.instance.getString(R.string.plugin_already_present, name)
         }
 
         // 写回 `dsh.profile.bundles`，其余字段一字不动（不变量①）
@@ -143,25 +143,25 @@ object PluginManifest {
             val check = JSONObject(tmp.readText())
             val got = bundlesOf(check)
             if (got.toSet() != target.toSet()) {
-                error("回读校验不一致（写入 ${target.size} 项，读回 ${got.size} 项）")
+                error(DshApplication.instance.getString(R.string.plugin_verify_mismatch, target.size, got.size))
             }
             if (!tmp.renameTo(f)) {
                 // rename 失败（跨设备/被占用）就退回直接写，再回读一次
                 f.writeText(text)
                 val again = bundlesOf(JSONObject(f.readText()))
-                if (again.toSet() != target.toSet()) error("直接写回后校验不一致")
+                if (again.toSet() != target.toSet()) error(DshApplication.instance.getString(R.string.plugin_direct_verify_mismatch))
                 tmp.delete()
             }
             Log.i(TAG, "插件清单已更新: ${if (remove) "摘掉" else "装回"} $name，" +
                 "bundles 现为 ${target.size} 项")
-            true to if (remove) "已摘掉 $name，重启后生效" else "已装回 $name，重启后生效"
+            true to if (remove) DshApplication.instance.getString(R.string.plugin_removed, name) else DshApplication.instance.getString(R.string.plugin_restored, name)
         }.getOrElse { e ->
             // ⚠️ 失败要还原：备份存在就写回去，宁可回到「界面坏」也不能变成
             //   「引擎起不来」（那是更彻底、更不可逆的坏法）。
             Log.e(TAG, "写插件清单失败，尝试还原: ${e.message}", e)
             runCatching { if (bak.isFile) bak.copyTo(f, overwrite = true) }
             runCatching { tmp.delete() }
-            false to "写入失败（${e.message}）—— 已还原原配置"
+            false to DshApplication.instance.getString(R.string.plugin_write_failed, e.message)
         }
     }
 
