@@ -213,6 +213,9 @@ object BackupImporter {
 
         val moved = mutableListOf<Pair<File, File>>()   // (原位置, 恢复点位置)
         val restored = mutableListOf<String>()
+        // profile 配置是**逐文件**恢复的（不整体替换目录，见 ②b 的说明），
+        // 所以回滚也要逐文件 —— 单独一份清单。
+        val profileFiles = mutableListOf<Pair<File, File>>()
 
         return try {
             // ① 建恢复点：把**将被覆盖**的目录改名移走
@@ -253,6 +256,42 @@ object BackupImporter {
                 restored.add(sub)
             }
 
+            // ②b profile 配置：**逐文件**恢复，不整体替换目录
+            //
+            // ⚠️ 为什么不整体替换 `profiles/web/`：那个目录里还有 `node_modules`
+            //   （几百 MB 的插件实体）。整体替换会：
+            //   - 把用户的插件安装状态换成备份时的（可能已过期）
+            //   - 复制几百 MB，导入时间从秒级变成分钟级
+            //
+            //   所以只恢复**配置**（package.json + cordis.patch.yml），
+            //   插件的实际安装由包管理器负责（G5 范围）。
+            val profileName = staged.manifest.profile.ifEmpty { "web" }
+            val profileDst = File(home, "profiles/$profileName")
+            val profileSrc = File(staged.dir, "profiles/$profileName")
+            if (profileSrc.isDirectory) {
+                // 建恢复点（逐文件）
+                val profileBak = File(rollbackRoot, "profiles/$profileName")
+                profileBak.mkdirs()
+                for (name in PROFILE_FILES) {
+                    val cur = File(profileDst, name)
+                    if (cur.isFile) {
+                        val bak = File(profileBak, name)
+                        if (cur.copyTo(bak, overwrite = true).exists()) {
+                            profileFiles.add(cur to bak)
+                        }
+                    }
+                }
+                // 覆盖
+                profileDst.mkdirs()
+                for (name in PROFILE_FILES) {
+                    val src = File(profileSrc, name)
+                    if (src.isFile) {
+                        src.copyTo(File(profileDst, name), overwrite = true)
+                        restored.add("profiles/$profileName/$name")
+                    }
+                }
+            }
+
             // ③ 成功：删恢复点
             rollbackRoot.deleteRecursively()
 
@@ -265,6 +304,15 @@ object BackupImporter {
             Log.w(TAG, "导入应用失败，回滚: ${t.message}")
             // ⚠️ 回滚：把恢复点移回来
             var allBack = true
+            // profile 逐文件回滚（先做，因为它是细粒度的）
+            for ((orig, bak) in profileFiles.asReversed()) {
+                try {
+                    if (bak.isFile) bak.copyTo(orig, overwrite = true)
+                } catch (e: Throwable) {
+                    allBack = false
+                    Log.w(TAG, "回滚 profile 文件失败: ${orig.name}")
+                }
+            }
             for ((orig, bak) in moved.asReversed()) {
                 // 先删掉可能已写了一半的目标
                 orig.deleteRecursively()
@@ -279,6 +327,72 @@ object BackupImporter {
                 mapOf("ok" to allBack.toString(), "reason" to (t.message ?: "?")),
             )
             Applied.Failed(t.message ?: "应用失败", rolledBack = allBack)
+        }
+    }
+
+    /**
+     * 校验 profile 的 bundles 清单与实际安装的包是否一致。
+     *
+     * ## 文档要求（§5.3.5）
+     *
+     * > 按原安装图恢复目录、依赖实体和安全链接，**不盲目混合两套依赖图**
+     *
+     * ## 为什么需要它
+     *
+     * 备份里的 `package.json` 记录「当时启用了哪些插件」（`dsh.profile.bundles`），
+     * 但**包实体没有进备份**（几百 MB，且可从 npm 重装）。
+     *
+     * 于是恢复后会有一个真实的不一致：
+     *
+     * ```
+     * bundles: ["dsh-android-mobile", "some-third-party"]   ← 从备份恢复的
+     * node_modules/                                          ← 用户当前的
+     *   dsh-android-mobile/  ✅ 在
+     *   some-third-party/    ❌ 不在（备份里有，当前机器没装）
+     * ```
+     *
+     * 引擎遇到「清单里有但包不在」会报错，而**报错信息指向的是包名**，
+     * 用户完全不知道这是「导入了一份来自别的机器的备份」导致的。
+     *
+     * 所以本函数把这个不一致**提前摆出来**，让调用方决定：
+     * 是移除缺的条目，还是提示用户去装。
+     *
+     * @return 问题描述列表；空 = 一致
+     */
+    fun checkBundleConsistency(
+        context: Context,
+        env: ManageEnv.Env,
+        profileName: String,
+    ): List<String> {
+        val home = ManageEnv.home(context, env)
+        val profileDir = File(home, "profiles/$profileName")
+        val manifest = File(profileDir, "package.json")
+        if (!manifest.isFile) return emptyList()
+
+        return try {
+            val o = org.json.JSONObject(manifest.readText())
+            val bundles = o.optJSONObject("dsh")
+                ?.optJSONObject("profile")
+                ?.optJSONArray("bundles")
+                ?: return emptyList()
+
+            val nodeModules = File(profileDir, "node_modules")
+            val problems = mutableListOf<String>()
+
+            for (i in 0 until bundles.length()) {
+                val name = bundles.optString(i, "")
+                if (name.isEmpty()) continue
+                // 包名可能是 @scope/name，路径要拆成两级（File 会自动处理）
+                val pkgDir = File(nodeModules, name)
+                if (!pkgDir.isDirectory) {
+                    problems.add("清单里有「$name」但包未安装")
+                }
+            }
+            problems
+        } catch (t: Throwable) {
+            // ⚠️ 清单解析失败**如实报告**，不静默放过 ——
+            //   一个坏掉的 package.json 会让引擎直接起不来。
+            listOf("profile 清单无法解析：${t.message}")
         }
     }
 
@@ -299,6 +413,17 @@ object BackupImporter {
      * ⚠️ `profiles/` 单独处理：只恢复我们备份的那两个文件，
      * 不覆盖整个 profile（那会丢掉 node_modules 的安装状态）。
      */
+    /**
+     * profile 里要恢复的**配置文件**（不含 `node_modules`）。
+     *
+     * ⚠️ 必须与 [BackupOrchestrator] 的 `PROFILE_FILES` 一致 ——
+     *   备份了什么就必须能恢复什么，否则是「备份了但恢复不回来」的半吊子状态。
+     */
+    private val PROFILE_FILES = listOf(
+        "package.json",
+        "cordis.patch.yml",
+    )
+
     private val RESTORED = listOf(
         "sessions",
         "storages",

@@ -1781,6 +1781,29 @@ class MainActivity : AppCompatActivity() {
                         importPhase = "done"
                         importRestored = result.restored
                         ok = true
+                        // ── 依赖一致性检查（文档：不盲目混合两套依赖图）──────
+                        //
+                        // 备份里有 package.json 的 bundles 清单，但**包实体没进备份**
+                        // （几百 MB，可从 npm 重装）。所以恢复后可能「清单说启用 X，
+                        // 但 X 没装」—— 引擎会报错，而报错只指向包名，用户不知道
+                        // 这是「导入了一份来自别的机器的备份」导致的。
+                        //
+                        // ⚠️ 只提示不自动修改：自动摘掉条目会改变用户的插件配置，
+                        //   那必须是显式动作。
+                        runCatching {
+                            val problems = com.dsh.android.backup.BackupImporter
+                                .checkBundleConsistency(
+                                    this@MainActivity,
+                                    com.dsh.android.manage.ManageEnv.Env.A,
+                                    staged.manifest.profile.ifEmpty { "web" },
+                                )
+                            if (problems.isNotEmpty()) {
+                                importError = "插件清单与已装包不一致（${problems.size} 项）：" +
+                                    problems.take(3).joinToString("、") +
+                                    if (problems.size > 3) " 等" else ""
+                                Log.w(DshApplication.TAG, importError)
+                            }
+                        }
                     }
                     is com.dsh.android.backup.BackupImporter.Applied.Failed -> {
                         importPhase = "failed"
