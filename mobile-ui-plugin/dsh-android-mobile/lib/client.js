@@ -9534,6 +9534,197 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		// ── 布局设置节（设计说明 §4.9）────────────────────────────────────
+		//
+		// ⚠️ 文档要求「设置所有者与布局执行者分开」：
+		//   本节的插件**只保存偏好**，实际布局由原生 LayoutAdapter 决定。
+		//   「只保存偏好的插件不重复注册客户端适配器」—— 我们这里只调桥，不自己算。
+		const MP_LAYOUT_NS = "dsh-android-mobile.layout";
+		const MP_LAYOUT_ZH = {
+			nav: "界面布局",
+			title: "界面布局",
+			intro: "决定用手机适配界面还是官方桌面界面。默认自动 —— 按窗口形状判断，竖屏用手机布局，横屏用桌面布局。",
+			curTitle: "当前状态",
+			rowMode: "设置",
+			rowActual: "实际布局",
+			rowReason: "判定依据",
+			modeAuto: "自动（推荐）",
+			modeMobile: "强制手机布局",
+			modeOfficial: "强制官方布局",
+			actualMobile: "手机布局",
+			actualOfficial: "官方布局",
+			autoHint: "自动模式按**窗口宽高比**判断，不看屏幕方向、也不看有没有接鼠标：",
+			autoRule1: "宽高比 > 4/3 → 官方布局",
+			autoRule2: "宽高比 < 3/4 → 手机布局",
+			autoRule3: "介于两者之间 → 保持上次的布局（避免来回跳）",
+			manualHint: "强制模式会锁定，不随窗口变化切换。",
+			noBridge: "当前环境没有原生桥（DSHAndroid 不可用），无法切换布局。",
+			noteTitle: "几点说明",
+			note1: "旋转屏幕、分屏、折叠屏展开都不会重启应用或丢失草稿 —— 只会重算布局。",
+			note2: "键盘弹出不会影响布局判断（用的是不含键盘的窗口尺寸）。",
+			note3: "桌面浏览器访问时自动使用官方布局，不受这里的设置影响。",
+			applied: "已切换",
+		};
+
+		const MP_LAYOUT_EN = {
+			nav: "Layout",
+			title: "Layout",
+			intro: "Choose the mobile-adapted UI or the official desktop UI. Auto is recommended: it decides by window shape.",
+			curTitle: "Status",
+			rowMode: "Setting",
+			rowActual: "Actual layout",
+			rowReason: "Decided by",
+			modeAuto: "Auto (recommended)",
+			modeMobile: "Force mobile",
+			modeOfficial: "Force official",
+			actualMobile: "Mobile",
+			actualOfficial: "Official",
+			autoHint: "Auto decides by **window aspect ratio**, not screen orientation or mouse presence:",
+			autoRule1: "ratio > 4/3 → official",
+			autoRule2: "ratio < 3/4 → mobile",
+			autoRule3: "in between → keep the previous layout (avoids flip-flopping)",
+			manualHint: "Forced modes are locked and do not change with the window.",
+			noBridge: "No native bridge (DSHAndroid); cannot change layout here.",
+			noteTitle: "Notes",
+			note1: "Rotating, split-screen and fold/unfold never restart the app or lose drafts — only the layout is recomputed.",
+			note2: "The keyboard does not affect layout decisions (window size excludes IME).",
+			note3: "Desktop browsers always use the official layout regardless of this setting.",
+			applied: "Applied",
+		};
+
+		/**
+		 * 布局设置节。
+		 *
+		 * ⚠️ 本节的定位是「**设置所有者**」，不是「布局执行者」——
+		 *   它只把用户的选择传给原生，从不自己算布局。
+		 *   文档明确：「设置所有者与布局执行者分开」。
+		 */
+		function mpLayoutSection(props) {
+			const React = mpPrivReact;
+			const S = MP_PRIV_S;
+			const t = typeof props.t === "function" ? props.t : (key) => MP_LAYOUT_ZH[key] ?? key;
+			const [state, setState] = React.useState({ phase: "loading" });
+			const [msg, setMsg] = React.useState("");
+
+			const bridge = () => (typeof window !== "undefined" ? window.DSHAndroid : undefined);
+
+			const refresh = React.useCallback(() => {
+				const b = bridge();
+				if (!b || typeof b.layoutState !== "function") {
+					setState({ phase: "nobridge" });
+					return;
+				}
+				try {
+					const o = JSON.parse(b.layoutState() || "{}");
+					setState({ phase: "ready", data: o });
+				} catch (e) {
+					setState({ phase: "error", error: (e && e.message) || String(e) });
+				}
+			}, []);
+
+			React.useEffect(() => { refresh(); }, [refresh]);
+
+			const choose = React.useCallback((mode) => {
+				const b = bridge();
+				if (!b || typeof b.layoutSetMode !== "function") { setMsg(t("noBridge")); return; }
+				try {
+					const r = JSON.parse(b.layoutSetMode(mode) || "{}");
+					if (r.ok) { setMsg(t("applied")); refresh(); }
+					else { setMsg(r.error || "失败"); }
+				} catch (e) {
+					setMsg((e && e.message) || "失败");
+				}
+			}, [refresh, t]);
+
+			if (state.phase === "loading") {
+				return React.createElement("div", { className: S.section }, "...");
+			}
+			if (state.phase === "nobridge") {
+				return React.createElement("div", { className: S.section },
+					React.createElement("div", { className: S.intro }, t("noBridge")));
+			}
+
+			const d = state.data || {};
+			const curMode = d.mode || "auto";
+			const actual = d.layout === "mobile" ? t("actualMobile") : t("actualOfficial");
+
+			const modeBtn = (mode, label) =>
+				React.createElement("button", {
+					className: S.btn,
+					style: curMode === mode
+						? { outline: "2px solid currentColor", fontWeight: 600 }
+						: undefined,
+					onClick: () => choose(mode),
+				}, (curMode === mode ? "✓ " : "") + label);
+
+			return React.createElement("div", { className: S.section },
+				React.createElement("div", { className: S.intro }, t("intro")),
+
+				React.createElement("h3", { className: S.heading }, t("curTitle")),
+				React.createElement("div", { className: S.row },
+					React.createElement("span", { className: S.rowLabel }, t("rowMode")),
+					React.createElement("span", { className: S.rowValue },
+						curMode === "auto" ? t("modeAuto")
+							: curMode === "mobile" ? t("modeMobile") : t("modeOfficial"))),
+				React.createElement("div", { className: S.row },
+					React.createElement("span", { className: S.rowLabel }, t("rowActual")),
+					React.createElement("span", { className: S.rowValue }, actual)),
+
+				React.createElement("h3", { className: S.heading }, t("rowMode")),
+				modeBtn("auto", t("modeAuto")),
+				modeBtn("mobile", t("modeMobile")),
+				modeBtn("official", t("modeOfficial")),
+
+				React.createElement("div", { className: S.intro }, t("autoHint")),
+				React.createElement("ul", { className: S.notes },
+					React.createElement("li", null, t("autoRule1")),
+					React.createElement("li", null, t("autoRule2")),
+					React.createElement("li", null, t("autoRule3"))),
+				React.createElement("div", { className: S.intro }, t("manualHint")),
+
+				msg ? React.createElement("div", { className: S.intro }, msg) : null,
+
+				React.createElement("h3", { className: S.heading }, t("noteTitle")),
+				React.createElement("ul", { className: S.notes },
+					React.createElement("li", null, t("note1")),
+					React.createElement("li", null, t("note2")),
+					React.createElement("li", null, t("note3"))),
+			);
+		}
+
+		/**
+		 * 注册布局设置节。
+		 *
+		 * ⚠️ order 取 30（现有最大是 29）：布局是「外观类」设置，
+		 *   放在备份/日志之后合理。
+		 */
+		function mpRegisterLayoutSection(ctx) {
+			let React = mpPrivReact;
+			if (!React) {
+				try { React = require("react"); mpPrivReact = React; }
+				catch (e) { mpPrivReact = null; }
+			}
+			if (!mpPrivReact) return;
+			try {
+				ctx.inject(["slots", "locale"], (scope) => {
+					const t = scope.locale.bind(MP_LAYOUT_NS);
+					scope.effect(
+						() => scope.locale.register(MP_LAYOUT_NS, { zh: MP_LAYOUT_ZH, en: MP_LAYOUT_EN }),
+						"dsh-android-mobile: 布局字典",
+					);
+					scope.slots.inject("settings.section", () => scope.slots.register({
+						name: "settings.section",
+						id: "dsh-android-layout",
+						order: 30,
+						label: () => t("nav"),
+						locale: MP_LAYOUT_NS,
+					}, mpLayoutSection));
+				});
+			} catch (e) {
+				console.warn("[dsh-android-mobile] 注册布局分节失败:", e && (e.stack || e.message || e));
+			}
+		}
+
 		/** 最近一次组字结束的时间戳（0 = 从未）。见 setupEnterAsNewline。 */
 		let mpLastCompositionEnd = 0;
 
@@ -10005,6 +10196,7 @@ window.__ModuleLoader__.load({
 			mpRegisterBubbleSection(ctx);
 			mpRegisterLogsSection(ctx);
 			mpRegisterBackupSection(ctx);   /* 备份与恢复（设计说明 §5.3） */
+			mpRegisterLayoutSection(ctx);   /* 界面布局（设计说明 §4.9） */
 			// ⚠️ 必须在任何 mpIsMobile() 调用之前拉布局 ——
 			//   否则首屏会用降级判据（宽度+指针）建出错误的界面，
 			//   然后再被修正，用户看到闪一下。
