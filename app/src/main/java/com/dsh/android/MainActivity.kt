@@ -826,6 +826,15 @@ class MainActivity : AppCompatActivity() {
         engine = EngineManager.get(this)
         loadImeHeight()   // 修复 65：把上次学到的键盘高度取回来（跨冷启动有效）
 
+        // ── 布局适配：LayoutAdapter 是唯一执行者（设计说明 §4.9）──────
+        //
+        // ⚠️ 必须在 `setContentView` 之后（此时窗口度量才有意义），
+        //   且在 WebView 创建之前（首次布局要一次性算对，避免加载后再跳）。
+        //
+        // ⚠️ 用 `post` 而不是直接调：onCreate 阶段 `currentWindowMetrics`
+        //   可能还没反映最终尺寸（尤其是分屏启动）。
+        mainHandler.post { applyLayout() }
+
         // 失败浮层上的唯一出路。⚠️ Button 是 clickable 的子 View，点击不会冒泡到
         // overlay 自己的监听器（那个只负责"点一下收起浮层"），两者不冲突。
         binding.overlaySafeMode.setOnClickListener { enterSafeMode() }
@@ -1602,6 +1611,98 @@ class MainActivity : AppCompatActivity() {
                 runBackupNow()
             }
         }, AUTO_BACKUP_DELAY_MS)
+    }
+
+    // ── 布局适配（设计说明 §4.9：LayoutAdapter 是唯一执行者）─────────
+
+    /** 最近一次算出的实际布局（mobile / official）。 */
+    @Volatile private var currentLayout: String? = null
+
+    /**
+     * 重新计算并应用布局。
+     *
+     * ⚠️ **尺寸必须来自实际应用窗口，不是物理屏幕**：
+     *   分屏、浮窗、折叠屏下两者差别很大，用物理尺寸会把分屏误判成全屏。
+     *
+     * ⚠️ **高度必须不含 IME**：文档明确「不用键盘缩小后的 visualViewport
+     *   误判方向」。所以用 `WindowInsets.Type.systemBars()` 而不是
+     *   `visualViewport` —— 键盘弹出时后者会变小，会让「手机横屏 + 键盘」
+     *   被误判成 official。
+     */
+    private fun applyLayout() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+            // API 30 以下拿不到 WindowMetrics，退回 displayMetrics
+            //
+            // ⚠️ 这是降级路径：物理尺寸在分屏下不准，但 API 30 以下
+            //   本来也没有可靠的「应用窗口」API。如实接受这个限制。
+            val dm = resources.displayMetrics
+            val d = com.dsh.android.layout.LayoutAdapter.apply(this, dm.widthPixels, dm.heightPixels)
+            currentLayout = d.layout
+            return
+        }
+        runCatching {
+            val wm = getSystemService(android.view.WindowManager::class.java)
+            val bounds = wm.currentWindowMetrics.bounds
+            val insets = wm.currentWindowMetrics.windowInsets
+                .getInsetsIgnoringVisibility(
+                    android.view.WindowInsets.Type.systemBars() or
+                        android.view.WindowInsets.Type.displayCutout(),
+                )
+            // ⚠️ 只减系统栏与刘海，**不减 IME**（见 KDoc）
+            val w = bounds.width() - insets.left - insets.right
+            val h = bounds.height() - insets.top - insets.bottom
+            val d = com.dsh.android.layout.LayoutAdapter.apply(this, w, h)
+            if (currentLayout != null && currentLayout != d.layout) {
+                Log.i(DshApplication.TAG, "布局切换: ${currentLayout} → ${d.layout}（${d.reason}）")
+                // ⚠️ 布局变了要让前端知道：通过桥推一个事件
+                notifyLayoutChanged(d.layout)
+            }
+            currentLayout = d.layout
+        }.onFailure { t ->
+            Log.w(DshApplication.TAG, "计算布局失败: ${t.message}")
+        }
+    }
+
+    /**
+     * 配置变化（旋转、分屏、折叠屏展开）时重新算布局。
+     *
+     * ⚠️ **不重建 Activity**：manifest 里已声明 `configChanges`，
+     *   所以旋转不会销毁重建 —— 这正是文档要求的
+     *   「不通过旋转重启 DSH 或重新创建会话」。
+     *
+     * ⚠️ 这里只**重算布局**，不重载页面（那会丢草稿）。
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.i(DshApplication.TAG, "配置变化（旋转/分屏），重算布局")
+        // 尺寸变化后窗口度量可能还没更新，延一帧再算
+        mainHandler.post { applyLayout() }
+    }
+
+    /**
+     * 通知前端布局变了。
+     *
+     * ⚠️ 用 `evaluateJavascript` 而不是重新 `loadUrl`：
+     *   重载页面会丢掉草稿与正在跑的任务（文档明确要求「不丢草稿/任务/会话」）。
+     */
+    private fun notifyLayoutChanged(layout: String) {
+        val js = "window.__DSH_LAYOUT__='$layout';" +
+            "window.dispatchEvent(new CustomEvent('dsh-layout-changed',{detail:'$layout'}));"
+        runCatching {
+            // ⚠️ WebView 是**动态添加**的（`binding.webContainer.addView(web.view)`），
+            //   没有稳定的 `R.id`。所以从容器里取，而不是 `findViewById`。
+            val container = binding.webContainer
+            for (i in 0 until container.childCount) {
+                val child = container.getChildAt(i)
+                if (child is android.webkit.WebView) {
+                    child.evaluateJavascript(js, null)
+                    return@runCatching
+                }
+            }
+            Log.w(DshApplication.TAG, "找不到 WebView，无法通知布局变化")
+        }.onFailure { t ->
+            Log.w(DshApplication.TAG, "通知前端布局变化失败: ${t.message}")
+        }
     }
 
     /** 待导入的备份包 URI（用户选完文件后暂存）。 */
