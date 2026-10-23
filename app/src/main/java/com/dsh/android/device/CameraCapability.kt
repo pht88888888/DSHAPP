@@ -391,6 +391,300 @@ object CameraCapability {
         0
     }
 
+    // ── 录像 ────────────────────────────────────────────────────────────
+
+    /**
+     * 录像参数。
+     *
+     * ⚠️ 文档 §4.13 要求「**限制类型、单文件/总量**、解码尺寸、并发播放器
+     * 和资源占用」—— 录像是最容易失控的一项（长时间录制会耗尽磁盘），
+     * 所以参数里**强制**有上限。
+     */
+    data class RecordConfig(
+        /** 分辨率。默认 1280×720（1080p 在低端机上可能掉帧）。 */
+        val width: Int = 1280,
+        val height: Int = 720,
+        /** 帧率。30fps 是通用值。 */
+        val fps: Int = 30,
+        /** 码率（bps）。默认 5 Mbps ≈ 720p30 的合理值。 */
+        val bitRate: Int = 5_000_000,
+        /**
+         * **最长录制时长（毫秒）**。
+         *
+         * ⚠️ 必须有上限：不设的话用户忘了停，一次录满磁盘 ——
+         *   而写满磁盘会让整个 App（含引擎）无法工作，不只是录像失败。
+         */
+        val maxDurationMs: Long = 60_000L,
+        /** 是否录声音。默认 false（相机能力的录像默认不涉及麦克风授权）。 */
+        val withAudio: Boolean = false,
+    )
+
+    /**
+     * 一段录好的视频。
+     */
+    data class Video(
+        val file: java.io.File,
+        val sha256: String,
+        val durationMs: Long,
+        val width: Int,
+        val height: Int,
+        val sizeBytes: Long,
+    )
+
+    /**
+     * 录像结果。
+     */
+    sealed interface RecordResult {
+        data class Ok(val video: Video) : RecordResult
+        data object NoHardware : RecordResult
+        data object NoPermission : RecordResult
+        data object Busy : RecordResult
+        /** 达到时长上限，**已自动停止并保存**。 */
+        data class MaxDurationReached(val video: Video) : RecordResult
+        /** 磁盘空间不足（开始前就拒绝）。 */
+        data class NoSpace(val freeMb: Long) : RecordResult
+        data class Failed(val reason: String) : RecordResult
+    }
+
+    /**
+     * 磁盘安全水位（字节）。
+     *
+     * ⚠️ 留 200 MB：录像本身可能写几十 MB，但**写满磁盘会让整个 App 失效**
+     *   （引擎、日志、会话都写不了）。所以宁可在快满时拒绝录像，
+     *   也不能把设备写死。
+     */
+    private const val MIN_FREE_BYTES = 200L * 1024 * 1024
+
+    /** 视频受管目录（与照片并列）。 */
+    private const val VIDEO_DIR = "camera-out-video"
+
+    /** 受管视频目录。 */
+    fun videoDir(context: Context): java.io.File =
+        java.io.File(context.filesDir, VIDEO_DIR).apply { mkdirs() }
+
+    /**
+     * **录像**。
+     *
+     * ## 完整链路
+     *
+     * ```
+     * prepare(MediaRecorder) → openCamera → createCaptureSession(recorder.surface)
+     *   → recorder.start() → (等待/到时) → recorder.stop() → 落盘
+     * ```
+     *
+     * ## ⚠️ 五个必须处理的点
+     *
+     * 1. **磁盘空间**：开始前检查，不足直接拒绝（见 [MIN_FREE_BYTES]）
+     * 2. **时长上限**：到时**自动停止并保存**，不是丢弃
+     * 3. **`recorder.stop()` 可能抛异常**：录制时长过短（<1 秒）时
+     *    MediaRecorder 会抛 `RuntimeException`，而文件仍是**有效的但很短**
+     * 4. **镜头必须释放**：`close()`，否则其他 App 打不开相机
+     * 5. **输出必须在受管目录**：同拍照
+     *
+     * @param onDone 回调（主线程）。**无论成败都会调一次**。
+     * @param onStarted 录制真正开始后回调（用于更新 UI 状态）
+     */
+    fun recordVideo(
+        context: Context,
+        config: RecordConfig = RecordConfig(),
+        cameraId: String? = null,
+        onStarted: () -> Unit = {},
+        onDone: (RecordResult) -> Unit,
+    ) {
+        // ① 磁盘空间
+        val free = try { context.filesDir.usableSpace } catch (t: Throwable) { -1L }
+        if (free in 1 until MIN_FREE_BYTES) {
+            EventLog.record("device.camera.noSpace", mapOf("freeMb" to (free / 1024 / 1024).toString()))
+            onDone(RecordResult.NoSpace(free / 1024 / 1024))
+            return
+        }
+
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+        if (cm == null) { onDone(RecordResult.NoHardware); return }
+        val all = discover(context)
+        if (all.isEmpty()) { onDone(RecordResult.NoHardware); return }
+        val target = cameraId ?: (all.firstOrNull { it.isBack } ?: all.first()).cameraId
+        val info = all.firstOrNull { it.cameraId == target } ?: all.first()
+
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        var device: CameraDevice? = null
+        var session: CameraCaptureSession? = null
+        var recorder: android.media.MediaRecorder? = null
+        val outFile = java.io.File(
+            videoDir(context),
+            "rec-${System.currentTimeMillis()}.mp4",
+        )
+        val startAt = System.currentTimeMillis()
+        var maxDurationTimer: Runnable? = null
+
+        fun cleanup(keepFile: Boolean) {
+            maxDurationTimer?.let { main.removeCallbacks(it) }
+            runCatching { session?.close() }
+            runCatching { device?.close() }
+            runCatching { recorder?.release() }
+            if (!keepFile) runCatching { outFile.delete() }
+        }
+
+        /** 停止录制并产出结果。 */
+        fun finish(reason: String) {
+            if (!done.compareAndSet(false, true)) return
+            val duration = System.currentTimeMillis() - startAt
+            val r = recorder
+            var stopError: String? = null
+            if (r != null) {
+                try {
+                    r.stop()
+                } catch (t: Throwable) {
+                    // ⚠️ 录制过短时 MediaRecorder.stop() 会抛 RuntimeException，
+                    //   而**文件仍然有效**（只是很短）。不能因为异常就删掉它 ——
+                    //   那样用户会「明明录了却什么都没有」。
+                    stopError = t.message
+                    Log.w(TAG, "recorder.stop() 抛异常（文件可能仍有效）: ${t.message}")
+                }
+            }
+            cleanup(keepFile = outFile.isFile && outFile.length() > 0)
+
+            if (!outFile.isFile || outFile.length() == 0L) {
+                EventLog.record("device.camera.recordEmpty", mapOf("reason" to reason))
+                main.post { onDone(RecordResult.Failed(stopError ?: "录像文件为空")) }
+                return
+            }
+
+            val hash = sha256Of(outFile)
+            val video = Video(
+                file = outFile,
+                sha256 = hash,
+                durationMs = duration,
+                width = config.width,
+                height = config.height,
+                sizeBytes = outFile.length(),
+            )
+            EventLog.record(
+                "device.camera.recorded",
+                mapOf(
+                    "ms" to duration.toString(),
+                    "bytes" to video.sizeBytes.toString(),
+                    "hash" to hash.take(8),
+                ),
+            )
+            main.post {
+                onDone(
+                    if (reason == "max-duration") RecordResult.MaxDurationReached(video)
+                    else RecordResult.Ok(video),
+                )
+            }
+        }
+
+        try {
+            val r = android.media.MediaRecorder()
+            recorder = r
+
+            // ② 配置
+            if (config.withAudio) {
+                r.setAudioSource(android.media.MediaRecorder.AudioSource.CAMCORDER)
+            }
+            r.setVideoSource(android.media.MediaRecorder.VideoSource.SURFACE)
+            r.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+            r.setOutputFile(outFile.absolutePath)
+            r.setVideoEncodingBitRate(config.bitRate)
+            r.setVideoFrameRate(config.fps)
+            r.setVideoSize(config.width, config.height)
+            r.setVideoEncoder(android.media.MediaRecorder.VideoEncoder.H264)
+            if (config.withAudio) {
+                r.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+                r.setAudioEncodingBitRate(128_000)
+                r.setAudioSamplingRate(44_100)
+            }
+            // ③ 时长上限（MediaRecorder 自己也能限，但双保险：
+            //   它到时会发 MAX_DURATION_REACHED 信息，我们还要主动 stop）
+            r.setMaxDuration(config.maxDurationMs.toInt())
+            r.prepare()
+
+            cm.openCamera(info.cameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(d: CameraDevice) {
+                    device = d
+                    try {
+                        val surface = r.surface
+                        d.createCaptureSession(
+                            listOf(surface),
+                            object : CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(s: CameraCaptureSession) {
+                                    session = s
+                                    try {
+                                        val req = d.createCaptureRequest(
+                                            CameraDevice.TEMPLATE_RECORD,
+                                        ).apply { addTarget(surface) }.build()
+                                        s.setRepeatingRequest(req, null, main)
+                                        r.start()
+                                        EventLog.record("device.camera.recordStart")
+                                        onStarted()
+
+                                        // 主动超时（不依赖 MediaRecorder 的信息回调）
+                                        val timer = Runnable { finish("max-duration") }
+                                        maxDurationTimer = timer
+                                        main.postDelayed(timer, config.maxDurationMs)
+                                    } catch (t: Throwable) {
+                                        if (!done.compareAndSet(false, true)) return
+                                        cleanup(keepFile = false)
+                                        main.post { onDone(RecordResult.Failed("启动录制失败: ${t.message}")) }
+                                    }
+                                }
+
+                                override fun onConfigureFailed(s: CameraCaptureSession) {
+                                    if (!done.compareAndSet(false, true)) return
+                                    cleanup(keepFile = false)
+                                    main.post { onDone(RecordResult.Failed("会话配置失败（可能被占用）")) }
+                                }
+                            },
+                            main,
+                        )
+                    } catch (t: Throwable) {
+                        if (!done.compareAndSet(false, true)) return
+                        cleanup(keepFile = false)
+                        main.post { onDone(RecordResult.Failed("建会话失败: ${t.message}")) }
+                    }
+                }
+
+                override fun onDisconnected(d: CameraDevice) {
+                    d.close()
+                    finish("disconnected")
+                }
+
+                override fun onError(d: CameraDevice, error: Int) {
+                    d.close()
+                    if (!done.compareAndSet(false, true)) return
+                    cleanup(keepFile = false)
+                    main.post { onDone(RecordResult.Failed("相机错误码 $error")) }
+                }
+            }, main)
+        } catch (t: SecurityException) {
+            cleanup(keepFile = false)
+            if (done.compareAndSet(false, true)) onDone(RecordResult.NoPermission)
+        } catch (t: Throwable) {
+            cleanup(keepFile = false)
+            if (done.compareAndSet(false, true)) {
+                onDone(RecordResult.Failed(t.message ?: "录像异常"))
+            }
+        }
+    }
+
+    /** 算文件内容哈希。 */
+    private fun sha256Of(f: java.io.File): String = try {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        f.inputStream().buffered().use { ins ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = ins.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (t: Throwable) {
+        ""
+    }
+
     /**
      * 真正拍照的结果。
      */
