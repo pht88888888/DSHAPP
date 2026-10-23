@@ -56,6 +56,16 @@ object ManageState {
      * ⚠️ 现在只有 `A`（单内核）。设计说明要求 A/R/E 三环境，
      * 但 R/E 尚未实现 —— 先留出枚举，不假装它们已存在。
      */
+    /**
+     * 环境枚举。
+     *
+     * ⚠️ **与 [ManageEnv.Env] 内容重复**（都是 A/R/E + `of(id)`），
+     * 但 `typealias` 不能嵌套在 object 里（Kotlin 限制），
+     * 而把它挪到顶层会破坏 `ManageState.Env` 的全限定名引用。
+     *
+     * 所以这里保留独立枚举，**并在 [ManageState.Snapshot] 的转换处显式桥接**
+     * （见 [ManageState.snapshotEnv]）。两套类型的互转只允许在这一处发生。
+     */
     enum class Env(val id: String) {
         /** 日常环境。 */
         A("a"),
@@ -175,6 +185,18 @@ object ManageState {
      * ⚠️ 文件损坏时返回 [initial] **并记日志**，不抛异常 ——
      * 一份坏的状态文件不能让 App 打不开（那正是我们要救的场景）。
      */
+    /**
+     * `ManageState.Env` → `ManageEnv.Env` 的**唯一**桥接点。
+     *
+     * ⚠️ 为什么需要这个：两套枚举内容相同但类型不同，跨模块传值必须转。
+     *   把所有转换集中在这一处，避免各调用点各转一次（转错时难以发现）。
+     */
+    fun toManageEnv(e: Env): ManageEnv.Env = when (e) {
+        Env.A -> ManageEnv.Env.A
+        Env.R -> ManageEnv.Env.R
+        Env.E -> ManageEnv.Env.E
+    }
+
     fun read(context: Context): Snapshot {
         val f = stateFile(context)
         if (!f.isFile) return initial()

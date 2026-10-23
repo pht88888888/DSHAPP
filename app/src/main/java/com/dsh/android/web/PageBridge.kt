@@ -642,4 +642,51 @@ interface PageBridge {
 
     /** 停止语义事件检测。 */
     fun motionStop(): String
+
+    // ── 修复流程（设计说明 §6.4 / G8：受控修复）──────────────────────
+    //
+    // ⚠️ 刻意分成两步：plan（只读，生成计划）与 execute（有副作用）。
+    //   中间**必须有用户批准** —— 文档：「修复模型不能替代监督器决定是否允许写 A」。
+
+    /**
+     * 诊断并生成修复计划（**不执行任何修改**）。
+     *
+     * ```json
+     * {"problems":2,"steps":1,"manual":true,
+     *  "reason":"重解包会抹掉运行时补丁",
+     *  "irreversible":["repack-engine：/files/engine/"],
+     *  "scope":"engine/"}
+     * ```
+     *
+     * ⚠️ `planId` 是后续批准与执行的凭据，必须保留。
+     */
+    fun repairPlan(): String
+
+    /**
+     * 批准一份修复计划（模拟用户点「同意」）。
+     *
+     * @param planId 计划 ID
+     * @param acknowledgedIrreversible 用户是否确认了不可逆副作用
+     *
+     * @return `{"ok":true,"approval":"…","expiresAt":…}`
+     *
+     * ⚠️ 批准**绑定当前环境/epoch/通道/有效期**，任何一项变化都会让批准失效。
+     */
+    fun repairApprove(planId: String, acknowledgedIrreversible: Boolean): String
+
+    /**
+     * 执行已批准的修复并核验。
+     *
+     * @return `{"executed":2,"failed":0,"verdict":"fixed","summary":"…"}`
+     */
+    fun repairExecute(planId: String): String
+
+    /**
+     * 回滚一次修复（用快照）。
+     *
+     * @return `{"restored":3,"failed":0,"irreversible":["…"]}`
+     *
+     * ⚠️ 有不可逆动作时**如实报告**，不说「已恢复到原状」。
+     */
+    fun repairRollback(planId: String): String
 }

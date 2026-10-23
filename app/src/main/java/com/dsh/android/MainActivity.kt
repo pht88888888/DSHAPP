@@ -3135,6 +3135,187 @@ class MainActivity : AppCompatActivity() {
             JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
         }
 
+        // ── 修复流程 ────────────────────────────────────────────────────
+
+        /** 已生成但未执行的计划（planId → 计划）。 */
+        private val pendingPlans = java.util.concurrent.ConcurrentHashMap<
+            String, com.dsh.android.manage.RepairControl.Plan>()
+        /** 已签发的批准（planId → 批准）。 */
+        private val approvals = java.util.concurrent.ConcurrentHashMap<
+            String, com.dsh.android.manage.RepairControl.Approval>()
+        /** 已建立的快照（planId → 快照）。 */
+        private val snapshots = java.util.concurrent.ConcurrentHashMap<
+            String, com.dsh.android.manage.RepairSnapshot.Snapshot>()
+
+        /**
+         * 跑一次轻量诊断 → `Finding` 列表。
+         *
+         * ⚠️ 不用 `DiagnosticBundle.build()`：它产出的是 zip 文件（给人下载），
+         *   而这里要的是**结构化结论**（给修复逻辑用）。两者目的不同。
+         */
+        private fun runDiagnosis(): com.dsh.android.manage.RepairOrchestrator.Diagnosis {
+            val findings = mutableListOf<com.dsh.android.manage.DiagnosisToRepair.Finding>()
+
+            // ① 磁盘空间
+            val free = filesDir.usableSpace
+            findings.add(
+                com.dsh.android.manage.DiagnosisToRepair.Finding(
+                    id = "disk-space",
+                    status = when {
+                        free in 1 until (100L * 1024 * 1024) -> "fail"
+                        free in 1 until com.dsh.android.manage.DiskCleanup.LOW_WATER_BYTES -> "warn"
+                        else -> "ok"
+                    },
+                    detail = "可用 ${free / 1024 / 1024} MB",
+                ),
+            )
+
+            // ② 日志可用性
+            findings.add(
+                com.dsh.android.manage.DiagnosisToRepair.Finding(
+                    id = "file-logging",
+                    status = if (com.dsh.android.log.LogStore.logDirAvailable) "ok" else "fail",
+                    detail = if (com.dsh.android.log.LogStore.logDirAvailable) "日志目录可用" else "日志目录未挂上",
+                ),
+            )
+
+            // ③ 启动层级
+            runCatching {
+                val st = com.dsh.android.log.RescueBoot.tier()
+                val degraded = st.removedBundles.isNotEmpty() || st.quarantinedNames.isNotEmpty()
+                findings.add(
+                    com.dsh.android.manage.DiagnosisToRepair.Finding(
+                        id = "boot-tier",
+                        status = if (degraded) "warn" else "ok",
+                        detail = "层级 ${st.tier}，隔离 ${st.removedBundles.size} 个",
+                    ),
+                )
+            }
+
+            return com.dsh.android.manage.RepairOrchestrator.Diagnosis(findings)
+        }
+
+        override fun repairPlan(): String = runCatching {
+            // ⚠️ `observed` 可空（首次启动还没观测过）⇒ 回退到 A
+            //
+            // 类型转换必须走 `ManageState.toManageEnv` —— 那是唯一的桥接点
+            // （`ManageState.Env` 与 `ManageEnv.Env` 是两套枚举）。
+            val env: com.dsh.android.manage.ManageEnv.Env = try {
+                val st = com.dsh.android.manage.ManageState.read(this@MainActivity)
+                val obs = st.observed
+                if (obs != null) {
+                    com.dsh.android.manage.ManageState.toManageEnv(obs)
+                } else {
+                    com.dsh.android.manage.ManageEnv.Env.A
+                }
+            } catch (t: Throwable) {
+                com.dsh.android.manage.ManageEnv.Env.A
+            }
+            val out = com.dsh.android.manage.RepairOrchestrator.plan(
+                this@MainActivity, ::runDiagnosis, env,
+            )
+            val plan = out.plan
+            if (plan != null) pendingPlans[plan.planId] = plan
+
+            JSONObject().apply {
+                put("problems", out.diagnosis.problems.size)
+                put("steps", plan?.steps?.size ?: 0)
+                put("manual", out.suggestion?.needsManual ?: false)
+                put("reason", out.suggestion?.reason ?: out.summary())
+                put("planId", plan?.planId ?: "")
+                put("scope", plan?.declaredScope ?: "")
+                put("irreversible", org.json.JSONArray().apply {
+                    plan?.irreversibleSideEffects?.forEach { put(it) }
+                })
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun repairApprove(planId: String, acknowledgedIrreversible: Boolean): String =
+            runCatching {
+                val plan = pendingPlans[planId]
+                    ?: return@runCatching JSONObject().put("ok", false)
+                        .put("error", "计划不存在或已过期").toString()
+                val a = com.dsh.android.manage.RepairControl.approve(
+                    this@MainActivity, plan, channel(planId), acknowledgedIrreversible,
+                )
+                approvals[planId] = a
+                JSONObject().put("ok", true)
+                    .put("approval", a.planFingerprint.take(16))
+                    .put("expiresAt", a.expiresAt)
+                    .toString()
+            }.getOrElse { t ->
+                JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+            }
+
+        override fun repairExecute(planId: String): String = runCatching {
+            val plan = pendingPlans[planId]
+                ?: return@runCatching JSONObject().put("ok", false)
+                    .put("error", "计划不存在").toString()
+            val approval = approvals[planId]
+                ?: return@runCatching JSONObject().put("ok", false)
+                    .put("error", "尚未批准").toString()
+
+            val before = runDiagnosis()
+            val out = com.dsh.android.manage.RepairOrchestrator.executeAndVerify(
+                context = this@MainActivity,
+                diagnosis = before,
+                plan = plan,
+                approval = approval,
+                channel = channel(planId),
+                diagnoseAfter = { runDiagnosis() },
+            )
+
+            // 记下快照，供回滚
+            (out.execution as? com.dsh.android.manage.RepairControl.Result.Executed)
+                ?.snapshot?.let { snapshots[planId] = it }
+
+            val exec = out.execution
+            JSONObject().apply {
+                put("ok", exec is com.dsh.android.manage.RepairControl.Result.Executed)
+                when (exec) {
+                    is com.dsh.android.manage.RepairControl.Result.Rejected ->
+                        put("verdict", "rejected").put("detail", "$exec")
+                    is com.dsh.android.manage.RepairControl.Result.Executed -> {
+                        put("executed", exec.done.size)
+                        put("failed", exec.failed.size)
+                    }
+                    else -> Unit
+                }
+                put("verify", out.verification?.verdict?.id ?: "unknown")
+                put("summary", out.summary())
+                put("irreversible", org.json.JSONArray().apply {
+                    plan.steps.filterNot { it.kind.reversible }.forEach {
+                        put("${it.kind.label}：${it.target}")
+                    }
+                })
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        override fun repairRollback(planId: String): String = runCatching {
+            val snap = snapshots[planId]
+                ?: return@runCatching JSONObject().put("ok", false)
+                    .put("error", "没有可用的快照").toString()
+            val r = com.dsh.android.manage.RepairSnapshot.rollback(this@MainActivity, snap)
+            JSONObject().apply {
+                put("ok", r.failed.isEmpty())
+                put("restored", r.restored.size)
+                put("failed", r.failed.size)
+                put("summary", r.summary())
+                put("irreversible", org.json.JSONArray().apply {
+                    r.irreversible.forEach { put(it) }
+                })
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
+        /** 修复通道标识（绑定批准用）。 */
+        private fun channel(planId: String): String = "web-ui"
+
         override fun layoutState(): String = runCatching {
             // ⚠️ 主动重算一次：桥被调时窗口尺寸一定是最终的，
             //   比依赖「onCreate 时算的值」更准（分屏启动时 onCreate 的度量可能不准）。
