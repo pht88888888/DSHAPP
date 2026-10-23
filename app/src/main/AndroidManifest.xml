@@ -85,6 +85,50 @@
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!--
+        ── 设备能力（设计说明 §4.14.1a：相机/麦克风/位置/蓝牙/传感器为首发必需）──
+
+        ⚠️ **声明不等于授权**：这些只是让系统知道「本应用可能用到」，
+           实际使用前必须运行时申请，且「**不提前索要全部权限**」
+           （文档 §4.14.1）。
+
+        ⚠️ **`required="false"` 是刻意的**：本应用要能在没有相机的设备上安装，
+           发现阶段报「本机无此硬件」而不是装不上（文档：「硬件无该能力时
+           必须有**真实发现及明确拒绝**」）。
+    -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!--
+        ⚠️ 蓝牙权限**分版本**：
+        - API ≤ 30：BLUETOOTH / BLUETOOTH_ADMIN + ACCESS_FINE_LOCATION
+        - API ≥ 31：BLUETOOTH_SCAN / BLUETOOTH_CONNECT（旧的两个被废弃）
+
+        两套都声明：`maxSdkVersion` 让系统在不需要的版本上忽略它们，
+        避免「声明了但永远授不到」的困惑。
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!--
+        ⚠️ `neverForLocation` 的含义：声明「我扫蓝牙不是为了推断位置」。
+           加了它之后 API 31+ 上不需要位置权限就能扫蓝牙 ——
+           这正是文档「按需发现和授权」的体现。
+    -->
+
     <application
         android:name=".DshApplication"
         android:allowBackup="false"
