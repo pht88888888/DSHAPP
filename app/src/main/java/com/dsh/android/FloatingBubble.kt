@@ -1,5 +1,6 @@
 package com.dsh.android
 
+import com.dsh.android.bubble.BubbleEventGate
 import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
 import android.content.Context
@@ -465,6 +466,41 @@ class FloatingBubble(private val context: Context) {
          */
         fun applyAppearance(json: String): Boolean {
             val ctx = appContext ?: return false
+
+            // ── 事件闸门：拒绝迟到的旧事件（设计说明 §4.11）──────────────
+            //
+            // 文档要求「**不采用无规则的最后写入覆盖**」，验收矩阵第 18 条
+            // 要求「**乱序或过期事件不覆盖当前状态**」。
+            //
+            // ⚠️ 为什么在这里拦而不是在视图层拦：这里是**唯一**的配置入口，
+            //   在这里拦能把「旧事件」挡在落盘之前 —— 落到磁盘上再拦就晚了，
+            //   因为下次启动会读到它。
+            //
+            // ⚠️ JSON 里可以带 `_seq` / `_lease`（可选）：
+            //   不带时视为「当前租约 + 下一个序号」，即**普通调用照常生效**。
+            //   只有显式带了旧值时才拒绝 —— 这样不会破坏现有调用方。
+            val evLease: Long
+            val evSeq: Long
+            try {
+                val probe = org.json.JSONObject(json)
+                evLease = if (probe.has("_lease")) probe.optLong("_lease") else BubbleEventGate.currentLease()
+                evSeq = if (probe.has("_seq")) probe.optLong("_seq") else BubbleEventGate.nextSeq()
+            } catch (t: Throwable) {
+                // JSON 本身坏了：交给下面的 merge 去处理（它会退回原值）
+                return false
+            }
+            when (val verdict = BubbleEventGate.check(evLease, evSeq, BubbleEventGate.Source.ENGINE_PLUGIN)) {
+                is BubbleEventGate.Verdict.Accept -> Unit
+                is BubbleEventGate.Verdict.StaleSeq -> {
+                    Log.i(DshApplication.TAG, "悬浮外观：拒绝迟到事件（seq ${verdict.got} ≤ ${verdict.current}）")
+                    return false
+                }
+                is BubbleEventGate.Verdict.StaleLease -> {
+                    Log.i(DshApplication.TAG, "悬浮外观：拒绝旧租约事件（lease ${verdict.lease} ≠ ${verdict.current}）")
+                    return false
+                }
+            }
+
             val next = BubbleAppearance.merge(json, BubbleAppearance.load(ctx), ctx)
             // 自定义头像单独落盘：base64 有几百 KB，不适合进 SharedPreferences。
             //

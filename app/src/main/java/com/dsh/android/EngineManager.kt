@@ -7065,6 +7065,22 @@ class EngineManager private constructor(private val context: Context) {
             RecoveryChain.Action.START_E -> RESCUE_PROFILE_NAME  // E 也用最小 profile
             else -> PROFILE_NAME
         }
+
+        // ── 悬浮租约轮换（设计说明 §4.11）──────────────────────────────
+        //
+        // 文档：「切换环境时**撤销旧租约、事件订阅和排队控制**，清除旧任务状态；
+        // 可以保留已缓存外观，但**不得继续显示旧任务正在运行**」。
+        //
+        // ⚠️ 为什么在选完 profile、还没起进程时轮换：
+        //   起进程后就会有新事件流进来，那时再轮换会把新租约的早期事件误杀。
+        //   在此之前轮换，旧环境的所有在飞事件都落在旧租约上，自然失效。
+        //
+        // ⚠️ 每次启动都轮换，不只是「换 profile 时」：
+        //   同一次启动内可能有多次引擎重启（崩溃恢复），而每次重启后
+        //   旧进程在飞的事件都不该再影响新进程的悬浮窗状态。
+        runCatching {
+            com.dsh.android.bubble.BubbleEventGate.rotateLease("engine.start profile=$targetProfile")
+        }.onFailure { Log.w(TAG, "悬浮租约轮换失败: ${it.message}") }
         if (targetProfile != PROFILE_NAME) {
             Log.w(TAG, "以救援 profile 启动（--profile $targetProfile）：不加载任何第三方插件")
             EventLog.record("engine.start.rescue", mapOf("profile" to targetProfile))
