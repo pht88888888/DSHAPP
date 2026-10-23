@@ -2321,7 +2321,69 @@ window.__ModuleLoader__.load({
 						&& window.matchMedia("(hover: hover)").matches);
 				} catch (e) { return false; }
 			}
+			/**
+			 * 布局判据 —— **唯一来源是原生的 LayoutAdapter**。
+			 *
+			 * ## 为什么改成读原生标志（设计说明 §4.9）
+			 *
+			 * 文档要求「**LayoutAdapter 唯一决定实际布局**」，并明确否定
+			 * 了三种旧做法：
+			 *
+			 * | 旧做法 | 文档要求 | 后果 |
+			 * |---|---|---|
+			 * | 宽度阈值 1024 | **宽高比 r** | 分屏变窄但仍是宽屏比例，误判 |
+			 * | 无滞回 | **3/4~4/3 保留上次** | 阈值附近抖动导致布局横跳 |
+			 * | 看指针类型 | **不看鼠标类型** | 平板接鼠标突然变桌面布局 |
+			 *
+			 * 所以现在的顺序是：
+			 *   ① 读 `window.__DSH_LAYOUT__`（原生算好的）
+			 *   ② 没有 → 退回旧的宽度判据（**降级路径**，见下）
+			 *
+			 * ## ⚠️ 为什么保留旧的宽度判据作为降级
+			 *
+			 * 两个必须保留它的场景：
+			 * - **桌面浏览器**（用户从电脑访问）：没有原生桥，拿不到标志
+			 * - **旧版本 APK**：原生侧还没推送标志
+			 *
+			 * 降级路径用**旧的**判据（宽度 + 指针），而不是「默认 mobile」——
+			 * 后者会让桌面浏览器被套上手机 UI，那是明确的回归。
+			 */
+			function mpLayoutFlag() {
+				try {
+					var v = window.__DSH_LAYOUT__;
+					if (v === "mobile" || v === "official") return v;
+				} catch (e) { /* 忽略 */ }
+				return null;
+			}
+
+			/**
+			 * 从原生拉一次布局（页面初始化时调）。
+			 *
+			 * ⚠️ **必须有这一步**：原生可能在页面加载**之前**就算好布局并推送过，
+			 *   那次推送发生在还没有监听器的时候，等于丢了。
+			 *   不主动拉的话，前端会一直走降级判据（宽度+指针），
+			 *   而那个判据在分屏/平板上是错的。
+			 *
+			 * ⚠️ 失败时**静默**：桌面浏览器没有桥，那是正常情况。
+			 */
+			function mpPullLayoutFromNative() {
+				try {
+					var b = typeof window !== "undefined" ? window.DSHAndroid : null;
+					if (!b || typeof b.layoutState !== "function") return;
+					var raw = b.layoutState();
+					var o = JSON.parse(raw || "{}");
+					if (o.layout === "mobile" || o.layout === "official") {
+						window.__DSH_LAYOUT__ = o.layout;
+					}
+				} catch (e) { /* 桌面浏览器 / 旧版 APK，静默 */ }
+			}
+
 			function mpIsMobile() {
+				// ① 优先用原生 LayoutAdapter 的结论
+				var flag = mpLayoutFlag();
+				if (flag !== null) return flag === "mobile";
+
+				// ② 降级：旧判据（桌面浏览器 / 旧版 APK）
 				if (!mpIsNarrow()) return false;
 				if (mpIsPointerDesktop()) return false;
 				return true;
@@ -3456,6 +3518,22 @@ window.__ModuleLoader__.load({
 					mpCloseDrawer();
 				}, { capture: true });
 				window.addEventListener("resize", () => { mpSyncMobileAttr(); mpSyncDrawer(); mpScheduleHeaderCenter(); }, { passive: true });
+				// 原生 LayoutAdapter 推来的布局变化（设计说明 §4.9）。
+				//
+				// ⚠️ 为什么要这个监听而不是只靠 resize：
+				//   LayoutAdapter 有**滞回**（3/4~4/3 区间保留上次布局），
+				//   所以「窗口尺寸变了」不等于「布局变了」。
+				//   resize 每次都触发，而这个事件只在**实际布局切换**时才来。
+				//   用它能让「布局没变但尺寸变了」的情况跳过重建（省掉一次闪烁）。
+				window.addEventListener("dsh-layout-changed", (ev) => {
+					try {
+						var lv = ev && ev.detail;
+						if (lv === "mobile" || lv === "official") window.__DSH_LAYOUT__ = lv;
+					} catch (e) { /* 忽略 */ }
+					mpSyncMobileAttr();
+					mpSyncDrawer();
+					mpScheduleHeaderCenter();
+				});
 				// §12：把返回键处理器交给原生。原生拦下系统返回键后调它，
 				//   返回值 = 「这一层被消费了吗」；只有 false 才退出 App。
 				//   ⚠️ 挂在 mpBuildShell 里（与上面三个监听器同处，只执行一次）；
@@ -9927,6 +10005,10 @@ window.__ModuleLoader__.load({
 			mpRegisterBubbleSection(ctx);
 			mpRegisterLogsSection(ctx);
 			mpRegisterBackupSection(ctx);   /* 备份与恢复（设计说明 §5.3） */
+			// ⚠️ 必须在任何 mpIsMobile() 调用之前拉布局 ——
+			//   否则首屏会用降级判据（宽度+指针）建出错误的界面，
+			//   然后再被修正，用户看到闪一下。
+			mpPullLayoutFromNative();
 			mpRegisterContactSection(ctx);
 			mpInstallPendingTrust();   /* 修复 51：越早越好 */
 			mpWatchSessions(ctx);       /* 修复 51：等服务就绪 */

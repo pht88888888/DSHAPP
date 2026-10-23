@@ -2667,6 +2667,45 @@ class MainActivity : AppCompatActivity() {
                 .put("error", t.message ?: "?").toString()
         }
 
+        // ── 布局桥（设计说明 §4.9）──────────────────────────────────────
+
+        override fun layoutState(): String = runCatching {
+            // ⚠️ 主动重算一次：桥被调时窗口尺寸一定是最终的，
+            //   比依赖「onCreate 时算的值」更准（分屏启动时 onCreate 的度量可能不准）。
+            applyLayout()
+            val layout = currentLayout ?: com.dsh.android.layout.LayoutAdapter.MOBILE
+            JSONObject().apply {
+                put("layout", layout)
+                put("mode", com.dsh.android.layout.LayoutAdapter.mode(this@MainActivity))
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("layout", "mobile")
+                .put("mode", "auto")
+                .put("error", t.message ?: "?").toString()
+        }
+
+        override fun layoutSetMode(mode: String): String = runCatching {
+            if (mode != com.dsh.android.layout.LayoutAdapter.AUTO &&
+                mode != com.dsh.android.layout.LayoutAdapter.MOBILE &&
+                mode != com.dsh.android.layout.LayoutAdapter.OFFICIAL
+            ) {
+                return@runCatching JSONObject()
+                    .put("ok", false).put("error", "无效的模式: $mode").toString()
+            }
+            com.dsh.android.layout.LayoutAdapter.setMode(this@MainActivity, mode)
+            // ⚠️ 设置后**立即重算**：不能让用户等下一次旋转才生效
+            mainHandler.post {
+                applyLayout()
+                notifyLayoutChanged(currentLayout ?: com.dsh.android.layout.LayoutAdapter.MOBILE)
+            }
+            JSONObject().apply {
+                put("ok", true)
+                put("layout", currentLayout ?: com.dsh.android.layout.LayoutAdapter.MOBILE)
+            }.toString()
+        }.getOrElse { t ->
+            JSONObject().put("ok", false).put("error", t.message ?: "?").toString()
+        }
+
         override fun logSummary(): String = runCatching {
             val all = LogStore.entries()
             val prev = BootState.previous()

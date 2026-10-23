@@ -428,4 +428,33 @@ interface PageBridge {
      * ```
      */
     fun backupImportResult(): String
+
+    // ── 布局（设计说明 §4.9：LayoutAdapter 是唯一执行者）────────────────
+
+    /**
+     * 查询当前布局。
+     *
+     * ```json
+     * {"layout":"mobile","mode":"auto","reason":"宽高比 0.56 < 3/4"}
+     * ```
+     *
+     * ⚠️ **为什么需要查询而不是只靠事件推送**：
+     *   页面加载完成时，原生可能**已经**算过布局并推送过一次 ——
+     *   那次推送发生在页面还没有监听器的时候，等于丢了。
+     *   所以前端初始化时必须主动拉一次。
+     *
+     * ⚠️ 返回的 `layout` **只会是 mobile / official**，不会是 auto
+     *   （auto 是设置，不是实际布局）。
+     */
+    fun layoutState(): String
+
+    /**
+     * 设置布局模式。
+     *
+     * @param mode `auto` / `mobile` / `official`
+     * @return `{"ok":true,"layout":"mobile"}` 或 `{"ok":false,"error":"..."}`
+     *
+     * ⚠️ 设置后会**立即重算**并推送新布局 —— 不能让用户等下一次旋转才生效。
+     */
+    fun layoutSetMode(mode: String): String
 }
