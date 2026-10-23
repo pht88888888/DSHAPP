@@ -147,13 +147,43 @@ object DiagnosisToRepair {
                     notes.add("内存不足：请关闭其他应用后重试")
                 }
 
-                // ── 启动层级降级 ⇒ 提供"退出救援模式"的建议 ────────────
+                // ── 启动层级降级 ⇒ 精确到具体插件 ────────────────────
                 "boot-tier" -> {
-                    // ⚠️ 这里**不**自动生成「重置层级」的步骤：
-                    //   降级是**结果**不是**原因**。直接重置会让用户
-                    //   再次陷入同一个问题，而且丢掉了排查线索。
+                    // ⚠️ 读 `rescue/state.json` 拿到**具体是哪些插件**，
+                    //   而不是笼统地说「已隔离 N 个」。
+                    //
+                    //   笼统结论对用户毫无用处：他不知道该删哪个插件。
+                    //   而精确到包名后，AI 可以据此生成「禁用 dsh-foo」的步骤。
+                    val st = runCatching { com.dsh.android.log.RescueBoot.tier() }.getOrNull()
+                    val removed = st?.removedBundles.orEmpty()
+                    val quarantined = st?.quarantinedNames.orEmpty()
+
+                    if (removed.isNotEmpty() || quarantined.isNotEmpty()) {
+                        // ⚠️ 只**列出**，不自动生成「恢复它们」的步骤 ——
+                        //   恢复坏插件会再次让引擎起不来。用户要先修好插件
+                        //   （或确认它确实该删）才能恢复。
+                        if (removed.isNotEmpty()) {
+                            notes.add(
+                                "已被隔离的插件（从 profile 摘除）：" +
+                                    removed.take(5).joinToString("、") +
+                                    if (removed.size > 5) " 等 ${removed.size} 个" else "",
+                            )
+                        }
+                        if (quarantined.isNotEmpty()) {
+                            notes.add(
+                                "已被禁用的插件条目：" +
+                                    quarantined.take(5).joinToString("、") +
+                                    if (quarantined.size > 5) " 等 ${quarantined.size} 个" else "",
+                            )
+                        }
+                        notes.add(
+                            "这些插件的**文件都还在**（只是没加载）。要恢复请先确认" +
+                                "它们已修好，再手动解除隔离。",
+                        )
+                    } else {
+                        notes.add("当前处于降级模式：建议先导出诊断包，再由 AI 分析具体原因")
+                    }
                     needsManual = true
-                    notes.add("当前处于降级模式：建议先导出诊断包，再由 AI 分析具体原因")
                 }
 
                 // ── 崩溃现场 ⇒ 没有修复，只有诊断 ──────────────────────
