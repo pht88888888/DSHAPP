@@ -704,6 +704,10 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
      */
     fun dispatchKey(keyCode: Int): Boolean {
         val wv = currentWebView() ?: return false
+        // 按键只有在 WebView 持有输入焦点时才会被分发到页面。
+        // AI 接管期间用户可能点过别处（地址栏、面板按钮），焦点不在
+        // WebView 上时按键会被别处吃掉，表现仍是「提示成功但没反应」。
+        if (!wv.hasFocus()) wv.requestFocus()
         wv.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode))
         wv.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, keyCode))
         return true
