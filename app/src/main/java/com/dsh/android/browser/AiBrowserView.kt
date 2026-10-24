@@ -191,6 +191,14 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     private val backBtn: TextView
     private val forwardBtn: TextView
 
+    /**
+     * 「AI 正在做什么」胶囊。
+     *
+     * 用 lateinit 而不是在声明处初始化：它要加到本 View 上，而 `init {}` 里
+     * 才开始装配子视图，声明顺序在 `addView` 之前拿不到 context 的合适时机。
+     */
+    private lateinit var actionPill: TextView
+
     private val tabs = ArrayList<Tab>()
     private var activeIndex = -1
 
@@ -317,12 +325,84 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         })
         addView(chrome, LayoutParams(LayoutParams.MATCH_PARENT, barH))
         addView(progress, LayoutParams(LayoutParams.MATCH_PARENT, dp(2)).apply { topMargin = barH })
+
+        // ── AI 动作胶囊（浮在页面顶部，紧贴工具栏下方）──────────────────
+        // 用户打开侧边栏时只能看到浏览器，看不到对话流。没有这条反馈，
+        // AI 每次操作他都只能对着一个不动的页面干等，不知道是在干活还是卡住了。
+        actionPill = TextView(context).apply {
+            setTextColor(0xFFEAF2FF.toInt())
+            textSize = 12f
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = rounded(0xF21B2130.toInt(), 18)
+            visibility = View.GONE
+            elevation = dp(6).toFloat()
+        }
+        addView(
+            actionPill,
+            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = barH + dp(10)
+                leftMargin = dp(12)
+                rightMargin = dp(12)
+                gravity = Gravity.TOP or Gravity.START
+            },
+        )
+
         addView(
             tabBar,
             LayoutParams(LayoutParams.MATCH_PARENT, tabH).apply { gravity = Gravity.BOTTOM },
         )
 
         openNewTab(HOME_URL)
+    }
+
+    // ── AI 动作胶囊 ─────────────────────────────────────────────────────
+
+    /** 显示/更新「AI 正在做什么」胶囊。传空字符串即隐藏。 */
+    fun showAction(text: String) {
+        val pill = actionPill
+        val t = text.trim()
+        pill.removeCallbacks(hideActionRunnable)
+        pill.animate().cancel()
+        if (t.isEmpty()) {
+            pill.visibility = View.GONE
+            pill.alpha = 1f
+            return
+        }
+        pill.text = t
+        pill.alpha = 1f
+        pill.visibility = View.VISIBLE
+    }
+
+    /**
+     * 操作结束：延迟淡出。
+     *
+     * ⚠️ 不能立刻隐藏：一个 click 可能只花 80ms，胶囊闪一下就没了，
+     *   用户根本来不及看。留 [delayMs] 让他看清刚才发生了什么。
+     */
+    /** 立刻收走胶囊（超时、异常等「操作没正常结束」的路径用）。 */
+    fun hideActionNow() {
+        val pill = actionPill
+        pill.removeCallbacks(hideActionRunnable)
+        pill.animate().cancel()
+        pill.alpha = 1f
+        pill.visibility = View.GONE
+    }
+
+    fun hideActionSoon(delayMs: Long = 900L) {
+        val pill = actionPill
+        pill.removeCallbacks(hideActionRunnable)
+        pill.postDelayed(hideActionRunnable, delayMs)
+    }
+
+    private val hideActionRunnable = Runnable {
+        actionPill.animate().cancel()
+        actionPill.animate().alpha(0f).setDuration(220L).withEndAction {
+            actionPill.visibility = View.GONE
+            actionPill.alpha = 1f
+        }.start()
     }
 
     // ── 标签管理 ────────────────────────────────────────────────────────
@@ -345,7 +425,11 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         showActiveTab()
         wv.loadUrl(normalizeUrl(url ?: HOME_URL))
         rebuildTabStrip()
-        updateChrome()
+        // ⚠️ 必须重新套一次控制权：applyControl 是**逐个 WebView** 设
+        //    OnTouchListener 的，上面刚 new 的这个还没被设过。AI 控制期间
+        //    新开标签，如果漏了这句，状态条显示「AI 操作中」但用户照样能点
+        //    —— 正是「显示 AI 操作却可以操作」那个 bug。
+        applyControl()
         return true
     }
 

@@ -96,6 +96,8 @@ You run in a Node process with no DOM. This browser is a genuine second WebView 
 
 The user can see this browser on their screen while you drive it. When you act, you take exclusive control (a small chip at the top shows "AI 操作中"); the user can tap it to take over. Don't worry about stepping on them — but do call \`read\` again if a click stops working, because they may have navigated.
 
+**Always pass \`describe\`.** Every call takes a \`describe\` string: one short Chinese sentence, present continuous, written for someone who cannot see the DOM — "在登录页填邮箱和密码", "找「提交」按钮", "读一下订单列表确认有没有下单成功". It is shown to the user on a floating pill over the browser while the action runs. Without it the user just watches a frozen screen with no idea what is happening. Never put index numbers, selectors or JS in it.
+
 ## The workflow that actually works
 
 1. \`{action:"open", url:"https://github.com"}\` — navigates and waits for the page to load.
@@ -332,6 +334,10 @@ function browserTool(home) {
 					type: 'string',
 					enum: ACTIONS,
 					description: 'What to do. "open" navigates to a URL; "read" dumps the page (visible text + numbered interactive elements); "click"/"type" act on an element by its index from the last read; "press" sends a key to the focused element; "scroll" moves the viewport; "screenshot" saves a PNG of the viewport; "back"/"forward"/"reload" navigate history; "tabs" manages tabs; "wait" blocks until some text appears; "eval" runs raw JavaScript as an escape hatch.',
+				},
+				describe: {
+					type: 'string',
+					description: 'One short sentence in Chinese saying what you are about to do and why, shown to the user on a small floating pill over the browser while the action runs. Write it for a non-technical reader, in the present continuous: "在登录页填邮箱", "找登录按钮", "读一下订单列表确认下没下单成功". Do not mention index numbers, selectors or JS — the user cannot see those. Always pass this: the user is watching the browser and would otherwise just stare at a frozen screen.',
 				},
 				url: {
 					type: 'string',

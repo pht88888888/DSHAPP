@@ -86,6 +86,18 @@ object BrowserBridge {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * 当前这条命令的胶囊文案（模型给的 `describe`）。
+     *
+     * 用字段而不是给每个 op 加参数：13 个 action 全都走 [mainThreadOp]，
+     * 逐个往下传会让每个 op 的签名都多一个没人看的参数。命令是串行处理的
+     * （轮询线程一次一条），所以一个字段够用。
+     */
+    private var currentPill: String = ""
+
+    /** 最近一次操作过的视图。仅用于超时路径收走胶囊（`op` 回调不会来了）。 */
+    private var lastView: AiBrowserView? = null
+
     /** 启动轮询线程。幂等：重复调用只替换 provider。 */
     fun start(home: File, host: () -> BrowserHost?) {
         dshHome = home
@@ -162,6 +174,10 @@ object BrowserBridge {
     private fun execCommand(cmd: JSONObject): JSONObject {
         val action = cmd.optString("action", "").trim()
         if (action.isEmpty()) return err("缺少 action")
+        // 模型给的「我正在做什么」，显示成胶囊给用户看。
+        // 没传就退化成一句通用文案 —— 至少让用户知道 AI 还活着、没卡死。
+        currentPill = cmd.optString("describe", "").trim()
+            .ifEmpty { "AI 正在操作页面…" }
 
         return when (action) {
             "open" -> opOpen(cmd.optString("url", ""))
@@ -286,11 +302,13 @@ object BrowserBridge {
     /**
      * @param touchesKeyboard 这次操作是否可能让页面元素获得焦点（从而拉起输入法）。
      *   为 true 时会在执行前切到静默输入，避免 AI 在用户看不见的地方弹键盘。
+     * @param pill 显示在页面顶部的胶囊文案（模型给的 describe）。空串则不显示。
      */
     private fun mainThreadOp(
         touchesKeyboard: Boolean = false,
         op: (AiBrowserView, (JSONObject) -> Unit) -> Unit,
     ): JSONObject {
+        val pill = currentPill
         val latch = CountDownLatch(1)
         val box = arrayOfNulls<JSONObject>(1)
         val finished = AtomicBoolean(false)
@@ -318,15 +336,29 @@ object BrowserBridge {
                 //    手机却突然弹出安全键盘。eval 也可能跑 focus()，一并算上。
                 //    press 走原生 dispatchKeyEvent，同样会要输入连接。
                 //    只读操作（read/scroll/screenshot 等）不动键盘，不必打断用户。
+                lastView = view
                 if (touchesKeyboard) view.silentInput = true
-                op(view) { r -> finish(r) }
+                // 把模型的 describe 显示成胶囊，让用户知道 AI 在做什么。
+                // 模型没传就退化成「AI 正在操作页面」，至少表明它还活着。
+                view.showAction(pill)
+                op(view) { r ->
+                    view.hideActionSoon()
+                    finish(r)
+                }
             } catch (t: Throwable) {
+                lastView?.hideActionNow()
                 finish(err("原生异常: ${t.javaClass.simpleName}: ${t.message}"))
             }
         }
         if (!posted) finish(err("主线程拒绝执行"))
         latch.await(OP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        return box[0] ?: err("等待页面响应超时（${OP_TIMEOUT_MS}ms），页面可能正在加载或已崩溃")
+        if (box[0] == null) {
+            // 超时：op 的回调永远不来了，胶囊得由这里收走，
+            // 否则它会一直挂在页面上，看起来像 AI 卡死。
+            mainHandler.post { lastView?.hideActionNow() }
+            return err("等待页面响应超时（${OP_TIMEOUT_MS}ms），页面可能正在加载或已崩溃")
+        }
+        return box[0]!!
     }
 
     /**
