@@ -106,6 +106,80 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         val loadWaiters = ArrayDeque<(Boolean) -> Unit>()
     }
 
+    /**
+     * 静默输入：**AI 操作页面期间**禁止这个 WebView 弹软键盘。
+     *
+     * **为什么需要**：AI 点一下输入框（`clickJs` 里有 `target.focus()`、
+     * `typeJs` 也要 focus），Chromium 内核就向系统申请输入法。用户此时可能
+     * 正看着主界面别处 —— 手机却突然弹出安全键盘，等于 AI 隔着界面抢走了
+     * 用户的焦点。这不是「AI 在操作浏览器」该有的副作用。
+     *
+     * **为什么按「AI 操作期间」而不是「面板是否可见」**：侧栏面板每次上报
+     * 矩形都会走 `applyEmbedRect`，而 `BrowserBridge` 每次取 view 都会调
+     * `browserOrNull()` → `openAiBrowser()`。可见性在 AI 连续操作期间一直是
+     * 「可见」，用它当开关根本挡不住 AI 自己引发的 focus。
+     *
+     * 置 true 后 [QuietWebView] 的 `onCreateInputConnection` 返回 null，
+     * 内核拿不到输入连接就不会拉起 IME；页面里的 `focus()`、`click()`、
+     * 输入值写入（走原生 setter）都不受影响。
+     *
+     * **用户触摸会强制解除**（见 [onTouchEvent] 的覆盖），所以用户想自己输入
+     * 时不会被挡住。
+     */
+    @Volatile
+    var silentInput: Boolean = false
+        set(value) {
+            field = value
+            if (value) hideIme()
+        }
+
+    /** 收起当前输入法。 */
+    private fun hideIme() {
+        runCatching {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                as? android.view.inputmethod.InputMethodManager
+            imm?.hideSoftInputFromWindow(windowToken, 0)
+        }
+    }
+
+    /**
+     * 静默模式下不创建输入连接的 WebView。
+     *
+     * `onCreateInputConnection` 返回 null ⇒ 内核认为没有输入法可用 ⇒
+     * 不会申请显示软键盘。这是唯一可靠的做法：`WebSettings` 没有对应开关，
+     * 而 `InputMethodManager.hideSoftInputFromWindow` 只能事后收起，
+     * 挡不住「弹一下再收」的闪现。
+     *
+     * ⚠️ **真实触摸要放行**：`isUserTouching` 由 [onInterceptTouchEvent] 在
+     *   用户手指按下时置位。用户主动点输入框时必须能正常弹出键盘，否则
+     *   「AI 和用户共用一个浏览器」里的接管就废了。
+     */
+    private inner class QuietWebView(context: Context) : WebView(context) {
+        override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo):
+            android.view.inputmethod.InputConnection? {
+            if (silentInput && !isUserTouching) return null
+            return super.onCreateInputConnection(outAttrs)
+        }
+    }
+
+    /** 用户手指是否正按在浏览器上（触摸期间一律允许弹键盘）。 */
+    @Volatile
+    private var isUserTouching: Boolean = false
+
+    override fun onInterceptTouchEvent(ev: android.view.MotionEvent?): Boolean {
+        when (ev?.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                isUserTouching = true
+                // 用户接管：解除静默，后续他点输入框能正常弹键盘。
+                silentInput = false
+            }
+            android.view.MotionEvent.ACTION_UP,
+            android.view.MotionEvent.ACTION_CANCEL,
+            -> isUserTouching = false
+        }
+        return super.onInterceptTouchEvent(ev)
+    }
+
     // ── 子视图 ──────────────────────────────────────────────────────────
 
     private val pageHost = FrameLayout(context)
@@ -263,7 +337,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             Log.w(TAG, "标签已达上限 $MAX_TABS，不再新建")
             return false
         }
-        val wv = WebView(context)
+        val wv = QuietWebView(context)
         configureWebView(wv)
         val tab = Tab(wv)
         tabs.add(tab)
@@ -707,7 +781,12 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         // 按键只有在 WebView 持有输入焦点时才会被分发到页面。
         // AI 接管期间用户可能点过别处（地址栏、面板按钮），焦点不在
         // WebView 上时按键会被别处吃掉，表现仍是「提示成功但没反应」。
-        if (!wv.hasFocus()) wv.requestFocus()
+        //
+        // ⚠️ 但**面板不可见时绝不能抢焦点**：此时用户在主界面别处，
+        //    requestFocus + requestFocus 会让 IME（安全键盘）突然弹出来。
+        //    静默模式下 WebView 本来就是隐藏的，按键照样能分发到页面
+        //    （dispatchKeyEvent 不要求视图可见），所以不抢焦点没有副作用。
+        if (!silentInput && !wv.hasFocus()) wv.requestFocus()
         wv.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode))
         wv.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, keyCode))
         return true

@@ -166,8 +166,8 @@ object BrowserBridge {
         return when (action) {
             "open" -> opOpen(cmd.optString("url", ""))
             "read" -> evalJson(READ_JS)
-            "click" -> evalJson(clickJs(cmd))
-            "type" -> evalJson(typeJs(cmd))
+            "click" -> evalJson(clickJs(cmd), touchesKeyboard = true)
+            "type" -> evalJson(typeJs(cmd), touchesKeyboard = true)
             "press" -> opPress(cmd.optString("key", "Enter"))
             "scroll" -> evalJson(scrollJs(cmd))
             "screenshot" -> opScreenshot()
@@ -283,7 +283,14 @@ object BrowserBridge {
      * ⚠️ 超时是必须的：页面渲染进程被回收后 `evaluateJavascript` 的 callback
      *   **永远不来**。没有超时，这条轮询线程会被永久堵住。
      */
-    private fun mainThreadOp(op: (AiBrowserView, (JSONObject) -> Unit) -> Unit): JSONObject {
+    /**
+     * @param touchesKeyboard 这次操作是否可能让页面元素获得焦点（从而拉起输入法）。
+     *   为 true 时会在执行前切到静默输入，避免 AI 在用户看不见的地方弹键盘。
+     */
+    private fun mainThreadOp(
+        touchesKeyboard: Boolean = false,
+        op: (AiBrowserView, (JSONObject) -> Unit) -> Unit,
+    ): JSONObject {
         val latch = CountDownLatch(1)
         val box = arrayOfNulls<JSONObject>(1)
         val finished = AtomicBoolean(false)
@@ -305,6 +312,13 @@ object BrowserBridge {
                 }
                 // AI 动手前先抢控制权：否则用户随手一点就会打断正在进行的输入
                 view.claimAiControl()
+                // ⚠️ 会碰到焦点的操作，必须先进静默输入。
+                //    click/type 的 JS 里都有 `el.focus()`，页面一 focus，
+                //    Chromium 就向系统申请输入法 —— 用户正看着主界面别处，
+                //    手机却突然弹出安全键盘。eval 也可能跑 focus()，一并算上。
+                //    press 走原生 dispatchKeyEvent，同样会要输入连接。
+                //    只读操作（read/scroll/screenshot 等）不动键盘，不必打断用户。
+                if (touchesKeyboard) view.silentInput = true
                 op(view) { r -> finish(r) }
             } catch (t: Throwable) {
                 finish(err("原生异常: ${t.javaClass.simpleName}: ${t.message}"))
@@ -325,7 +339,8 @@ object BrowserBridge {
      */
     private fun opEval(js: String): JSONObject {
         if (js.isBlank()) return err("空的 JS")
-        return mainThreadOp { view, done ->
+        // 用户/模型写的 JS 里可能带 focus()，一律按会碰键盘处理。
+        return mainThreadOp(touchesKeyboard = true) { view, done ->
             view.evaluate(js) { result ->
                 if (result == null) {
                     done(err("页面没有返回结果（可能已导航或崩溃）"))
@@ -337,9 +352,9 @@ object BrowserBridge {
     }
 
     /** 执行一段 JS 并解析它返回的 JSON 字符串。 */
-    private fun evalJson(js: String): JSONObject {
+    private fun evalJson(js: String, touchesKeyboard: Boolean = false): JSONObject {
         if (js.isBlank()) return err("空的 JS")
-        return mainThreadOp { view, done ->
+        return mainThreadOp(touchesKeyboard) { view, done ->
             view.evaluate(js) { result ->
                 if (result == null) {
                     done(err("页面没有返回结果（可能已导航或崩溃）"))
@@ -569,8 +584,9 @@ object BrowserBridge {
      * 键名不在映射表里时退回 JS 合成事件，至少让页面监听器收到事件。
      */
     private fun opPress(key: String): JSONObject {
-        val code = keyCodeOf(key) ?: return evalJson(pressJs(key))
-        return mainThreadOp { view, done ->
+        // press 走真实按键分发，Enter 可能提交表单 ⇒ 同样会碰键盘。
+        val code = keyCodeOf(key) ?: return evalJson(pressJs(key), touchesKeyboard = true)
+        return mainThreadOp(touchesKeyboard = true) { view, done ->
             if (view.dispatchKey(code)) {
                 done(okJson(mapOf("key" to key, "native" to true)))
             } else {
