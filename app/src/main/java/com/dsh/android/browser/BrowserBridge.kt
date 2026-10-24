@@ -347,6 +347,17 @@ object BrowserBridge {
                     // AI 的 click/type 很可能就是提交登录表单，操作一结束
                     // 就把 Cookie 刷到磁盘，别等 App 被系统杀掉。
                     runCatching { android.webkit.CookieManager.getInstance().flush() }
+                    // ⚠️ **再补一次延迟 flush**：提交登录表单后页面往往**不跳转**，
+                    //    JS 发完请求、拿到 token 才写 Cookie / localStorage，
+                    //    比 `op` 的回调晚得多。豆包这类站点的登录态主要在
+                    //    localStorage 里 —— 而 localStorage **没有** 对应的
+                    //    `flush()` API（Chromium 自己按周期刷 LevelDB），
+                    //    我们只能靠「别急着杀进程」+ 多催几次 Cookie。
+                    //    2.5 秒是给内核存储层留的余量。
+                    mainHandler.postDelayed(
+                        { runCatching { android.webkit.CookieManager.getInstance().flush() } },
+                        2500L,
+                    )
                     finish(r)
                 }
             } catch (t: Throwable) {

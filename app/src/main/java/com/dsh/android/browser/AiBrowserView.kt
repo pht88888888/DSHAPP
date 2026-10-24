@@ -266,7 +266,11 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
      * 用 lateinit 而不是在声明处初始化：它要加到本 View 上，而 `init {}` 里
      * 才开始装配子视图，声明顺序在 `addView` 之前拿不到 context 的合适时机。
      */
-    private lateinit var actionPill: TextView
+    private lateinit var actionPill: LinearLayout
+
+    /** 胶囊里的呼吸圆点与文字。 */
+    private lateinit var actionDot: View
+    private lateinit var actionText: TextView
 
     /** 顶部工具栏。留字段是为了 [applyPalette] 能重刷它的底色。 */
     private var chromeBar: LinearLayout? = null
@@ -402,18 +406,40 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         // ── AI 动作胶囊（浮在页面顶部，紧贴工具栏下方）──────────────────
         // 用户打开侧边栏时只能看到浏览器，看不到对话流。没有这条反馈，
         // AI 每次操作他都只能对着一个不动的页面干等，不知道是在干活还是卡住了。
-        actionPill = TextView(context).apply {
-            setTextColor(palette.pillText)
-            textSize = 12.5f
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER
-            setPadding(dp(16), dp(9), dp(16), dp(9))
+        // 外层容器负责圆角渐变底，里面横排「呼吸小圆点 + 文字」。
+        // 用容器而不是把背景画在 TextView 上：圆点要和文字垂直居中对齐，
+        // 且左右 padding 要对称（TextView 自带的 drawableLeft 对不齐多行文字）。
+        actionPill = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(13), dp(9), dp(17), dp(9))
             background = pillBackground()
             visibility = View.GONE
             elevation = dp(8).toFloat()
             alpha = 0f
         }
+
+        // 呼吸小圆点：让胶囊看起来"活着"，而不是一段静止文字。
+        actionDot = View(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(palette.aiAccent)
+            }
+        }
+        actionPill.addView(
+            actionDot,
+            LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(9) },
+        )
+
+        actionText = TextView(context).apply {
+            setTextColor(palette.pillText)
+            textSize = 12.5f
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        actionPill.addView(actionText)
+
         addView(
             actionPill,
             LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
@@ -479,7 +505,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         }
         val pill = actionPill
         val now = android.os.SystemClock.elapsedRealtime()
-        if (pill.visibility == View.VISIBLE && pill.text.toString() == t) {
+        if (pill.visibility == View.VISIBLE && actionText.text.toString() == t) {
             // 同一句描述：只是新一轮操作，重新给满 5 秒，但不重新播入场动画。
             pillOpDone = false
             pillDueAt = now + PILL_MIN_MS
@@ -487,7 +513,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         }
         pill.removeCallbacks(pillSweep)
         pill.animate().cancel()
-        pill.text = t
+        actionText.text = t
         pillOpDone = false
         pillShownAt = now
         pillDueAt = now + PILL_MIN_MS
@@ -505,6 +531,39 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             .setDuration(200L)
             .setInterpolator(android.view.animation.DecelerateInterpolator())
             .start()
+        startPulse()
+    }
+
+    /**
+     * 圆点呼吸：透明度 1 → 0.35 → 1，1.1s 一轮，无限循环。
+     *
+     * 为什么值得加：胶囊本来是**静止**的一段文字，看起来像贴在页面上的标签。
+     * 有了呼吸，它读起来是「正在发生」而不是「一条过期的通知」。animation
+     * 走 ViewPropertyAnimator 而不是 ValueAnimator，省掉手动 cancel 的样板。
+     */
+    private fun startPulse() {
+        val dot = actionDot
+        dot.animate().cancel()
+        dot.alpha = 1f
+        dot.animate()
+            .alpha(0.35f)
+            .setDuration(1_100L)
+            .setInterpolator(android.view.animation.AccelerateDecelerateInterpolator())
+            .withEndAction {
+                dot.animate()
+                    .alpha(1f)
+                    .setDuration(1_100L)
+                    .setInterpolator(android.view.animation.AccelerateDecelerateInterpolator())
+                    .withEndAction { startPulse() }
+                    .start()
+            }
+            .start()
+    }
+
+    /** 停掉呼吸（收胶囊时用，否则动画会在隐藏的 View 上空转）。 */
+    private fun stopPulse() {
+        actionDot.animate().cancel()
+        actionDot.alpha = 1f
     }
 
     /**
@@ -521,6 +580,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     /** 立刻收走胶囊（超时、异常等「操作没正常结束」的路径用）。 */
     fun hideActionNow() {
         val pill = actionPill
+        stopPulse()
         pill.removeCallbacks(pillSweep)
         pill.animate().cancel()
         pill.visibility = View.GONE
@@ -564,19 +624,59 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                     pill.visibility = View.GONE
                     pill.scaleX = 1f
                     pill.scaleY = 1f
+                    stopPulse()
                 }
                 .start()
         }
     }
 
-    /** 胶囊底：圆角胶囊 + 一圈极淡描边，深浅主题都能立住。 */
-    private fun pillBackground(): Drawable =
-        GradientDrawable().apply {
+    /**
+     * 胶囊底：渐变描边 + 半透明填充。
+     *
+     * 用户嫌之前"太朴素"（纯色圆角 + 1dp 灰边，确实就是个普通标签）。这里叠三层：
+     *
+     * 1. **渐变描边**（不透明层 → 用 [GradientDrawable.setStroke] 加不了渐变，
+     *    所以整体做一个「外圈渐变 + 内圈填充」的 [LayerDrawable] 套娃）：
+     *    外层是 accent 系的双色渐变圆角矩形，内层比外层小 1.5dp、用实心底色盖住，
+     *    露出来那一圈就是渐变描边。
+     * 2. **柔和高光**：内层再叠一层从上到下的白色 → 透明线性渐变（深色主题下
+     *    透明度低一些，浅色下略高），做出一点立体感，不是死板的纯色块。
+     * 3. **圆角 24dp**：接近半高的胶囊形，比 22dp 更"圆润"。
+     *
+     * ⚠️ 描边宽度用 1.5dp 而不是 1dp：1dp 在 3x 屏上太细，渐变基本看不出来。
+     */
+    private fun pillBackground(): Drawable {
+        val radius = dp(24).toFloat()
+        val strokeW = dp(1.5f.toInt().coerceAtLeast(1)).coerceAtLeast(1)
+
+        // 渐变描边：accent → aiAccent 斜向过渡。
+        val ring = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                (if (dark) 0xFF7FB2E8 else 0xFF2C6FB5).toInt(),
+                (if (dark) 0xFFE0A33A else 0xFFB4700C).toInt(),
+            ),
+        ).apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(22).toFloat()
-            setColor(palette.pill)
-            setStroke(dp(1), if (dark) 0x1FFFFFFF else 0x14000000)
+            cornerRadius = radius
+            setColor(0x00000000)   // 只当描边用，中间会被内层盖住
         }
+
+        // 内层填充：半透明底 + 顶部高光。
+        val fill = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                if (dark) 0xF2383D45.toInt() else 0xF7FFFFFF.toInt(),
+                if (dark) 0xF22A2E35.toInt() else 0xF2F4F6F8.toInt(),
+            ),
+        ).apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radius
+        }
+
+        val inner = android.graphics.drawable.InsetDrawable(fill, strokeW, strokeW, strokeW, strokeW)
+        return android.graphics.drawable.LayerDrawable(arrayOf(ring, inner))
+    }
 
     // ── 标签管理 ────────────────────────────────────────────────────────
 
@@ -757,6 +857,14 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 // ⚠️ 每次加载完成都 flush —— 否则登录 Cookie 可能只在
                 //    WebView 内存里，App 被系统杀掉就丢了。
                 CookieManager.getInstance().flush()
+                // ⚠️ **再补一次延迟 flush**，这条是给 AJAX 登录用的。
+                //    提交登录表单后页面**不跳转**，JS 拿到 token 才写 Cookie /
+                //    localStorage，那一刻 `onPageFinished` 早就跑完了。
+                //    延迟 2.5s 是给内核的存储层留出真正落盘的时间：
+                //    Cookie 有 `flush()` 可以立刻催，但 **localStorage 没有**
+                //    （Chromium 自己按周期把 LevelDB 刷盘），只能等。
+                //    豆包这类站点的登录态主要在 localStorage，光 flush Cookie 不够。
+                postDelayed({ runCatching { CookieManager.getInstance().flush() } }, 2500L)
                 tabOf(view)?.let {
                     it.title = view?.title.orEmpty()
                     drainWaiters(it, true)
@@ -1169,7 +1277,11 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         addressBar.setTextColor(palette.text)
         addressBar.background = rounded(palette.field, 8)
         statusChip.background = rounded(palette.field, 8)
-        actionPill.setTextColor(palette.pillText)
+        actionText.setTextColor(palette.pillText)
+        actionDot.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(palette.aiAccent)
+        }
         actionPill.background = pillBackground()
         for (btn in listOf(backBtn, forwardBtn)) btn.setTextColor(palette.text)
         for (tab in tabs) tab.webView.setBackgroundColor(palette.root)

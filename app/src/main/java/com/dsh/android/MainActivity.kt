@@ -4004,6 +4004,22 @@ class MainActivity : AppCompatActivity() {
         FloatingBubble.onAppForeground()
     }
 
+    /**
+     * 退到后台**之前**先落盘 Cookie。
+     *
+     * ⚠️ 为什么光有 `onStop` 不够：**覆盖安装（`adb install -r` / 装新 APK）
+     *    会把进程直接 SIGKILL**，`onStop` 根本来不及执行 —— 用户实测「装完
+     *    v44 登录，升到 v45 就掉了」正是这个原因。`onPause` 比 `onStop` 早，
+     *    在切后台、锁屏、下拉通知栏时都会走到，能多抢一次落盘机会。
+     *
+     * ⚠️ 但 `onPause` 也**不保证**在 SIGKILL 前跑到 —— 所以真正的保障是
+     *    「每次操作完就 flush」（见 BrowserBridge），这里只是多一道保险。
+     */
+    override fun onPause() {
+        super.onPause()
+        runCatching { android.webkit.CookieManager.getInstance().flush() }
+    }
+
     override fun onStop() {
         super.onStop()
         // ⚠️ **登录态丢失的关键一处**：WebView 的 Cookie 默认只活在内存里，
