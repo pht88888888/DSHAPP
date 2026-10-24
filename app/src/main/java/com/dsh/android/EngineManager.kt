@@ -9224,6 +9224,22 @@ class EngineManager private constructor(private val context: Context) {
          *      看起来「什么都没发生」。
          *      判据：改完 mobile-ui 源码，**两个戳都必须是新值**；
          *      只要其中一个还是上次的值，设备就会继续跑旧产物。
+         * 1.0.0-102：设置页「交流群」换成**新群**（「DSHAPP交流群3」，群号 1121898890）。
+         *      「DSHAPP交流群2」（1109733098）已满，用户给了新的群二维码截图。
+         *      ① 群号 `MP_CONTACT_GROUP_NO`：1109733098 → 1121898890；
+         *      ② 二维码 data URI 换成新群（700×700 WebP，68,522 B）。
+         *         用户给的是**带群名/群号/QQ logo 的整张截图**，用 **zxing-cpp**
+         *         直接读出四个角点（`203,695 / 952,695 / 952,1444 / 203,1444`），
+         *         按此裁切、每边留 20px 静区、LANCZOS 缩到 700；
+         *      ③ 可扫性用 zxing-cpp 验证：WebP 本身、以及模拟
+         *         「CSS 240px × dpr3」重采样后**均解码成功**，
+         *         内容 `https://qm.qq.com/q/l8uDVdDRXc`。
+         *      ⚠️ **两个戳都 bump**：`MOBILE_UI_VERSION` 101 → 102，
+         *      降级戳 `chrome74-v34` → `chrome74-v35`。
+         *      这次没有 pwsh/esbuild，降级产物 `webview-compat.zip` 里的
+         *      `mobileui/lib/client.js` 是**直接对旧产物做等量替换**得到的
+         *      （只换群号与二维码 data URI，其余字节不动），
+         *      改完用 `tools/check-frontend-syntax.mjs --target 74` 复检通过。
          * 1.0.0-66：设置页「交流群」换成**新群**（「DSHAPP交流群2」，群号 1109733098）。
          *      ① 群号 `MP_CONTACT_GROUP_NO`：1127652833 → 1109733098；
          *      ② 二维码 data URI 换成新群二维码（720×720 WebP，52,764 B，
@@ -9428,7 +9444,7 @@ class EngineManager private constructor(private val context: Context) {
           *      （99 → 100 / 33 → 34），否则会回退，设备上静默跑回没有这张卡的旧 UI。
           *      ⚠️ 两个戳都 bump（本常量 99 → 100，-CompatVersion 33 → 34）。
           */
-        private const val MOBILE_UI_VERSION = "1.0.0-101"
+        private const val MOBILE_UI_VERSION = "1.0.0-102"
         private const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────

@@ -7,7 +7,7 @@
 
 | 改了什么 | 必须改 |
 |---|---|
-| `mobile-ui.zip` 内容 | `EngineManager.MOBILE_UI_VERSION`（现 `1.0.0-100`）**且**重跑 `tools/build-webview-compat.ps1` 时 bump `-CompatVersion`（现 `34`，见 ⑯） |
+| `mobile-ui.zip` 内容 | `EngineManager.MOBILE_UI_VERSION`（现 `1.0.0-102`）**且**重跑 `tools/build-webview-compat.ps1` 时 bump `-CompatVersion`（现 `35`，见 ⑯） |
 | `dsh-bridge/content.js` 内容 | `app/src/gecko/assets/dsh-bridge/manifest.json` 的 `version`（现 `1.0.13`），否则 GeckoView 继续用旧扩展（见 ⑦.7） |
 | `node-runtime.bin` 内容 | `TermuxBootstrap.NODE_VERSION`（`26.4.0-2`） |
 | `engine.bin` 内容 | `MainActivity.assetStamp`（`0.2.1-rc.2-1`） |
