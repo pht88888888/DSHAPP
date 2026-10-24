@@ -3,381 +3,1065 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DSH 桌宠工作台</title>
+<title>DSH 桌宠制作工作台</title>
 <style>
   :root{
-    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
-    --text:#e6e9ef; --dim:#8b93a3; --accent:#4c8dff; --accent2:#3a6fd8;
-    --ok:#35c46a; --warn:#f0a92e; --bad:#e5484d;
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2b313d;
+    --text:#e6e9ef; --dim:#8d97a8; --dim2:#5f6878;
+    --accent:#6ea8fe; --accent2:#4f8ef7;
+    --ok:#3ddc97; --warn:#f0b429; --err:#f2545b;
+    --radius:10px;
   }
   *{box-sizing:border-box}
-  body{
-    margin:0; background:var(--bg); color:var(--text);
-    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-  }
-  header{
-    padding:18px 24px; border-bottom:1px solid var(--line);
-    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
-  }
-  header h1{font-size:17px; margin:0; font-weight:600; letter-spacing:.3px}
-  header .sub{color:var(--dim); font-size:12.5px}
-  .wrap{max-width:1080px; margin:0 auto; padding:22px 24px 80px}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  body{padding-bottom:80px}
 
-  .step{
-    background:var(--panel); border:1px solid var(--line); border-radius:12px;
-    margin-bottom:18px; overflow:hidden;
-  }
-  .step-h{
-    padding:14px 18px; display:flex; align-items:center; gap:11px;
-    border-bottom:1px solid var(--line); background:var(--panel2);
-  }
-  .step-n{
-    width:23px; height:23px; border-radius:50%; background:var(--accent);
-    color:#fff; font-size:12.5px; font-weight:700;
-    display:flex; align-items:center; justify-content:center; flex:none;
-  }
-  .step-t{font-weight:600; font-size:14.5px}
-  .step-d{color:var(--dim); font-size:12.5px; margin-left:auto}
-  .step-b{padding:18px}
+  /* ── 顶栏 ───────────────────────────────────────── */
+  header{position:sticky;top:0;z-index:20;background:rgba(15,17,21,.92);
+    backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .hrow{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;
+    align-items:center;gap:16px;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px;white-space:nowrap}
+  h1 span{color:var(--accent)}
+  .budget{margin-left:auto;display:flex;gap:18px;align-items:center;font-size:12px;flex-wrap:wrap}
+  .budget b{font-weight:650;font-variant-numeric:tabular-nums}
+  .budget .item{display:flex;flex-direction:column;line-height:1.3}
+  .budget .k{color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.6px}
+  .pill{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+  .pill.ok{background:rgba(61,220,151,.14);color:var(--ok)}
+  .pill.warn{background:rgba(240,180,41,.14);color:var(--warn)}
+  .pill.err{background:rgba(242,84,91,.14);color:var(--err)}
+  .pill.dim{background:#232833;color:var(--dim)}
 
-  .drop{
-    border:2px dashed var(--line); border-radius:10px; padding:34px 20px;
-    text-align:center; cursor:pointer; transition:.15s; background:var(--panel2);
-  }
-  .drop:hover,.drop.over{border-color:var(--accent); background:#1b2230}
-  .drop .big{font-size:15px; margin-bottom:6px}
-  .drop .sm{color:var(--dim); font-size:12.5px}
+  /* ── 布局 ───────────────────────────────────────── */
+  main{max-width:1180px;margin:0 auto;padding:20px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    margin-bottom:16px;overflow:hidden}
+  .shead{display:flex;align-items:center;gap:10px;padding:13px 16px;
+    border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
+  .shead:hover{background:var(--panel2)}
+  .snum{width:22px;height:22px;border-radius:50%;background:#232833;color:var(--dim);
+    display:grid;place-items:center;font-size:11px;font-weight:700;flex:none}
+  .shead.done .snum{background:rgba(61,220,151,.16);color:var(--ok)}
+  .stitle{font-weight:640;font-size:14px}
+  .sdesc{color:var(--dim2);font-size:12px;margin-left:2px}
+  .sbody{padding:16px}
+  section.collapsed .sbody{display:none}
+  .shead .chev{margin-left:auto;color:var(--dim2);transition:transform .18s;font-size:11px}
+  section.collapsed .chev{transform:rotate(-90deg)}
 
-  .row{display:flex; gap:14px; flex-wrap:wrap; align-items:center}
-  .field{display:flex; flex-direction:column; gap:5px; min-width:130px}
-  .field label{font-size:12.5px; color:var(--dim)}
-  input[type=text],input[type=number],select{
-    background:var(--panel2); border:1px solid var(--line); color:var(--text);
-    padding:7px 10px; border-radius:7px; font-size:13px; outline:none; width:100%;
-  }
-  input:focus,select:focus{border-color:var(--accent)}
-  input[type=range]{width:100%; accent-color:var(--accent)}
+  /* ── 通用控件 ────────────────────────────────────── */
+  label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--dim)}
+  label.f>span{font-weight:560;color:var(--dim)}
+  input[type=text],input[type=number],select,textarea{
+    background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:7px;padding:7px 10px;font:inherit;font-size:13px;width:100%;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent2)}
+  textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  input[type=color]{background:var(--panel2);border:1px solid var(--line);
+    border-radius:7px;height:34px;padding:2px;width:100%}
+  button{background:#232833;border:1px solid var(--line);color:var(--text);
+    border-radius:7px;padding:8px 14px;font:inherit;font-size:13px;cursor:pointer;
+    transition:background .15s,border-color .15s;white-space:nowrap}
+  button:hover:not(:disabled){background:#2c3341;border-color:#3a4356}
+  button:disabled{opacity:.42;cursor:not-allowed}
+  button.primary{background:var(--accent2);border-color:var(--accent2);color:#fff;font-weight:600}
+  button.primary:hover:not(:disabled){background:#3f7fe8}
+  button.ghost{background:transparent}
+  button.sm{padding:4px 9px;font-size:12px}
+  button.danger:hover{background:rgba(242,84,91,.16);border-color:var(--err);color:var(--err)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .hint{font-size:12px;color:var(--dim2);line-height:1.55}
+  code{background:#232833;padding:1px 5px;border-radius:4px;
+    font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#a8b3c7}
 
-  button{
-    background:var(--accent); color:#fff; border:0; padding:9px 17px;
-    border-radius:8px; font-size:13.5px; cursor:pointer; font-weight:500;
-  }
-  button:hover{background:var(--accent2)}
-  button:disabled{opacity:.4; cursor:not-allowed}
-  button.ghost{background:transparent; border:1px solid var(--line); color:var(--text)}
-  button.ghost:hover{background:var(--panel2)}
+  /* ── 拖放区 ──────────────────────────────────────── */
+  #drop{border:2px dashed var(--line);border-radius:var(--radius);padding:26px 20px;
+    text-align:center;cursor:pointer;transition:all .15s;background:#14171d}
+  #drop:hover{border-color:#3f4a5c;background:#171b22}
+  #drop.over{border-color:var(--accent);background:rgba(110,168,254,.07)}
+  #drop .big{font-size:15px;font-weight:600;margin-bottom:5px}
+  #drop .sub{font-size:12px;color:var(--dim2)}
 
-  .preview{
-    display:flex; gap:16px; flex-wrap:wrap; margin-top:16px;
-  }
-  .pv{
-    background:var(--panel2); border:1px solid var(--line); border-radius:9px;
-    padding:11px; flex:1; min-width:190px;
-  }
-  .pv .t{font-size:12px; color:var(--dim); margin-bottom:7px}
-  .pv .box{
-    background:
-      repeating-conic-gradient(#2b3040 0% 25%, #232833 0% 50%) 50%/16px 16px;
-    border-radius:6px; display:flex; align-items:center; justify-content:center;
-    min-height:150px; overflow:hidden;
-  }
-  .pv canvas,.pv img{max-width:100%; max-height:190px; display:block}
+  /* ── 动作表 ──────────────────────────────────────── */
+  .tbl{margin-top:14px;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .thead,.trow{display:grid;
+    grid-template-columns:56px minmax(110px,1fr) minmax(120px,1.1fr) 78px 84px auto;
+    gap:10px;align-items:center;padding:9px 12px}
+  .thead{background:#14171d;font-size:11px;color:var(--dim2);
+    text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+  .trow{border-top:1px solid var(--line);background:var(--panel)}
+  .trow:hover{background:var(--panel2)}
+  .thumb{width:56px;height:44px;border-radius:6px;object-fit:contain;
+    background:repeating-conic-gradient(#232833 0 25%,#1b1f27 0 50%) 0 0/12px 12px;
+    display:block}
+  .thumb.ph{display:grid;place-items:center;color:var(--dim2);font-size:16px}
+  .aname{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#a8b3c7;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .st{font-size:11px;font-weight:600}
+  .st.ok{color:var(--ok)} .st.err{color:var(--err)} .st.warn{color:var(--warn)}
+  .st.pend{color:var(--dim2)}
+  .sz{font-size:12px;font-variant-numeric:tabular-nums;color:var(--dim)}
+  .sz.bad{color:var(--err)}
+  .acts{display:flex;gap:4px;justify-content:flex-end}
+  .empty{padding:26px;text-align:center;color:var(--dim2);font-size:13px}
 
-  .stats{display:flex; gap:18px; flex-wrap:wrap; margin-top:13px; font-size:12.5px}
-  .stat{display:flex; gap:6px; align-items:baseline}
-  .stat .k{color:var(--dim)}
-  .stat .v{font-weight:600; font-variant-numeric:tabular-nums}
+  /* ── 预览 / 进度 ─────────────────────────────────── */
+  #stage{display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:start}
+  @media(max-width:720px){#stage{grid-template-columns:1fr}}
+  .sticky-prev{position:sticky;top:74px}
+  #preview{width:100%;aspect-ratio:1;border-radius:10px;
+    background:repeating-conic-gradient(#20242c 0 25%,#181c23 0 50%) 0 0/16px 16px;
+    display:block}
+  #bar{height:6px;background:#232833;border-radius:99px;overflow:hidden;margin-top:10px}
+  #barFill{height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--accent));
+    transition:width .12s linear}
+  #log{font-size:12px;color:var(--dim);max-height:210px;overflow:auto;
+    margin-top:10px;font-family:ui-monospace,Menlo,monospace;line-height:1.7}
+  #log div{padding:1px 0}
+  #log .e{color:var(--err)} #log .w{color:var(--warn)} #log .g{color:var(--ok)}
 
-  .bar{height:5px; background:var(--panel2); border-radius:3px; overflow:hidden; margin-top:12px}
-  .bar>i{display:block; height:100%; width:0; background:var(--accent); transition:width .15s}
+  .msg{padding:9px 12px;border-radius:7px;font-size:12.5px;margin-top:10px;line-height:1.55}
+  .msg.ok{background:rgba(61,220,151,.1);color:#8ef0c4}
+  .msg.warn{background:rgba(240,180,41,.1);color:#f5cf7e}
+  .msg.err{background:rgba(242,84,91,.1);color:#f79a9e}
 
-  .msg{margin-top:12px; padding:10px 13px; border-radius:8px; font-size:13px; display:none}
-  .msg.show{display:block}
-  .msg.ok{background:#12291b; border:1px solid #1e4a2e; color:#7ee2a0}
-  .msg.warn{background:#2b2413; border:1px solid #4a3d1e; color:#f0c674}
-  .msg.bad{background:#2b1416; border:1px solid #4a1e21; color:#f08a8e}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:12.5px}
+  .kv dt{color:var(--dim2)} .kv dd{margin:0;color:var(--text)}
 
-  table{width:100%; border-collapse:collapse; font-size:12.5px}
-  th,td{text-align:left; padding:7px 9px; border-bottom:1px solid var(--line)}
-  th{color:var(--dim); font-weight:500}
-  td input,td select{padding:5px 8px; font-size:12.5px}
+  .files{font-family:ui-monospace,Menlo,monospace;font-size:12px;
+    background:#14171d;border:1px solid var(--line);border-radius:8px;
+    padding:10px 12px;max-height:180px;overflow:auto;line-height:1.8;color:#a8b3c7}
+  .files .dir{color:var(--dim2)}
+  .files .n{color:var(--dim)}
 
-  .tag{
-    display:inline-block; padding:2px 7px; border-radius:5px;
-    font-size:11.5px; font-weight:500;
-  }
-  .tag.ok{background:#12291b; color:#7ee2a0}
-  .tag.bad{background:#2b1416; color:#f08a8e}
-
-  .hint{color:var(--dim); font-size:12.5px; margin-top:9px; line-height:1.65}
-  code{
-    background:var(--panel2); padding:1.5px 5px; border-radius:4px;
-    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
-  }
-  .flex1{flex:1}
-  .mt{margin-top:14px}
+  details>summary{outline:none}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>🐾 DSH 桌宠工作台</h1>
-  <span class="sub">本地处理，不上传任何文件</span>
+  <div class="hrow">
+    <h1>DSH <span>桌宠</span> 制作工作台</h1>
+    <div class="budget">
+      <div class="item"><span class="k">动作</span><b id="mActions">0 / 24</b></div>
+      <div class="item"><span class="k">已生成</span><b id="mDone">0 / 0</b></div>
+      <div class="item"><span class="k">包体积</span><b id="mSize">0 B</b></div>
+      <div class="item"><span class="k">状态</span><span id="mState" class="pill dim">待导入</span></div>
+    </div>
+  </div>
 </header>
 
-<div class="wrap">
+<main>
 
-  <!-- ── 步骤 1 ─────────────────────────────────────── -->
-  <div class="step">
-    <div class="step-h">
-      <div class="step-n">1</div>
-      <div class="step-t">导入素材</div>
-      <div class="step-d">视频 / GIF / 图片，都行</div>
+<!-- ① 导入素材 ─────────────────────────────────── -->
+<section id="s1">
+  <div class="shead" data-toggle>
+    <div class="snum">1</div>
+    <div class="stitle">导入素材</div>
+    <div class="sdesc">视频 / GIF / 图片序列，一次可以拖一堆</div>
+    <div class="chev">▾</div>
+  </div>
+  <div class="sbody">
+    <div id="drop">
+      <div class="big">把宠物的视频拖到这里</div>
+      <div class="sub">
+        或点击选择文件 · 支持 mp4 / mov / webm / gif / png 序列 ·
+        纯色背景会自动抠成透明
+      </div>
+      <input type="file" id="fileInput" multiple accept="video/*,image/*" hidden>
     </div>
-    <div class="step-b">
-      <div class="drop" id="drop">
-        <div class="big">把视频拖进来，或点击选择</div>
-        <div class="sm">
-          支持 mp4 / mov / webm / gif / png 序列 ——
-          <b>有背景也行，会自动抠掉</b>
-        </div>
-        <input type="file" id="file" multiple accept="video/*,image/*" hidden>
-      </div>
 
-      <div class="row mt">
-        <div class="field" style="min-width:200px">
-          <label style="display:flex;gap:7px;align-items:center;color:var(--text);font-size:13px">
-            <input type="checkbox" id="autoBg" checked style="width:auto">
-            自动抠掉纯色背景
-          </label>
-        </div>
-        <div class="field" style="min-width:200px">
-          <label style="display:flex;gap:7px;align-items:center;color:var(--text);font-size:13px">
-            <input type="checkbox" id="autoCrop" checked style="width:auto">
-            自动裁掉透明空白
-          </label>
-        </div>
+    <div class="grid g3" style="margin-top:16px">
+      <label class="f"><span>背景处理</span>
+        <select id="bgMode">
+          <option value="auto" selected>自动检测并抠掉纯色背景</option>
+          <option value="none">保持原样（素材本身已透明）</option>
+          <option value="manual">指定背景色抠掉</option>
+        </select>
+      </label>
+      <label class="f" id="bgColorWrap" style="display:none"><span>背景色</span>
+        <input type="color" id="bgColor" value="#ffffff">
+      </label>
+      <label class="f"><span>抠色强度 <b id="tolV" style="color:var(--accent)">42</b></span>
+        <input type="range" id="tolerance" min="8" max="110" value="42">
+      </label>
+      <label class="f"><span>边缘羽化 <b id="feaV" style="color:var(--accent)">30</b></span>
+        <input type="range" id="feather" min="0" max="90" value="30">
+      </label>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      抠色强度：颜色差多少以内算背景。<b>背景没抠干净就调大</b>，
+      宠物身上有洞就调小。羽化让边缘不那么硬。
+    </div>
+    <div id="loadMsg"></div>
+
+    <div class="tbl">
+      <div class="thead">
+        <div>预览</div><div>用途</div><div>动作名</div>
+        <div>状态</div><div>大小</div><div></div>
       </div>
-      <div class="msg" id="msg1"></div>
-      <div class="preview" id="pv1" style="display:none">
-        <div class="pv">
-          <div class="t">原始（第 1 帧）</div>
-          <div class="box"><canvas id="cvOrig"></canvas></div>
-        </div>
-        <div class="pv">
-          <div class="t">自动裁剪后</div>
-          <div class="box"><canvas id="cvCrop"></canvas></div>
-        </div>
-      </div>
-      <div class="stats" id="stats1" style="display:none"></div>
+      <div id="tblBody"><div class="empty">还没有素材 —— 先把视频拖进上面的框里</div></div>
+    </div>
+    <div class="hint" style="margin-top:10px">
+      每个素材会变成一个<b>动作</b>。「用途」决定它什么时候播：
+      待机 / 点击 / 拖拽 / 走动是<b>随机池</b>（可以放好几个，越放越不单调），
+      思考 / 干活 / 出错这些是<b>状态映射</b>（一个状态一个）。
     </div>
   </div>
+</section>
 
-  <!-- ── 步骤 2 ─────────────────────────────────────── -->
-  <div class="step">
-    <div class="step-h">
-      <div class="step-n">2</div>
-      <div class="step-t">调整与导出视频</div>
-      <div class="step-d">生成透明 WebM</div>
+<!-- ② 角色外观 ─────────────────────────────────── -->
+<section id="s2">
+  <div class="shead" data-toggle>
+    <div class="snum">2</div>
+    <div class="stitle">角色与外观</div>
+    <div class="sdesc">名字、大小、要不要自己走</div>
+    <div class="chev">▾</div>
+  </div>
+  <div class="sbody">
+    <div class="grid g2">
+      <label class="f"><span>宠物名字</span>
+        <input type="text" id="petName" value="我的桌宠" maxlength="24">
+      </label>
+      <label class="f"><span>包名（npm，装两个要不一样）</span>
+        <input type="text" id="pkgName" value="dsh-app-pet-custom"
+          spellcheck="false" autocapitalize="off">
+      </label>
+      <label class="f"><span>版本号</span>
+        <input type="text" id="pkgVer" value="1.0.0" spellcheck="false">
+      </label>
     </div>
-    <div class="step-b">
-      <div class="row">
-        <div class="field" style="min-width:170px">
-          <label>帧率 <span id="fpsV">24</span> fps</label>
-          <input type="range" id="fps" min="8" max="30" value="24">
-        </div>
-        <div class="field" style="min-width:170px">
-          <label>输出宽度 <span id="wV">—</span> px</label>
-          <input type="range" id="outW" min="120" max="640" value="360">
-        </div>
-        <div class="field" style="min-width:170px">
-          <label>画质 <span id="qV">中</span></label>
-          <input type="range" id="quality" min="10" max="100" value="55">
-        </div>
-        <div class="field" style="min-width:120px">
-          <label>&nbsp;</label>
-          <label style="display:flex;gap:7px;align-items:center;color:var(--text);font-size:13px">
-            <input type="checkbox" id="crop" checked style="width:auto"> 裁掉空白
-          </label>
-        </div>
-      </div>
-
-      <div class="row mt">
-        <button id="btnExport" disabled>生成视频</button>
-        <button id="btnPlay" class="ghost" disabled>预览动画</button>
-        <span class="hint" style="margin:0" id="exportHint">先导入素材</span>
-      </div>
-
-      <div class="bar"><i id="bar"></i></div>
-      <div class="msg" id="msg2"></div>
-
-      <div class="preview" id="pv2" style="display:none">
-        <div class="pv">
-          <div class="t">预览（拖动滑块看帧）</div>
-          <div class="box"><canvas id="cvPrev"></canvas></div>
-          <input type="range" id="frameScrub" min="0" max="0" value="0" style="margin-top:9px">
-        </div>
-        <div class="pv">
-          <div class="t">导出结果</div>
-          <div class="box"><video id="vOut" loop muted playsinline style="max-width:100%"></video></div>
-          <div class="hint" id="outInfo"></div>
-        </div>
-      </div>
+    <div class="grid g3" style="margin-top:12px">
+      <label class="f"><span>长边大小 <b id="sizeV" style="color:var(--accent)">160</b> dp</span>
+        <input type="range" id="sizeDp" min="80" max="320" step="10" value="160">
+      </label>
+      <label class="f"><span>让它自己走动</span>
+        <select id="moveEnabled">
+          <option value="0" selected>不自动走（安静的按钮）</option>
+          <option value="1">会自己溜达（宠物感）</option>
+        </select>
+      </label>
+      <label class="f"><span>贴边吸附</span>
+        <select id="edgeSnap">
+          <option value="0" selected>关</option>
+          <option value="1">开</option>
+        </select>
+      </label>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      长边大小是宠物在屏幕上最长那条边的 dp 值。素材是竖的（比宽高）就按高度算。
+      注意别开太大，挡住半个屏幕就不好用了。
     </div>
   </div>
+</section>
 
-  <!-- ── 步骤 3 ─────────────────────────────────────── -->
-  <div class="step">
-    <div class="step-h">
-      <div class="step-n">3</div>
-      <div class="step-t">配置动作与状态</div>
-      <div class="step-d">生成 preset.json</div>
-    </div>
-    <div class="step-b">
-      <div class="row">
-        <div class="field flex1" style="min-width:200px">
-          <label>宠物名字</label>
-          <input type="text" id="petName" value="我的宠物" placeholder="随便起">
-        </div>
-        <div class="field" style="min-width:140px">
-          <label>动作名（英文）</label>
-          <input type="text" id="actionName" value="idle-main" placeholder="idle-main">
-        </div>
-      </div>
-      <div class="hint">
-        动作名只能用 <code>a-z 0-9 - _</code>，最多 24 字符，<b>不能中文</b>。
-        每个动作先在这里导出视频、填好名字，再点下面的按钮登记。
-      </div>
-      <div class="row mt">
-        <button id="btnAddAction" disabled>＋ 登记这个动作为「待机」</button>
-      </div>
-
-      <div class="mt">
-        <table id="actionTable">
-          <thead>
-            <tr><th style="width:150px">动作名</th><th style="width:90px">大小</th>
-                <th style="width:110px">用途</th><th></th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-        <div class="hint" id="actionEmpty">还没有动作。导入素材 → 导出视频 → 登记。</div>
-      </div>
-    </div>
+<!-- ③ 生成 ─────────────────────────────────────── -->
+<section id="s3">
+  <div class="shead" data-toggle>
+    <div class="snum">3</div>
+    <div class="stitle">生成透明动画</div>
+    <div class="sdesc">统一裁剪 → 逐段录成 webm</div>
+    <div class="chev">▾</div>
   </div>
-
-  <!-- ── 步骤 4 ─────────────────────────────────────── -->
-  <div class="step">
-    <div class="step-h">
-      <div class="step-n">4</div>
-      <div class="step-t">下载</div>
-      <div class="step-d">配置 + 素材打包</div>
+  <div class="sbody">
+    <div class="grid g3">
+      <label class="f"><span>画布长边 <b id="outWV" style="color:var(--accent)">480</b> px</span>
+        <input type="range" id="outW" min="160" max="960" step="40" value="480">
+      </label>
+      <label class="f"><span>帧率 <b id="fpsV" style="color:var(--accent)">20</b> fps</span>
+        <input type="range" id="fps" min="10" max="30" step="2" value="20">
+      </label>
+      <label class="f"><span>画质 <b id="qualV" style="color:var(--accent)">55</b>%</span>
+        <input type="range" id="quality" min="10" max="95" step="5" value="55">
+      </label>
     </div>
-    <div class="step-b">
-      <div class="row">
-        <button id="btnPreset" disabled>下载 preset.json</button>
-        <button id="btnZip" class="ghost" disabled>下载完整包（zip）</button>
+
+    <div id="stage" style="margin-top:16px">
+      <div class="sticky-prev">
+        <canvas id="preview"></canvas>
+        <div id="prevCap" class="hint" style="text-align:center;margin-top:6px">统一裁剪框预览</div>
       </div>
-      <div class="msg" id="msg4"></div>
-      <div class="hint" id="presetHint">
-        先在步骤 3 至少登记一个动作。
-      </div>
-      <div class="mt">
-        <div class="t" style="font-size:12.5px;color:var(--dim);margin-bottom:7px">preset.json 预览</div>
-        <pre id="jsonPreview" style="background:var(--panel2);border:1px solid var(--line);
-          border-radius:8px;padding:13px;overflow:auto;max-height:340px;font-size:12px;
-          font-family:ui-monospace,Menlo,monospace;margin:0;color:#b8c4d9">（还没有内容）</pre>
+      <div>
+        <div class="row">
+          <button class="primary" id="btnGen">开始生成</button>
+          <button class="ghost" id="btnGenOne">只重做没生成的</button>
+          <button class="ghost" id="btnStop" disabled>停止</button>
+        </div>
+        <div id="genHint" class="hint" style="margin-top:8px">
+          会先算出所有动作共用的裁剪框，保证切换动作不跳位。
+        </div>
+        <div id="bar"><div id="barFill"></div></div>
+        <div id="log"></div>
       </div>
     </div>
   </div>
+</section>
 
-</div>
+<!-- ④ 导出 ─────────────────────────────────────── -->
+<section id="s4">
+  <div class="shead" data-toggle>
+    <div class="snum">4</div>
+    <div class="stitle">打包成插件</div>
+    <div class="sdesc">导出一个 .tgz，直接在 App 里装</div>
+    <div class="chev">▾</div>
+  </div>
+  <div class="sbody">
+    <div id="checkMsg"></div>
+    <div id="pkgInfo"></div>
 
+    <details style="margin-top:14px">
+      <summary class="hint" style="cursor:pointer;user-select:none">
+        看看包里都有什么（点开）
+      </summary>
+      <div class="files" id="filesList" style="margin-top:10px"></div>
+    </details>
+
+    <details style="margin-top:10px">
+      <summary class="hint" style="cursor:pointer;user-select:none">
+        预览 presets/pet.json（点开，可改）
+      </summary>
+      <textarea id="presetJson" rows="16" style="margin-top:10px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="sm ghost" id="btnPresetReset">从当前设置重新生成</button>
+      </div>
+    </details>
+
+    <div class="row" style="margin-top:16px">
+      <button class="primary" id="btnExport">导出 .tgz 插件包</button>
+      <span class="hint" id="exportHint"></span>
+    </div>
+
+    <details style="margin-top:18px" open>
+      <summary class="hint" style="cursor:pointer;user-select:none;font-weight:600;color:var(--dim)">
+        装到自己手机上（三步）
+      </summary>
+      <ol class="hint" style="margin:10px 0 0;padding-left:20px;line-height:1.9">
+        <li>点上面的<b>导出</b>，得到 <code>&lt;包名&gt;-&lt;版本&gt;.tgz</code>。
+          在手机上做的会落到 <code>/sdcard/Download</code>。</li>
+        <li>打开 DSH App → <b>插件</b> → <b>添加插件</b> → 选<b>「压缩包」</b>，
+          把 tgz 的完整路径粘进去。</li>
+        <li>装好后<b>重启引擎</b>（或杀掉 App 重开）。悬浮球会自己变成你的宠物。</li>
+      </ol>
+      <div class="hint" style="margin-top:8px;color:var(--dim2)">
+        想在电脑上装也行：把 tgz 丢到手机上，
+        或者解压出 <code>package/</code> 目录后用「本地目录」安装。
+      </div>
+    </details>
+  </div>
+</section>
+
+</main>
+
+<!-- 模板占位：构建时由 build.py 内联成 text/plain 的 script 块 -->
+<script type="text/plain" id="tpl-index.js">
+/**
+ * __PKG_NAME__ —— 把 DSH Android 的悬浮球变成 dsh-pet 风格的桌面宠物。
+ *
+ * ## 这一层解决什么
+ *
+ * 悬浮球本身已经支持透明 webm 动作、动作池、权重随机链、点击/拖拽回应、
+ * 运行状态映射（见 `dsh-android-bubble` 的 `bubble` 工具）。缺的不是能力，
+ * 而是**那套配置本身**：动作名、动作池、权重表、七档状态映射、文案，
+ * 以及对应的透明动画素材。让人每次手敲一遍是不现实的。
+ *
+ * 本插件就是那份配置的**载体**：装上、重启，悬浮球自己变成桌宠。
+ *
+ * ## 为什么是插件而不是一次 `bubble` 工具调用
+ *
+ * ① **素材要跟着走**。几十段 webm 动辄十几 MB，散在别处（比如别的插件的包目录）
+ *    意味着换台机器就断链。放在本包 `assets/webm/` 下，包就是完整的一份。
+ * ② **要能分享**。别人 `dsh plugin add` 一个包就得到同样的效果，不需要知道
+ *    动作名怎么起、池怎么分、权重怎么算。
+ * ③ **要能重放**。配置是声明式的（`presets/pet.json`），改一处、重启即生效，
+ *    不依赖"上次 AI 记不记得配过哪些动作"。
+ *
+ * ## 怎么下发
+ *
+ * 复用 `dsh-android-bubble` 已经在用的**文件信箱**（`$DSH_HOME/bubble-cmd.json`
+ * → 原生 250ms 轮询 → `bubble-result.json` 回执）。这是刻意的：
+ *
+ * - 悬浮球是**独立进程里的一个窗口**，本插件在 Node 侧，没有别的通道；
+ * - 再开一套信箱就等于让原生多轮询一个文件，没有收益；
+ * - 代价是**要与 `bubble` 工具错开 id**，见 [ID_BASE]。
+ *
+ * ## 为什么只下发一次
+ *
+ * 用户用 `bubble` 工具把宠物改成别的样子之后，重启不该把它按回去。所以本插件
+ * 在 `$DSH_HOME/deskpet/state.json` 里记一个**已应用版本**：版本一致就什么都不做。
+ * 想重新套用，调 `deskpet` 工具的 `apply`。
+ *
+ * @module __PKG_NAME__
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+
+export const name = '__PKG_NAME__';
+
+/**
+ * 需要 `tools` 服务来注册 `deskpet` 工具。
+ *
+ * ⚠️ 刻意*不* inject 别的 —— 多声明一个服务就多一个"引擎没这个服务就整个
+ *   不激活"的机会，而本插件失效时的症状是**静默的**（宠物没出现，没有报错）。
+ *
+ * @type {string[]}
+ */
+export const inject = ['tools'];
+
+/** 本包根目录（由模块自身的 URL 推导，不依赖 cwd）。 */
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** 预设目录与默认预设。 */
+const PRESET_DIR = path.join(PKG_ROOT, 'presets');
+const DEFAULT_PRESET = 'pet.json';
+
+/** 与 `dsh-android-bubble` 共用的文件信箱（三个文件名必须与原生侧一致）。 */
+const CMD_FILE = 'bubble-cmd.json';
+const RESULT_FILE = 'bubble-result.json';
+
+/** 等待原生回执的上限。原生轮询间隔 250 ms，留足余量。 */
+const WAIT_TIMEOUT_MS = 4000;
+
+/** 轮询回执的间隔。 */
+const POLL_INTERVAL_MS = 60;
+
+/**
+ * 请求编号的基数。
+ *
+ * ⚠️ **必须与 `bubble` 工具错开**：那个插件的 `seq` 从 1 开始自增，而回执是按
+ *   `id` 配对的 —— 两条命令撞上同一个 id，工具调用会收到本插件配置下发的回执，
+ *   表现为"AI 说改了悬浮球但没生效"。
+ *
+ *   取 100 万：`bubble` 工具要跑满 100 万次调用才会追上来（不现实），
+ *   同时远在 Android `JSONObject.getInt` 的 2^31 之内 —— 用 `Date.now()`
+ *   当 id 会溢出 int，原生那边读出来是垃圾值，回执永远配不上。
+ */
+const ID_BASE = 1_000_000;
+
+/** 启动后第一次下发前的延迟（ms）：原生悬浮球可能还没起来。 */
+const BOOT_DELAY_MS = 5000;
+
+/** 启动下发的重试次数与退避基数（ms）。 */
+const BOOT_RETRIES = 3;
+const BOOT_BACKOFF_MS = 10000;
+
+/**
+ * 已应用状态的落点（相对 `$DSH_HOME`）。
+ */
+const STATE_FILE = path.join('deskpet', 'state.json');
+
+/**
+ * 打印一行诊断信息。
+ *
+ * ⚠️ **刻意走 `console.log` 而不是 `ctx.logger`**：本 App 只把引擎子进程的
+ *   stdout/stderr 转发进 logcat，`ctx.logger` 的去向在移动端不可见。用
+ *   `ctx.logger` 的后果是"插件到底有没有激活、有没有下发成功"全都查不出来。
+ *
+ * @param {string} message - 不含前缀的消息体。
+ */
+function log(message) {
+	try {
+		console.log(`__PKG_NAME__: ${message}`);
+	} catch {
+		// 控制台不可用（被重定向到已关闭的管道）时静默，绝不能因此让引擎启动失败。
+	}
+}
+
+/** 读 JSON；文件不存在 / 内容不完整时给 null。 */
+function readJson(target) {
+	try {
+		return JSON.parse(fs.readFileSync(target, 'utf8'));
+	} catch {
+		return null;
+	}
+}
+
+/** 写文件（先写临时文件再 rename —— 原生侧可能正读到一半）。 */
+function writeJsonAtomic(target, value) {
+	const tmp = `${target}.tmp`;
+	fs.writeFileSync(tmp, JSON.stringify(value), 'utf8');
+	fs.renameSync(tmp, target);
+}
+
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/**
+ * 把一条命令交给原生侧并等回执。
+ *
+ * 与 `dsh-android-bubble` 的 `sendCommand` 同构，只有 id 空间不同（见 [ID_BASE]）。
+ *
+ * @param {string} home - `$DSH_HOME`。
+ * @param {number} id - 请求编号。
+ * @param {object} payload - `{action, fields}` 等。
+ * @returns {Promise<{ok: boolean, message: string, appearance?: string}>} 结果。
+ */
+async function sendCommand(home, id, payload) {
+	const cmdPath = path.join(home, CMD_FILE);
+	const resPath = path.join(home, RESULT_FILE);
+
+	try {
+		// 先清旧回执：否则上一轮的 ok 会被当成本轮的答案。
+		try { fs.unlinkSync(resPath); } catch { /* 不存在就是已经干净了 */ }
+		writeJsonAtomic(cmdPath, { id, ...payload });
+	} catch (error) {
+		return { ok: false, message: `写入文件信箱失败: ${error?.message ?? error}` };
+	}
+
+	const deadline = Date.now() + WAIT_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		await sleep(POLL_INTERVAL_MS);
+		const reply = readJson(resPath);
+		if (reply === null || reply.id !== id) continue;
+		return {
+			ok: reply.ok === true,
+			message: typeof reply.message === 'string' ? reply.message : '',
+			appearance: typeof reply.appearance === 'string' ? reply.appearance : undefined,
+		};
+	}
+	return {
+		ok: false,
+		message: `等待原生回执超时（${WAIT_TIMEOUT_MS} ms）。悬浮窗可能已经改好，也可能没有；`
+			+ '请用 bubble 工具的 action:"get" 复查。',
+	};
+}
+
+/**
+ * 把一份预设翻成 `bubble` 工具的 `set` 字段。
+ *
+ * 预设里的动作名 → 素材绝对路径的映射在这里完成：`assets` 是相对包根目录的
+ * 素材目录，每个动作对应 `<assets>/<动作名>.webm`。
+ *
+ * ⚠️ **动作缺素材就整份放弃并明确报错**，不静默跳过：只配一半会让宠物"有的动作
+ *   能播有的不能"，而调用方拿到的是"成功"，无从知道哪几个没生效。
+ *
+ * @param {object} preset - 预设对象。
+ * @returns {{ok: true, fields: object, note: string} | {ok: false, error: string}} 结果。
+ */
+function buildFields(preset) {
+	if (preset === null || typeof preset !== 'object' || Array.isArray(preset)) {
+		return { ok: false, error: '预设必须是对象' };
+	}
+	const actions = preset.actions;
+	if (actions === null || typeof actions !== 'object' || Array.isArray(actions)) {
+		return { ok: false, error: '预设缺少 actions（动作名 → 素材名）' };
+	}
+	const assetDir = path.join(PKG_ROOT, typeof preset.assets === 'string' && preset.assets !== ''
+		? preset.assets
+		: 'assets/webm');
+
+	const built = {};
+	const missing = [];
+	for (const actionName of Object.keys(actions)) {
+		const assetName = String(actions[actionName]);
+		const file = path.join(assetDir, `${assetName}.webm`);
+		if (!fs.existsSync(file)) {
+			missing.push(`${actionName}（缺 ${path.basename(file)}）`);
+			continue;
+		}
+		built[actionName] = { video: file };
+	}
+	if (missing.length > 0) {
+		return { ok: false, error: `以下动作缺素材，整份预设未应用: ${missing.join('、')}` };
+	}
+
+	// 池与映射原样透传：合法性由 `bubble` 工具与原生各自校验，本插件不重复实现。
+	// 但它们引用的动作名必须真实存在，否则宠物会在那些档位上"什么都不播"。
+	const fields = { actions: built };
+	for (const key of ['pools', 'poolWeights', 'actionMap', 'moveParams', 'workStatusTexts', 'appearance', 'move']) {
+		if (preset[key] !== undefined) fields[key] = preset[key];
+	}
+	if (preset.statusAutoHideMs !== undefined) fields.statusAutoHideMs = preset.statusAutoHideMs;
+
+	// `appearance` / `move` 是给预设读起来清楚的分组，下发时要摊平到顶层。
+	if (preset.appearance !== undefined) {
+		delete fields.appearance;
+		if (preset.appearance === null || typeof preset.appearance !== 'object') {
+			return { ok: false, error: 'appearance 必须是对象' };
+		}
+		Object.assign(fields, preset.appearance);
+	}
+	if (preset.move !== undefined) {
+		delete fields.move;
+		if (preset.move === null || typeof preset.move !== 'object') {
+			return { ok: false, error: 'move 必须是对象' };
+		}
+		const m = preset.move;
+		if (m.enabled !== undefined) fields.moveEnabled = m.enabled === true;
+		if (m.intervalSec !== undefined) fields.moveIntervalSec = m.intervalSec;
+		if (m.minDp !== undefined) fields.moveMinDp = m.minDp;
+		if (m.maxDp !== undefined) fields.moveMaxDp = m.maxDp;
+	}
+
+	// 池 / 映射 / 文案里引用的动作名必须在 built 里 —— 引用不存在的动作名，
+	// 原生抽签时会跳过它，最坏结果是"那个动作永远抽不到"，不会卡住宠物；
+	// 但那是**静默**的，所以在能报错的地方报出来。
+	const unknown = [];
+	for (const poolName of Object.keys(fields.pools ?? {})) {
+		for (const act of fields.pools[poolName] ?? []) {
+			if (built[act] === undefined) unknown.push(`pools.${poolName} → ${act}`);
+		}
+	}
+	for (const state of Object.keys(fields.actionMap ?? {})) {
+		const act = fields.actionMap[state];
+		if (act !== '' && built[act] === undefined) unknown.push(`actionMap.${state} → ${act}`);
+	}
+	for (const act of Object.keys(fields.moveParams ?? {})) {
+		if (built[act] === undefined) unknown.push(`moveParams → ${act}`);
+	}
+	if (unknown.length > 0) {
+		return { ok: false, error: `预设引用了不存在的动作: ${unknown.join('、')}` };
+	}
+
+	const note = `${Object.keys(built).length} 个动作 · `
+		+ `${Object.keys(fields.pools ?? {}).length} 个池 · `
+		+ `${Object.keys(fields.actionMap ?? {}).length} 项状态映射`;
+	return { ok: true, fields, note };
+}
+
+/** 读一份预设文件。 */
+function loadPreset(file) {
+	const target = path.join(PRESET_DIR, file);
+	if (!fs.existsSync(target)) {
+		const names = fs.existsSync(PRESET_DIR)
+			? fs.readdirSync(PRESET_DIR).filter((n) => n.endsWith('.json')).map((n) => n.replace(/\.json$/, ''))
+			: [];
+		return {
+			ok: false,
+			error: `预设不存在: ${file}${names.length > 0 ? `（可选: ${names.join(' / ')}）` : '（预设目录为空）'}`,
+		};
+	}
+	const data = readJson(target);
+	if (data === null) return { ok: false, error: `预设不是合法 JSON: ${target}` };
+	return { ok: true, preset: data };
+}
+
+/**
+ * 把一份预设下发到悬浮球。
+ *
+ * @param {string} home - `$DSH_HOME`。
+ * @param {object} preset - 预设对象。
+ * @returns {Promise<{ok: boolean, message: string, note?: string}>} 结果。
+ */
+async function applyPreset(home, preset) {
+	const built = buildFields(preset);
+	if (!built.ok) return { ok: false, message: built.error };
+	const id = ID_BASE + Math.floor(Math.random() * 100000);
+	const reply = await sendCommand(home, id, { action: 'set', fields: built.fields });
+	return {
+		ok: reply.ok,
+		message: reply.ok ? `桌宠配置已下发（${built.note}）` : reply.message,
+		note: built.note,
+	};
+}
+
+/**
+ * 算一份预设的指纹。
+ *
+ * ⚠️ **刻意不写一个手改的 `CONFIG_VERSION` 常量**：那种写法的失效方式是静默的 ——
+ *   改了预设却忘了同步版本号，老用户重启后**不会**重新下发，而日志里一切正常
+ *   （"已是版本 N，跳过下发"）。指纹把"改了没有"交给内容本身判断。
+ *
+ * 指纹取预设 JSON 的规范化序列化 + 每个动作素材的字节数：前者抓住动作/池/映射/
+ * 文案的任何改动，后者抓住"同名素材被换了另一段动画"。取 sha256 前 16 位十六进制，
+ * 够用且日志里好读。
+ *
+ * @param {object} preset - 预设对象。
+ * @returns {string} 指纹（16 位十六进制）。
+ */
+function fingerprint(preset) {
+	const h = crypto.createHash('sha256');
+	h.update(JSON.stringify(preset));
+	const built = buildFields(preset);
+	if (built.ok) {
+		for (const actionName of Object.keys(built.fields.actions).sort()) {
+			const file = built.fields.actions[actionName].video;
+			try {
+				h.update(`${actionName}:${fs.statSync(file).size}`);
+			} catch {
+				h.update(`${actionName}:missing`);
+			}
+		}
+	}
+	return h.digest('hex').slice(0, 16);
+}
+
+/** 读已应用的指纹；读不到给空串（= 从未应用过）。 */
+function appliedFingerprint(home) {
+	const data = readJson(path.join(home, STATE_FILE));
+	const v = data?.fingerprint;
+	return typeof v === 'string' ? v : '';
+}
+
+/** 记下已应用的指纹。 */
+function markApplied(home, print, note) {
+	try {
+		const target = path.join(home, STATE_FILE);
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		writeJsonAtomic(target, { fingerprint: print, appliedAt: Date.now(), note: note ?? '' });
+	} catch (error) {
+		log(`写已应用标记失败: ${error?.message ?? error}`);
+	}
+}
+
+/**
+ * 启动时下发一次（带重试）。
+ *
+ * ⚠️ **失败不抛、不标记**：原生可能只是还没起来，下次启动再试即可。把失败标记成
+ *   "已应用"会让这个用户此后**永远**得不到宠物，且没有任何报错。
+ *
+ * @param {string} home - `$DSH_HOME`。
+ * @param {object} preset - 预设对象。
+ * @param {string} print - 预设指纹。
+ */
+async function bootApply(home, preset, print) {
+	await sleep(BOOT_DELAY_MS);
+	for (let attempt = 1; attempt <= BOOT_RETRIES; attempt++) {
+		const result = await applyPreset(home, preset);
+		if (result.ok) {
+			markApplied(home, print, result.note);
+			log(`桌宠配置已应用（第 ${attempt} 次尝试）: ${result.note}`);
+			return;
+		}
+		log(`第 ${attempt}/${BOOT_RETRIES} 次下发失败: ${result.message}`);
+		if (attempt < BOOT_RETRIES) await sleep(BOOT_BACKOFF_MS * attempt);
+	}
+	log('下发始终失败，未标记已应用（下次启动会重试）。可调 deskpet 工具手动重试。');
+}
+
+/**
+ * 注册 `deskpet` 工具。
+ *
+ * ⚠️ 手工构造而不是 `defineTool({...})`：本包解在 `$DSH_HOME/deskpet/` 下，
+ *   那里没有 `node_modules`，ESM 解析够不到引擎的 `@deepseek-ai/dsh-tools`。
+ *   理由与做法与 `dsh-android-bubble` 完全一致。
+ *
+ * @param {string} home - `$DSH_HOME`。
+ * @returns {object} 工具定义。
+ */
+function deskpetTool(home) {
+	return {
+		name: 'deskpet',
+		description: `Manage the Android floating-bubble desktop pet (桌宠) installed by this plugin.
+
+This plugin ships a ready-made dsh-pet-style pet: a set of transparent WebM animations grouped into action pools with a weighted random chain, plus per-state status lines. The exact actions, pools and state map are declared in \`presets/pet.json\` — call \`action:"list"\` to see what this particular package contains. It applies itself once on startup — you normally never need to call this tool.
+
+Use it when the user asks to re-apply / reset the pet, to check whether it is configured, or after they broke the configuration with the \`bubble\` tool and want the pet back.
+
+- \`action:"apply"\` — re-send the pet preset to the floating bubble (all animations, pools, weights, state map, status lines, appearance). Use this to restore the pet or to pick up a preset change. Pass \`preset\` to choose another preset file (default "pet").
+- \`action:"status"\` — report the installed presets, the config version applied so far, and whether the engine has a usable command mailbox. Changes nothing.
+- \`action:"list"\` — list the animation assets shipped with this plugin (name, size, and the action it is wired to).
+
+⚠️ This plugin configures the ball through the same file mailbox the \`bubble\` tool uses, so both can be used in the same session; the ids are kept apart on purpose. After \`apply\`, the ball keeps playing even if this plugin is later removed — the configuration lives in the app, not in the plugin.`,
+		parameters: {
+			type: 'object',
+			additionalProperties: false,
+			properties: {
+				action: {
+					type: 'string',
+					enum: ['apply', 'status', 'list'],
+					description: '"apply" re-sends the pet preset; "status" reports presets + applied version; "list" lists shipped animation assets.',
+				},
+				preset: {
+					type: 'string',
+					description: 'For action:"apply" — preset name without the .json suffix (default "pet").',
+				},
+			},
+			required: ['action'],
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					ok: { type: 'boolean' },
+					message: { type: 'string' },
+				},
+				required: ['ok', 'message'],
+			},
+			render: (_args, value) => [{
+				type: 'text',
+				text: `${value.ok ? '结果: 成功' : '结果: 失败'}\n${value.message}`,
+			}],
+		},
+		presentCall: (args) => ({
+			card: 'generic',
+			title: args.action === 'apply' ? '套用桌宠预设'
+				: args.action === 'list' ? '列出桌宠动画素材' : '查看桌宠状态',
+			description: args.action === 'apply'
+				? `下发预设 ${args.preset ?? 'pet'} 到悬浮球`
+				: '读取桌宠插件的状态',
+		}),
+		async execute(args) {
+			const action = args.action;
+
+			if (action === 'status') {
+				const presets = fs.existsSync(PRESET_DIR)
+					? fs.readdirSync(PRESET_DIR).filter((n) => n.endsWith('.json')).map((n) => n.replace(/\.json$/, ''))
+					: [];
+				const applied = appliedFingerprint(home);
+				const current = fingerprint(loadPreset(DEFAULT_PRESET).preset ?? {});
+				const assetDir = path.join(PKG_ROOT, 'assets', 'webm');
+				const assetCount = fs.existsSync(assetDir)
+					? fs.readdirSync(assetDir).filter((n) => n.endsWith('.webm')).length
+					: 0;
+				const lines = [
+					`插件包: ${PKG_ROOT}`,
+					`可用预设: ${presets.length > 0 ? presets.join(' / ') : '(无)'}`,
+					`当前预设指纹: ${current}`,
+					`已应用指纹: ${applied === '' ? '尚未应用过' : applied}`
+						+ `${applied === current ? '（一致，重启不会重新下发）' : '（不一致，重启会重新下发）'}`,
+					`随包素材: ${assetCount} 段 webm`,
+					`命令信箱: ${path.join(home, CMD_FILE)}`,
+				];
+				return { ok: true, message: lines.join('\n') };
+			}
+
+			if (action === 'list') {
+				const presetName = typeof args.preset === 'string' && args.preset.trim() !== ''
+					? args.preset.trim()
+					: 'pet';
+				const loaded = loadPreset(`${presetName}.json`);
+				if (!loaded.ok) return { ok: false, message: loaded.error };
+				const built = buildFields(loaded.preset);
+				if (!built.ok) return { ok: false, message: built.error };
+				const rows = [];
+				for (const actionName of Object.keys(loaded.preset.actions ?? {})) {
+					const spec = built.fields.actions[actionName];
+					const bytes = spec ? fs.statSync(spec.video).size : 0;
+					const from = loaded.preset.sources?.[actionName];
+					rows.push(`${actionName}（${Math.round(bytes / 1024)} KB）${from ? ` ← ${from}` : ''}`);
+				}
+				return { ok: true, message: `${rows.length} 段素材（预设 ${presetName}）:\n${rows.join('\n')}` };
+			}
+
+			// action === 'apply'
+			const presetName = typeof args.preset === 'string' && args.preset.trim() !== ''
+				? args.preset.trim()
+				: 'pet';
+			const loaded = loadPreset(`${presetName}.json`);
+			if (!loaded.ok) return { ok: false, message: loaded.error };
+			const result = await applyPreset(home, loaded.preset);
+			if (result.ok) markApplied(home, fingerprint(loaded.preset), result.note);
+			return { ok: result.ok, message: result.message };
+		},
+	};
+}
+
+/**
+ * 注册桌宠插件；前置条件不满足时**不注册**，但绝不抛。
+ *
+ * @param {object} ctx - Cordis 上下文（需 `tools` 服务）。
+ */
+export function apply(ctx) {
+	const home = process.env.DSH_HOME;
+	if (typeof home !== 'string' || home === '') {
+		log('未配置 DSH_HOME，桌宠未启动');
+		return;
+	}
+	if (!fs.existsSync(home)) {
+		log(`DSH_HOME 不存在（${home}），桌宠未启动`);
+		return;
+	}
+
+	const loaded = loadPreset(DEFAULT_PRESET);
+	if (!loaded.ok) {
+		log(`默认预设不可用，桌宠未启动: ${loaded.error}`);
+		return;
+	}
+
+	// 启动下发：只在预设指纹变化时做。**不 await** —— apply 必须立刻返回，
+	// 否则引擎启动会被这个最长十几秒的重试链拖住（而它只是"锦上添花"）。
+	const print = fingerprint(loaded.preset);
+	const applied = appliedFingerprint(home);
+	if (applied === print) {
+		log(`桌宠配置指纹未变（${print}），跳过下发（想重新套用请调 deskpet 工具）`);
+	} else {
+		bootApply(home, loaded.preset, print).catch((error) => {
+			log(`启动下发异常: ${error?.message ?? error}`);
+		});
+	}
+
+	// ⚠️ **register 必须包 try/catch**：本插件的工具注册一旦抛异常（工具定义
+	//   不合契约、服务未就绪…），异常会从 apply 冒出去 → cordis 判定插件 failed
+	//   → 引擎打印 `dsh: startup failed: N required plugin did not activate`
+	//   并**直接退出**。用户看到的是 App 完全打不开，而表面上与"一个可选工具"
+	//   毫无关联。降级方向：只有这个工具不存在，而不是整个 App 不可用。
+	try {
+		ctx.tools.register(deskpetTool(home));
+		log(`已注册 deskpet 工具（包目录 ${PKG_ROOT}）`);
+	} catch (error) {
+		log(`注册 deskpet 工具失败，本插件不激活（引擎继续启动）: ${error?.message ?? error}`);
+	}
+}
+
+</script>
+<script type="text/plain" id="tpl-patch.yml">
+# ============================================================================
+# __PKG_NAME__ 的 bundle patch —— 把桌宠插件挂进 DSH 配置树
+# ============================================================================
+#
+# 【这是什么】
+#   本插件的"挂载声明"。DSH 启动时按 bundle 层栈把各插件的 patch 叠起来
+#   组成配置树，本文件就是本插件这一层的内容。
+#
+# 【工作原理】
+#   - insert：往配置树里添加新的插件行（entry）
+#   - id 必须全局唯一，且与本包名一致（DSH STORE 上架契约按它比对 entryIds，
+#     裸名会与其它插件的行标识冲突，候选会被判为缺少 entry ID）
+#   - 插件行那一行（"id: 值"）绝不能写行尾注释：商城预检用正则抓该行的值
+#     并要求其后直接换行，行尾注释会让它抓不到 entry ID
+#   - name: '__PKG_NAME__' 解析到本包入口 lib/index.js
+#
+# 【装上之后会发生什么】
+#   引擎启动 → 本插件 apply() → 把预设里的动画、动作池、权重表、七档
+#   运行状态映射与状态文案，通过文件信箱下发给原生悬浮球（原生 250 ms 轮询）。
+#   悬浮球随即变成桌宠：待机随机动作、点击回应、拖拽抛掷、状态联动。
+#   素材随包分发（assets/webm/），不需要额外下载任何东西。
+#
+# 【本文件由「DSH 桌宠制作工作台」生成】
+#   id 与包名同源（__PKG_NAME__），换包名时两处必须一起改 —— 工作台已经
+#   替你保证了这一点。
+#
+# ============================================================================
+
+- insert:
+    - id: __PKG_NAME__
+      name: '__PKG_NAME__'
+
+</script>
+<script type="text/plain" id="tpl-readme">
+# __PKG_NAME__
+
+DSH Android 桌面宠物插件 —— 由「DSH 桌宠制作工作台」生成。
+
+装好之后，屏幕上的悬浮球会变成一只会动的宠物：待机时随机播放小动作、
+点它会回应、拖起来会悬空挣扎、DSH 干活时它也跟着进入对应状态。
+
+## 装法
+
+### 在手机上装（推荐）
+
+1. 把 `__PKG_NAME__-<版本>.tgz` 放到手机上（用手机做的话它已经在
+   `/sdcard/Download` 了）。
+2. 打开 DSH App → **插件** → **添加插件** → 选 **「压缩包」**。
+3. 填入 tgz 的**完整绝对路径**，例如
+   `/sdcard/Download/__PKG_NAME__-1.0.0.tgz`。
+4. 装好后**重启引擎**（或杀掉 App 重开）。
+
+重启后悬浮球会自己变成你的宠物。
+
+### 在电脑上装
+
+```bash
+# 直链或本地 tgz 都可以
+dsh plugin add /绝对路径/__PKG_NAME__-1.0.0.tgz
+```
+
+或者解压后按本地目录装：
+
+```bash
+tar xzf __PKG_NAME__-1.0.0.tgz
+dsh plugin add /绝对路径/package
+```
+
+## 里面有什么
+
+```
+package/
+├── package.json          # npm 包定义 + dsh.bundle 挂载声明
+├── cordis.patch.yml      # bundle patch（把本插件挂进 DSH 配置树）
+├── lib/index.js          # 插件入口：读预设 → 通过文件信箱下发给悬浮球
+├── presets/pet.json      # 宠物配置：动作、动作池、状态映射、外观
+└── assets/webm/*.webm    # 透明动画素材（VP9，带 alpha 通道）
+```
+
+## 它是怎么生效的
+
+`lib/index.js` 在引擎启动时被调用一次，它：
+
+1. 读 `presets/pet.json`，把每个动作名映射到 `assets/webm/<动作名>.webm`；
+2. 通过文件信箱（`$DSH_HOME/bubble-cmd.json`）把整套配置交给原生悬浮球
+   （原生侧 250 ms 轮询一次）；
+3. 在 `$DSH_HOME/deskpet/state.json` 里记一个**内容指纹** —— 下次启动时
+   指纹没变就跳过，所以你自己用 `bubble` 工具改过外观之后，重启不会被按回去。
+
+配置是声明式的：想换动作、改大小、调文案，改 `presets/pet.json` 再重启即可。
+
+## 怎么改
+
+- **换素材**：把 `assets/webm/` 下的 webm 换掉（文件名要和 `pet.json` 里
+  `actions` 的值对得上）。必须是 **VP9 编码、带 alpha 通道**的 webm，
+  单个不超过 **6 MB**。
+- **加动作**：在 `presets/pet.json` 的 `actions` 里加一项，同时在
+  `assets/webm/` 放同名文件。总共最多 **24 个动作**。
+- **调大小**：`appearance.size` 是宠物在屏幕上**最长那条边**的 dp 值；
+  `boxWidth` / `boxHeight` 只表达**长宽比**（长边由 `size` 决定）。
+- **改状态文案**：`workStatusTexts` 是 7 档数组，按
+  `idle / thinking / working / waiting / error / result / success` 的顺序，
+  每档可以放多句备选（随机抽一句显示）。不想改的档留空数组即可。
+
+改完重启引擎生效。
+
+## 常见问题
+
+**装好了但宠物没出现？**
+
+- 确认**重启过引擎**（配置是启动时下发的）；
+- 看日志里有没有 `__PKG_NAME__:` 开头的行 —— 没有说明插件没被加载
+  （检查 `cordis.patch.yml` 的 `id` 是否与包名一致）；
+- 如果之前用 `bubble` 工具手动改过外观，调一下 `deskpet` 工具的
+  `apply` 动作重新套用。
+
+**宠物是黑块 / 没有透明背景？**
+
+素材不是带 alpha 的 VP9 webm。用「DSH 桌宠制作工作台」重新导出一遍，
+它会保证输出格式正确。
+
+**动作播不出来？**
+
+`pet.json` 里引用的动作名在 `assets/webm/` 下找不到同名文件时，
+整个预设会被拒绝应用（日志里会明确写哪几个缺）。这是刻意的：
+只配一半会让宠物"有的动作能播有的不能"，而表面上看是成功的。
+
+## 许可
+
+MIT
+
+</script>
+<script type="text/plain" id="tpl-license">
+MIT License
+
+Copyright (c) 2026 __PKG_NAME__ contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+</script>
 
 <script>
-// ── 极简 ZIP 写入器（store 模式，无依赖）─────────────────────────
-// webm 本身已是压缩格式，zip 再压一遍收益极低，所以用 store 模式。
-const MiniZip = (() => {
-  const crcTable = (() => {
-    const t = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-      t[n] = c >>> 0;
-    }
-    return t;
-  })();
-
-  function crc32(buf) {
-    let c = 0xFFFFFFFF;
-    for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-    return (c ^ 0xFFFFFFFF) >>> 0;
-  }
-
-  function u16(v) { return [v & 0xFF, (v >>> 8) & 0xFF]; }
-  function u32(v) { return [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF]; }
-
-  /** 当前时间 → DOS 日期/时间（zip 用的是 1980 纪元的打包格式）。 */
-  function dosDateTime() {
-    const d = new Date();
-    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
-    const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
-    return { time, date };
-  }
-
-  /** @param {Array<{name: string, data: Uint8Array}>} files */
-  function build(files) {
-    const parts = [];
-    const central = [];
-    let offset = 0;
-
-    for (const f of files) {
-      const nameBytes = new TextEncoder().encode(f.name);
-      const crc = crc32(f.data);
-      const size = f.data.length;
-
-      // 本地文件头
-      const dt = dosDateTime();
-      const local = [
-        ...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0),
-        ...u16(dt.time), ...u16(dt.date),
-        ...u32(crc), ...u32(size), ...u32(size),
-        ...u16(nameBytes.length), ...u16(0),
-        ...nameBytes,
-      ];
-      parts.push(new Uint8Array(local), f.data);
-
-      // 中央目录项
-      central.push([
-        ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0),
-        ...u16(dt.time), ...u16(dt.date),
-        ...u32(crc), ...u32(size), ...u32(size),
-        ...u16(nameBytes.length), ...u16(0), ...u16(0),
-        ...u16(0), ...u16(0), ...u32(0),
-        ...u32(offset),
-        ...nameBytes,
-      ]);
-
-      offset += local.length + size;
-    }
-
-    const centralStart = offset;
-    let centralSize = 0;
-    for (const c of central) { parts.push(new Uint8Array(c)); centralSize += c.length; }
-
-    const end = [
-      ...u32(0x06054b50), ...u16(0), ...u16(0),
-      ...u16(files.length), ...u16(files.length),
-      ...u32(centralSize), ...u32(centralStart),
-      ...u16(0),
-    ];
-    parts.push(new Uint8Array(end));
-
-    return new Blob(parts, { type: 'application/zip' });
-  }
-
-  return { build };
-})();
-
 /**
  * 素材处理引擎 —— 把用户导入的「任何东西」变成可用的透明 webm。
  *
@@ -391,7 +1075,7 @@ const MiniZip = (() => {
  *
  * ## 为什么要自动抠背景
  *
- * 用户手上的素材绝大多数是**有背景**的：AI 生成的白底图、剪映导出的 mp4。
+ * 用户手上的素材绝大多数是**有背景**的：AI 生成的白底视频、剪映导出的 mp4。
  * 要求用户自己先抠图是最大的门槛。所以引擎会：
  *
  * 1. 取画面四角像素，判断是不是纯色背景
@@ -404,20 +1088,25 @@ const MiniZip = (() => {
  * canvas 的透明像素 → 编码后 `TAG:alpha_mode=1`。
  * （Firefox / Safari 不支持，所以工作台会检测并提示用 Chrome。）
  *
+ * ## 为什么是工厂（`create()`）而不是单例
+ *
+ * 一个桌宠要**几十个动作**，每个动作是一次独立的导入/抠色/导出。上一版引擎是
+ * 单例，状态（`frames` / `bbox`）是模块级变量，于是「导入第二个动作时第一个的帧
+ * 被覆盖」—— 这也是上一版工作台只能「导一个 → 导出 → 记一个」的原因。
+ *
+ * 现在每个动作一个实例，状态互不干扰。
+ *
  * 全部在浏览器本地完成，不上传任何数据。
  */
 const PetEngine = (() => {
 
-  // ── 状态 ────────────────────────────────────────────────────────────
-  let frames = [];          // [{ bitmap: ImageBitmap, w, h, delay }]
-  let sourceName = '';
-  let sourceKind = '';      // 'video' | 'gif' | 'images'
-  let bbox = null;          // 所有帧的并集包围盒 { x0, y0, x1, y1 }
-  let warnings = [];
-  let detectedBg = null;    // 检测到的背景色 [r,g,b]；null = 无需抠图
-  let bgRemoved = false;    // 是否已执行过抠图
+  /** 单个素材的抽帧上限（@24fps ≈ 4 秒）。再多会让内存与录制时间都失控。 */
+  const MAX_FRAMES = 96;
 
-  // ── 工具 ────────────────────────────────────────────────────────────
+  /** 抽帧帧率上限。 */
+  const MAX_FPS = 30;
+
+  // ── 纯函数工具 ──────────────────────────────────────────────────────
 
   /** 读文件为 ImageBitmap。失败返回 null。 */
   async function loadBitmap(file) {
@@ -476,15 +1165,20 @@ const PetEngine = (() => {
     }
   }
 
-  // ── 背景检测与抠除 ──────────────────────────────────────────────────
-
   /**
    * 判断一帧是否有「纯色背景」需要抠。
    *
    * 判据：
    * 1. 四角若已透明 ⇒ 素材本来就有 alpha，不用抠
    * 2. 四角颜色必须彼此接近（否则是复杂背景）
-   * 3. 与该颜色相近的像素占比 ≥ 25%（否则可能整屏都是角色）
+   * 3. 与该颜色相近的像素占比 ≥ 25%（否则"背景"可能就是角色本身的大色块）
+   * 4. 但也不能 ≈ 100% —— 那时画面里除了这一个颜色几乎没有别的像素，
+   *    说明四角取到的其实是**角色**的颜色（角色占满画面、或干脆是空镜头）。
+   *    照着抠会把宠物整个抹掉，输出一段全透明的空白 webm，
+   *    而用户看到的是"宠物不见了"，且没有任何报错。
+   *
+   *    阈值取 99.5% 而不是更低：正常的宠物素材背景往往占到 90% 以上
+   *    （角色在画面中间小小的），那条不能误伤。
    *
    * @returns {[number,number,number]|null} 背景色，或 null（无需抠）
    */
@@ -523,7 +1217,10 @@ const PetEngine = (() => {
       }
     }
     if (sampled === 0) return null;
-    if (similar / sampled < 0.25) return null;
+    const ratio = similar / sampled;
+    if (ratio < 0.25) return null;
+    // ④ 几乎整屏都是同一色 ⇒ 那不是背景，是角色本体（或空镜头）
+    if (ratio > 0.995) return null;
 
     return [base[0], base[1], base[2]];
   }
@@ -541,7 +1238,7 @@ const PetEngine = (() => {
    *
    * ⚠️ 用**欧氏距离**而不是曼哈顿距离：后者对深色背景会误伤太多。
    */
-  function removeBackground(data, w, h, bg, tolerance = 42, feather = 30) {
+  function removeBackground(data, w, h, bg, tolerance, feather) {
     const [br, bgc, bb] = bg;
     let removed = 0;
     for (let i = 0; i < data.length; i += 4) {
@@ -561,807 +1258,1538 @@ const PetEngine = (() => {
     return removed;
   }
 
-  /**
-   * 对全部帧执行抠背景。
-   *
-   * 用**第一帧**检测背景色（视频里背景通常不变），然后套用到所有帧。
-   */
-  async function applyBgRemoval() {
-    if (frames.length === 0) return;
-
-    const W = frames[0].w, H = frames[0].h;
-    const cv = new OffscreenCanvas(W, H);
+  /** 一个空的离屏画布（带 willReadFrequently，抠色要频繁读回像素）。 */
+  function scratch(w, h) {
+    const cv = (typeof OffscreenCanvas !== 'undefined')
+      ? new OffscreenCanvas(w, h)
+      : Object.assign(document.createElement('canvas'), { width: w, height: h });
     const ctx = cv.getContext('2d', { willReadFrequently: true });
-
-    ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(frames[0].bitmap, 0, 0, W, H);
-    const first = ctx.getImageData(0, 0, W, H);
-    const bg = detectBackground(first.data, W, H);
-
-    if (!bg) return;   // 已透明，或背景太复杂
-
-    detectedBg = bg;
-    bgRemoved = true;
-
-    for (let k = 0; k < frames.length; k++) {
-      const fr = frames[k];
-      ctx.clearRect(0, 0, W, H);
-      ctx.drawImage(fr.bitmap, 0, 0, W, H);
-      const img = ctx.getImageData(0, 0, W, H);
-      removeBackground(img.data, W, H, bg);
-      ctx.putImageData(img, 0, 0);
-
-      // ⚠️ 必须换回 ImageBitmap：直接留着被 putImageData 污染的 canvas
-      //   会在下一轮被 clearRect 覆盖，等于白抠。
-      fr.bitmap = await createImageBitmap(cv);
-    }
-  }
-
-  // ── 导入 ────────────────────────────────────────────────────────────
-
-  /**
-   * 导入文件（视频 / GIF / 图片序列都行）。
-   *
-   * @param {FileList|File[]} fileList
-   * @param {object} opt
-   * @param {boolean} opt.autoBg 是否自动抠背景（默认 true）
-   * @param {number}  opt.fps    视频抽帧帧率（默认 24，上限 30）
-   */
-  async function importFiles(fileList, opt = {}) {
-    const autoBg = opt.autoBg !== false;
-    const files = Array.from(fileList || []);
-    if (files.length === 0) {
-      return { ok: false, message: '没有文件', count: 0, kind: '' };
-    }
-
-    frames = [];
-    warnings = [];
-    bbox = null;
-    detectedBg = null;
-    bgRemoved = false;
-
-    // ── 情况 1：视频（用户最可能的输入）──────────────────────────
-    const videoFile = files.find(f =>
-      /^video\//.test(f.type) || /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(f.name)
-    );
-    if (videoFile) {
-      sourceKind = 'video';
-      sourceName = videoFile.name;
-      return await importVideo(videoFile, autoBg, opt.fps);
-    }
-
-    // ── 情况 2：单个 GIF ──────────────────────────────────────────
-    if (files.length === 1 && /\.gif$/i.test(files[0].name)) {
-      const gifFrames = await decodeGif(files[0]);
-      if (gifFrames && gifFrames.length > 0) {
-        frames = gifFrames;
-        sourceKind = 'gif';
-        sourceName = files[0].name;
-        if (autoBg) await applyBgRemoval();
-        computeBBox();
-        return {
-          ok: true,
-          message: `GIF 拆出 ${frames.length} 帧`,
-          count: frames.length,
-          kind: 'gif',
-        };
-      }
-      warnings.push('这个浏览器解不了 GIF 动画，只取到第一帧。建议用 Chrome。');
-    }
-
-    // ── 情况 3：图片序列 ─────────────────────────────────────────
-    const imgs = files.filter(f =>
-      /\.(png|jpe?g|webp|bmp)$/i.test(f.name) || /^image\//.test(f.type)
-    );
-    if (imgs.length === 0) {
-      return { ok: false, message: '不支持的文件类型', count: 0, kind: '' };
-    }
-    imgs.sort(naturalSort);
-    for (const f of imgs) {
-      const bmp = await loadBitmap(f);
-      if (bmp) frames.push({ bitmap: bmp, w: bmp.width, h: bmp.height, delay: null });
-    }
-    if (frames.length === 0) {
-      return { ok: false, message: '图片解码失败', count: 0, kind: '' };
-    }
-    sourceKind = 'images';
-    sourceName = imgs.length === 1 ? imgs[0].name : `${imgs.length} 张图`;
-
-    if (autoBg) await applyBgRemoval();
-    computeBBox();
-    return {
-      ok: true,
-      message: `已导入 ${frames.length} 帧`,
-      count: frames.length,
-      kind: 'images',
-    };
+    return { cv, ctx };
   }
 
   /**
-   * 从视频里抽帧。
+   * 把浏览器原始报错翻译成用户能照做的话。
    *
-   * ⚠️ 用 `currentTime` seek 逐帧取，而不是边播边录：
-   *   播放有掉帧，而 seek 能保证拿到的是**确定的**那一帧。
+   * 最要紧的是 canvas 被污染那条：`file://` 打开页面、视频又是 `blob:`
+   * 来源时，部分浏览器不允许 `getImageData` 读回像素，报 `SecurityError`。
+   * 原文完全看不出该怎么办，而解法很具体（换个打开方式 / 换浏览器）。
    */
-  async function importVideo(file, autoBg, fpsOverride) {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement('video');
-    video.src = url;
-    video.muted = true;
-    video.playsInline = true;
+  function friendlyError(err) {
+    const msg = (err && err.message) || String(err);
+    if (/SecurityError|tainted|insecure|not allowed to access|unsafe/i.test(msg)) {
+      return '浏览器不允许读取视频像素（画布被标记为不安全），没法抠背景。'
+        + '试试：① 把本页面放进本地文件夹再打开，别用 file:// 直接双击；'
+        + '② 或者换 Chrome / Edge；③ 或者把「背景处理」改成「保持原样」，'
+        + '只做裁剪和转码。原始错误：' + msg;
+    }
+    if (/decode|not supported|unsupported/i.test(msg)) {
+      return '这个视频解不开（格式不支持）。转成 mp4（H.264）再试。原始错误：' + msg;
+    }
+    return msg;
+  }
 
-    try {
-      await new Promise((res, rej) => {
-        video.onloadedmetadata = res;
-        video.onerror = () => rej(new Error('视频加载失败（格式不支持？）'));
-        setTimeout(() => rej(new Error('视频加载超时')), 15000);
-      });
+  // ── 素材实例 ────────────────────────────────────────────────────────
 
-      const W = video.videoWidth, H = video.videoHeight;
-      if (!W || !H) throw new Error('读不到视频尺寸');
+  /**
+   * 创建一个素材实例。每个动作一个，互不干扰。
+   */
+  function create() {
+    /** [{ bitmap: ImageBitmap, w, h, delay }] */
+    let frames = [];
+    let sourceKind = '';        // 'video' | 'gif' | 'images'
+    let sourceLabel = '';
+    let bbox = null;            // 所有帧的并集包围盒 { x0, y0, x1, y1 }
+    let warnings = [];
+    let detectedBg = null;      // 检测到的背景色 [r,g,b]；null = 未抠
+    let bgRemoved = false;
+    let durationSec = 0;
 
-      const dur = video.duration;
-      if (!isFinite(dur) || dur <= 0) throw new Error('读不到视频时长');
-
-      const fps = Math.min(fpsOverride || 24, 30);
-      let total = Math.round(dur * fps);
-
-      // 上限 120 帧：再多会让内存和录制时间都失控
-      const MAX_FRAMES = 120;
-      if (total > MAX_FRAMES) {
-        total = MAX_FRAMES;
-        warnings.push(
-          `视频较长（${dur.toFixed(1)}s），只抽了前 ${MAX_FRAMES} 帧` +
-          `（约 ${(MAX_FRAMES / fps).toFixed(1)} 秒）`
-        );
+    /** 释放所有 ImageBitmap（显存，不释放会一直涨）。 */
+    function dispose() {
+      for (const f of frames) {
+        try { f.bitmap.close(); } catch { /* 已经关过 */ }
       }
-      if (total < 1) total = 1;
+      frames = [];
+      bbox = null;
+    }
 
-      const cv = new OffscreenCanvas(W, H);
-      const ctx = cv.getContext('2d', { willReadFrequently: true });
+    /**
+     * 对全部帧执行抠背景。
+     *
+     * 用**第一帧**检测背景色（视频里背景通常不变），然后套用到所有帧。
+     */
+    async function applyBgRemoval(opt) {
+      const mode = opt.mode || 'auto';
+      if (mode === 'none' || frames.length === 0) return { removed: false, bg: null };
 
-      for (let i = 0; i < total; i++) {
-        await seekTo(video, i / fps);
+      const W = frames[0].w, H = frames[0].h;
+      const { cv, ctx } = scratch(W, H);
+
+      let bg = opt.color || null;
+      if (mode === 'auto') {
         ctx.clearRect(0, 0, W, H);
-        ctx.drawImage(video, 0, 0, W, H);
-        const bmp = await createImageBitmap(cv);
-        frames.push({ bitmap: bmp, w: W, h: H, delay: 1000 / fps });
+        ctx.drawImage(frames[0].bitmap, 0, 0, W, H);
+        bg = detectBackground(ctx.getImageData(0, 0, W, H).data, W, H);
       }
+      if (!bg) return { removed: false, bg: null };
 
-      if (autoBg) await applyBgRemoval();
-      computeBBox();
+      detectedBg = bg;
+      bgRemoved = true;
 
-      return {
-        ok: true,
-        message: `从视频抽出 ${frames.length} 帧（${W}×${H}，${dur.toFixed(1)}s）`,
-        count: frames.length,
-        kind: 'video',
-      };
-    } finally {
-      video.src = '';
-      URL.revokeObjectURL(url);
+      const tolerance = opt.tolerance ?? 42;
+      const feather = opt.feather ?? 30;
+
+      for (let k = 0; k < frames.length; k++) {
+        const fr = frames[k];
+        ctx.clearRect(0, 0, W, H);
+        ctx.drawImage(fr.bitmap, 0, 0, W, H);
+        const img = ctx.getImageData(0, 0, W, H);
+        removeBackground(img.data, W, H, bg, tolerance, feather);
+        ctx.putImageData(img, 0, 0);
+
+        // ⚠️ 必须换回 ImageBitmap：直接留着被 putImageData 污染的 canvas
+        //   会在下一轮被 clearRect 覆盖，等于白抠。
+        const old = fr.bitmap;
+        fr.bitmap = await createImageBitmap(cv);
+        try { old.close(); } catch { /* 忽略 */ }
+      }
+      return { removed: true, bg };
     }
-  }
 
-  // ── 包围盒 ──────────────────────────────────────────────────────────
+    /**
+     * 计算所有帧的**并集**包围盒（去掉透明空白）。
+     *
+     * ⚠️ 必须并集：逐帧各裁会让画面尺寸不一致，播放时角色抖。
+     */
+    function computeBBox(alphaThreshold = 8) {
+      if (frames.length === 0) return null;
 
-  /**
-   * 计算所有帧的**并集**包围盒（去掉透明空白）。
-   *
-   * ⚠️ 必须并集：逐帧各裁会让尺寸不一致，切换动作时角色跳。
-   */
-  function computeBBox(alphaThreshold = 8) {
-    if (frames.length === 0) return null;
+      const W = frames[0].w, H = frames[0].h;
+      const { ctx } = scratch(W, H);
 
-    const W = frames[0].w, H = frames[0].h;
-    const cv = new OffscreenCanvas(W, H);
-    const ctx = cv.getContext('2d', { willReadFrequently: true });
+      let x0 = W, y0 = H, x1 = -1, y1 = -1;
 
-    let x0 = W, y0 = H, x1 = -1, y1 = -1;
+      for (const fr of frames) {
+        ctx.clearRect(0, 0, W, H);
+        ctx.drawImage(fr.bitmap, 0, 0, W, H);
+        const data = ctx.getImageData(0, 0, W, H).data;
 
-    for (const fr of frames) {
-      ctx.clearRect(0, 0, W, H);
-      ctx.drawImage(fr.bitmap, 0, 0, W, H);
-      const data = ctx.getImageData(0, 0, W, H).data;
-
-      for (let y = 0; y < H; y++) {
-        const row = y * W * 4;
-        for (let x = 0; x < W; x++) {
-          if (data[row + x * 4 + 3] > alphaThreshold) {
-            if (x < x0) x0 = x;
-            if (x > x1) x1 = x;
-            if (y < y0) y0 = y;
-            if (y > y1) y1 = y;
+        for (let y = 0; y < H; y++) {
+          const row = y * W * 4;
+          for (let x = 0; x < W; x++) {
+            if (data[row + x * 4 + 3] > alphaThreshold) {
+              if (x < x0) x0 = x;
+              if (x > x1) x1 = x;
+              if (y < y0) y0 = y;
+              if (y > y1) y1 = y;
+            }
           }
         }
       }
-    }
 
-    if (x1 < 0) {
-      warnings.push('所有帧都是全透明的 —— 检查一下素材？');
-      bbox = { x0: 0, y0: 0, x1: W - 1, y1: H - 1, W, H };
+      if (x1 < 0) {
+        warnings.push('所有帧都是全透明的 —— 检查一下素材？');
+        bbox = { x0: 0, y0: 0, x1: W - 1, y1: H - 1, W, H };
+        return bbox;
+      }
+
+      bbox = { x0, y0, x1, y1, W, H };
       return bbox;
     }
 
-    bbox = { x0, y0, x1, y1, W, H };
-    return bbox;
-  }
+    /**
+     * 从视频里抽帧。
+     *
+     * ⚠️ 用 `currentTime` seek 逐帧取，而不是边播边录：
+     *   播放有掉帧，而 seek 能保证拿到的是**确定的**那一帧。
+     */
+    async function importVideo(file, opt) {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.src = url;
+      video.muted = true;
+      video.playsInline = true;
 
-  /** 当前状态摘要。 */
-  function info() {
+      try {
+        await new Promise((res, rej) => {
+          video.onloadedmetadata = res;
+          video.onerror = () => rej(new Error('视频加载失败（格式不支持？）'));
+          setTimeout(() => rej(new Error('视频加载超时')), 15000);
+        });
+
+        const W = video.videoWidth, H = video.videoHeight;
+        if (!W || !H) throw new Error('读不到视频尺寸');
+
+        const dur = video.duration;
+        if (!isFinite(dur) || dur <= 0) throw new Error('读不到视频时长');
+        durationSec = dur;
+
+        const fps = Math.min(opt.fps || 24, MAX_FPS);
+        const maxSec = Math.max(0.2, opt.maxSeconds || dur);
+        const take = Math.min(dur, maxSec);
+
+        let total = Math.round(take * fps);
+        if (total > MAX_FRAMES) total = MAX_FRAMES;
+        if (total < 1) total = 1;
+
+        if (dur > take + 0.05) {
+          warnings.push(`原视频 ${dur.toFixed(1)}s，只取了前 ${take.toFixed(1)}s`);
+        }
+
+        for (let i = 0; i < total; i++) {
+          await seekTo(video, i / fps);
+          const { cv, ctx } = scratch(W, H);
+          ctx.clearRect(0, 0, W, H);
+          ctx.drawImage(video, 0, 0, W, H);
+          const bmp = await createImageBitmap(cv);
+          frames.push({ bitmap: bmp, w: W, h: H, delay: 1000 / fps });
+        }
+
+        sourceKind = 'video';
+      } finally {
+        video.src = '';
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    /**
+     * 导入一个动作的全部文件。
+     *
+     * @param {File[]} files - 一个动作的全部文件（图片序列就是多张，其余一张）。
+     * @param {object} opt
+     * @param {number} opt.fps - 抽帧帧率（默认 24，上限 30）。
+     * @param {number} opt.maxSeconds - 最多取几秒（默认全长）。
+     * @param {string} opt.bgMode - 'auto' | 'none' | 'manual'。
+     * @param {number[]|null} opt.bgColor - manual 时的背景色。
+     * @param {number} opt.tolerance - 抠色容差（默认 42）。
+     * @param {number} opt.feather - 边缘羽化（默认 30）。
+     */
+    async function load(files, opt = {}) {
+      dispose();
+      warnings = [];
+      detectedBg = null;
+      bgRemoved = false;
+      durationSec = 0;
+      bbox = null;
+      sourceKind = '';
+      sourceLabel = '';
+
+      const list = Array.from(files || []);
+      if (list.length === 0) return { ok: false, message: '没有文件' };
+
+      const videoFile = list.find(f =>
+        /^video\//.test(f.type) || /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(f.name)
+      );
+
+      try {
+        if (videoFile) {
+          await importVideo(videoFile, opt);
+          sourceLabel = videoFile.name;
+        } else if (list.length === 1 && /\.gif$/i.test(list[0].name)) {
+          const gifFrames = await decodeGif(list[0]);
+          if (gifFrames && gifFrames.length > 0) {
+            frames = gifFrames;
+            sourceKind = 'gif';
+            sourceLabel = list[0].name;
+            durationSec = gifFrames.reduce((s, f) => s + (f.delay || 40), 0) / 1000;
+            if (frames.length > MAX_FRAMES) {
+              warnings.push(`GIF 有 ${frames.length} 帧，只取前 ${MAX_FRAMES} 帧`);
+              for (const f of frames.slice(MAX_FRAMES)) {
+                try { f.bitmap.close(); } catch { /* 忽略 */ }
+              }
+              frames = frames.slice(0, MAX_FRAMES);
+            }
+          } else {
+            warnings.push('这个浏览器解不了 GIF 动画，只取到第一帧。建议用 Chrome。');
+          }
+        }
+
+        if (frames.length === 0) {
+          const imgs = list.filter(f =>
+            /\.(png|jpe?g|webp|bmp)$/i.test(f.name) || /^image\//.test(f.type)
+          );
+          if (imgs.length === 0) {
+            return { ok: false, message: '不支持的文件类型' };
+          }
+          imgs.sort(naturalSort);
+          const pick = imgs.slice(0, MAX_FRAMES);
+          if (imgs.length > MAX_FRAMES) {
+            warnings.push(`共 ${imgs.length} 张图，只取前 ${MAX_FRAMES} 张`);
+          }
+          for (const f of pick) {
+            const bmp = await loadBitmap(f);
+            if (bmp) frames.push({ bitmap: bmp, w: bmp.width, h: bmp.height, delay: null });
+          }
+          if (frames.length === 0) return { ok: false, message: '图片解码失败' };
+          sourceKind = 'images';
+          sourceLabel = pick.length === 1 ? pick[0].name : `${pick.length} 张图`;
+        }
+
+        // 抠背景（需要先把帧画到 canvas 上读像素）
+        const bgResult = await applyBgRemoval({
+          mode: opt.bgMode || 'auto',
+          color: opt.bgColor || null,
+          tolerance: opt.tolerance,
+          feather: opt.feather,
+        });
+        if (opt.bgMode === 'manual' && !bgResult.removed) {
+          warnings.push('手动指定的背景色没匹配到像素，检查一下颜色');
+        }
+
+        computeBBox();
+
+        const f0 = frames[0];
+        return { ok: true, message: `${f0.w}×${f0.h} · ${frames.length} 帧` };
+      } catch (err) {
+        dispose();
+        return { ok: false, message: friendlyError(err) };
+      }
+    }
+
+    /** 当前状态摘要。 */
+    function info() {
+      const f0 = frames[0];
+      return {
+        frameCount: frames.length,
+        width: f0?.w ?? 0,
+        height: f0?.h ?? 0,
+        sourceKind,
+        sourceLabel,
+        durationSec,
+        bbox,
+        detectedBg,
+        bgRemoved,
+        warnings: [...warnings],
+      };
+    }
+
+    /**
+     * 归一化的并集包围盒（0..1）。
+     *
+     * 用**归一化**而不是像素：各动作可能来自不同分辨率的视频，
+     * 归一化之后才能求「所有动作的统一画布」。
+     */
+    function normalizedBox() {
+      const f0 = frames[0];
+      if (!bbox || !f0) return { x0: 0, y0: 0, x1: 1, y1: 1 };
+      return {
+        x0: bbox.x0 / f0.w,
+        y0: bbox.y0 / f0.h,
+        x1: (bbox.x1 + 1) / f0.w,
+        y1: (bbox.y1 + 1) / f0.h,
+      };
+    }
+
+    /** 第一帧的缩略图 dataURL（用于动作列表里认素材）。 */
+    function thumbDataUrl(maxPx = 84) {
+      const f0 = frames[0];
+      if (!f0) return '';
+      const k = Math.min(1, maxPx / Math.max(f0.w, f0.h));
+      const w = Math.max(1, Math.round(f0.w * k));
+      const h = Math.max(1, Math.round(f0.h * k));
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(f0.bitmap, 0, 0, w, h);
+      return cv.toDataURL('image/png');
+    }
+
+    /**
+     * 把全部帧录成透明 webm。
+     *
+     * 原理：canvas → `captureStream(fps)` → `MediaRecorder('vp9')`。
+     * Chrome 保留 canvas 的 alpha，输出带 `alpha_mode=1`。
+     *
+     * ⚠️ **必须实时录制**：MediaRecorder 按 wall clock 采样，
+     *    24 帧 @24fps 就是 1 秒真实时间，不能"瞬间"生成。
+     *
+     * @param {object} opt
+     * @param {{x0,y0,x1,y1}} opt.box - 归一化裁剪框。**全部动作共用同一个**，
+     *   这样切换动作时角色的位置与大小完全一致。
+     */
+    async function exportWebm(opt) {
+      const { box, fps, outW, outH, quality, onProgress } = opt;
+
+      if (frames.length === 0) throw new Error('没有素材');
+      if (typeof MediaRecorder === 'undefined') {
+        throw new Error('这个浏览器不支持 MediaRecorder，请用 Chrome / Edge');
+      }
+      const mime = 'video/webm;codecs=vp9';
+      if (!MediaRecorder.isTypeSupported(mime)) {
+        throw new Error('这个浏览器不支持 VP9 编码，请用 Chrome / Edge');
+      }
+
+      const cv = document.createElement('canvas');
+      cv.width = outW;
+      cv.height = outH;
+      const ctx = cv.getContext('2d', { alpha: true });
+
+      /** 把第 i 帧按统一裁剪框画到输出画布上。 */
+      function paint(i) {
+        const fr = frames[i];
+        if (!fr) return;
+        const bx = box || { x0: 0, y0: 0, x1: 1, y1: 1 };
+        const nx0 = Math.max(0, Math.min(1, bx.x0));
+        const ny0 = Math.max(0, Math.min(1, bx.y0));
+        const nx1 = Math.max(0, Math.min(1, bx.x1));
+        const ny1 = Math.max(0, Math.min(1, bx.y1));
+        const sx = nx0 * fr.w;
+        const sy = ny0 * fr.h;
+        const sw = (nx1 - nx0) * fr.w;
+        const sh = (ny1 - ny0) * fr.h;
+        ctx.clearRect(0, 0, outW, outH);
+        if (sw <= 0 || sh <= 0) return;
+
+        // ⚠️ **必须 contain，不能直接拉伸到 outW×outH**。
+        //    各动作素材的宽高比未必相同（AI 生成的视频可能一会儿 16:9
+        //    一会儿 1:1），拉伸会让角色时胖时瘦。
+        //    宽高比一致时 k 恰好让目标矩形铺满画布，位置与尺寸**逐像素不变**。
+        const k = Math.min(outW / sw, outH / sh);
+        const dw = sw * k;
+        const dh = sh * k;
+        // 底部对齐：宠物是"脚踩地面"的，居中会让它在宽高比不一致时上下漂。
+        ctx.drawImage(fr.bitmap, sx, sy, sw, sh, (outW - dw) / 2, outH - dh, dw, dh);
+      }
+
+      const frameMs = frames.map(fr => (fr.delay && fr.delay > 10 ? fr.delay : 1000 / fps));
+      const totalMs = frameMs.reduce((a, b) => a + b, 0);
+
+      const stream = cv.captureStream(fps);
+      const bitrate = Math.round((0.3 + quality * 3.7) * 1_000_000);
+      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
+
+      const chunks = [];
+      rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      const stopped = new Promise(res => { rec.onstop = res; });
+
+      paint(0);
+      rec.start();
+
+      const t0 = performance.now();
+      let elapsed = 0;
+
+      for (let i = 0; i < frames.length; i++) {
+        paint(i);
+        if (onProgress) onProgress(Math.min(1, elapsed / totalMs));
+        await new Promise(r => setTimeout(r, frameMs[i]));
+        elapsed += frameMs[i];
+      }
+
+      await new Promise(r => setTimeout(r, 1000 / fps));
+      rec.stop();
+      await stopped;
+      if (onProgress) onProgress(1);
+
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      return { blob, size: blob.size, durationMs: performance.now() - t0 };
+    }
+
     return {
-      frameCount: frames.length,
-      width: frames[0]?.w ?? 0,
-      height: frames[0]?.h ?? 0,
-      sourceName,
-      sourceKind,
-      bbox,
-      detectedBg,
-      bgRemoved,
-      warnings: [...warnings],
+      load,
+      info,
+      normalizedBox,
+      thumbDataUrl,
+      exportWebm,
+      dispose,
+      get frameCount() { return frames.length; },
+      get bbox() { return bbox; },
     };
   }
 
-  // ── 渲染 ────────────────────────────────────────────────────────────
-
-  function drawFrame(ctx, i, opt) {
-    const fr = frames[i];
-    if (!fr) return;
-
-    const { crop, outW, outH } = opt;
-    const box = crop && bbox
-      ? { x: bbox.x0, y: bbox.y0, w: bbox.x1 - bbox.x0 + 1, h: bbox.y1 - bbox.y0 + 1 }
-      : { x: 0, y: 0, w: fr.w, h: fr.h };
-
-    ctx.clearRect(0, 0, outW, outH);
-    ctx.drawImage(fr.bitmap, box.x, box.y, box.w, box.h, 0, 0, outW, outH);
-  }
-
-  // ── 导出 ────────────────────────────────────────────────────────────
-
-  /**
-   * 把全部帧录成透明 webm。
-   *
-   * 原理：canvas → `captureStream(fps)` → `MediaRecorder('vp9')`。
-   * Chrome 保留 canvas 的 alpha，输出带 `alpha_mode=1`。
-   *
-   * ⚠️ **必须实时录制**：MediaRecorder 按 wall clock 采样，
-   *    24 帧 @24fps 就是 1 秒真实时间，不能"瞬间"生成。
-   */
-  async function exportWebm(opt) {
-    const { crop, fps, outW, outH, quality, onProgress } = opt;
-
-    if (frames.length === 0) throw new Error('没有素材');
-    if (typeof MediaRecorder === 'undefined') {
-      throw new Error('这个浏览器不支持 MediaRecorder，请用 Chrome / Edge');
-    }
-    const mime = 'video/webm;codecs=vp9';
-    if (!MediaRecorder.isTypeSupported(mime)) {
-      throw new Error('这个浏览器不支持 VP9 编码，请用 Chrome / Edge');
-    }
-
-    const cv = document.createElement('canvas');
-    cv.width = outW;
-    cv.height = outH;
-    const ctx = cv.getContext('2d', { alpha: true });
-
-    const frameMs = frames.map(fr => (fr.delay && fr.delay > 10 ? fr.delay : 1000 / fps));
-    const totalMs = frameMs.reduce((a, b) => a + b, 0);
-
-    const stream = cv.captureStream(fps);
-    const bitrate = Math.round((0.3 + quality * 3.7) * 1_000_000);
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
-
-    const chunks = [];
-    rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-    const stopped = new Promise(res => { rec.onstop = res; });
-
-    drawFrame(ctx, 0, { crop, outW, outH });
-    rec.start();
-
-    const t0 = performance.now();
-    let elapsed = 0;
-
-    for (let i = 0; i < frames.length; i++) {
-      drawFrame(ctx, i, { crop, outW, outH });
-      if (onProgress) onProgress(Math.min(1, elapsed / totalMs));
-      await new Promise(r => setTimeout(r, frameMs[i]));
-      elapsed += frameMs[i];
-    }
-
-    await new Promise(r => setTimeout(r, 1000 / fps));
-    rec.stop();
-    await stopped;
-    if (onProgress) onProgress(1);
-
-    const blob = new Blob(chunks, { type: 'video/webm' });
-    return { blob, size: blob.size, durationMs: performance.now() - t0 };
-  }
-
-  return {
-    importFiles,
-    computeBBox,
-    info,
-    drawFrame,
-    exportWebm,
-    get frames() { return frames; },
-    get bbox() { return bbox; },
-  };
+  return { create, MAX_FRAMES, MAX_FPS };
 })();
 
 </script>
 <script>
 (() => {
-  const $ = id => document.getElementById(id);
+'use strict';
 
-  // 已登记的动作：{ name, blob, size, role }
-  const actions = [];
+const $ = id => document.getElementById(id);
+const el = (tag, cls, txt) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (txt != null) n.textContent = txt;
+  return n;
+};
+const fmtSize = n => {
+  if (!n) return '0 B';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+};
+let seq = 0;
+const uid = () => 'i' + (++seq);
 
-  // 当前导入的素材（导出后的 blob 暂存在这里）
-  let currentBlob = null;
-  let currentSize = 0;
-  let playing = false;
+// 原生侧的两条硬限制（与 Kotlin 侧常量一一对应，改一处必须改两处）
+const LIMIT_BYTES = 6 * 1024 * 1024;   // BubbleVideos.MAX_VIDEO_BYTES
+const MAX_ACTIONS = 24;                // BubbleFrames.MAX_ACTIONS
+const NAME_RE = /^[a-z0-9_-]{1,24}$/;  // BubbleFrames.normalizeAction
 
-  // ── 工具 ─────────────────────────────────────────
-  function showMsg(el, kind, text) {
-    el.className = 'msg show ' + kind;
-    el.textContent = text;
-  }
-  function hideMsg(el) { el.className = 'msg'; }
+// ══════════════════════════════════════════════════════════════════
+// 用途（角色）定义 —— 直接对应原生 BubbleAppearance 的动作池与状态
+// ══════════════════════════════════════════════════════════════════
 
-  function fmtSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1048576).toFixed(2) + ' MB';
-  }
+/**
+ * 每个用途对应原生侧的哪一档。
+ *
+ * `pool` 有值 ⇒ 进 pools（随机抽签，可以放多个）。
+ * `state` 有值 ⇒ 进 actionMap（一个状态一个动作）。
+ *
+ * 池名与状态名都取自 BubbleAppearance 的常量，不能自创。
+ */
+const ROLES = [
+  { key:'idle',  label:'待机（随机）',   pool:'idle',  prefix:'idle',   multi:true },
+  { key:'click', label:'点击回应',       pool:'click', prefix:'click',  multi:true },
+  { key:'drag',  label:'拖拽姿势',       pool:'drag',  prefix:'drag',   multi:true },
+  { key:'move',  label:'走动',           pool:'move',  prefix:'move',   multi:true },
+  { key:'turn',  label:'转向',           pool:'turn',  prefix:'turn',   multi:true },
+  { key:'thinking', label:'思考中',      state:'thinking', prefix:'think',  multi:false },
+  { key:'working',  label:'干活中',      state:'working',  prefix:'work',   multi:false },
+  { key:'waiting',  label:'等待确认',    state:'waiting',  prefix:'wait',   multi:false },
+  { key:'error',    label:'出错了',      state:'error',    prefix:'error',  multi:false },
+  { key:'result',   label:'有结果了',    state:'result',   prefix:'result', multi:false },
+  { key:'success',  label:'完成了',      state:'success',  prefix:'success',multi:false },
+];
+const ROLE = Object.fromEntries(ROLES.map(r => [r.key, r]));
 
-  // 动作名校验：a-z 0-9 - _ ，≤24
-  function validActionName(s) {
-    return /^[a-z0-9_-]{1,24}$/.test(s);
-  }
+/** 从文件名猜用途（用户不用一个个点下拉）。 */
+function guessRole(name) {
+  const s = name.toLowerCase();
+  const has = (...ws) => ws.some(w => s.includes(w));
+  if (has('click', 'tap', '点击', '触碰')) return 'click';
+  if (has('drag', '拖', '悬空')) return 'drag';
+  if (has('turn', '转身', '转向', '东张西望')) return 'turn';
+  if (has('walk', 'move', '走', '溜达', '漂浮')) return 'move';
+  if (has('think', '想', '思考', '冒泡')) return 'thinking';
+  if (has('work', '忙', '干活', '打字', 'code')) return 'working';
+  if (has('wait', '等', '确认')) return 'waiting';
+  if (has('error', 'fail', '错', '失败')) return 'error';
+  if (has('result', '结果')) return 'result';
+  if (has('success', 'done', '完成', '成功', 'yeah')) return 'success';
+  return 'idle';
+}
 
-  // ── 步骤 1：导入 ─────────────────────────────────
-  const drop = $('drop'), fileInput = $('file');
+// ══════════════════════════════════════════════════════════════════
+// 状态
+// ══════════════════════════════════════════════════════════════════
 
-  drop.onclick = () => fileInput.click();
-  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
-  drop.ondragleave = () => drop.classList.remove('over');
-  drop.ondrop = e => {
-    e.preventDefault(); drop.classList.remove('over');
-    handleFiles(e.dataTransfer.files);
+/** 一个素材 = 一个动作槽位。 */
+const items = [];
+let stopped = false;
+let running = false;
+let importing = false;
+
+function newItem(files, roleKey) {
+  return {
+    id: uid(),
+    files: Array.from(files),
+    role: roleKey,
+    actionName: '',
+    engine: PetEngine.create(),
+    info: null,        // engine.info() 快照
+    thumb: '',
+    blob: null,
+    blobData: null,
+    size: 0,
+    status: 'pending', // pending | loading | ready | done | error
+    message: '',
   };
-  fileInput.onchange = () => handleFiles(fileInput.files);
+}
 
-  async function handleFiles(files) {
-    if (!files || files.length === 0) return;
-    hideMsg($('msg1'));
-    $('pv1').style.display = 'none';
-    $('stats1').style.display = 'none';
+/** 按当前角色重新分配动作名（池类带序号，状态类不带）。 */
+function renumber() {
+  const counts = {};
+  for (const it of items) {
+    const r = ROLE[it.role];
+    counts[r.key] = (counts[r.key] || 0) + 1;
+    it.actionName = r.multi ? `${r.prefix}-${counts[r.key]}` : r.prefix;
+  }
+}
 
-    // 视频导入可能较慢（逐帧 seek），先给个反馈
-    const isVideo = Array.from(files).some(f => /^video\//.test(f.type));
-    if (isVideo) showMsg($('msg1'), 'ok', '正在读视频并逐帧提取…');
+// ══════════════════════════════════════════════════════════════════
+// 导入
+// ══════════════════════════════════════════════════════════════════
 
-    const r = await PetEngine.importFiles(files, {
-      autoBg: $('autoBg').checked,
+async function addFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (files.length === 0) return;
+
+  // 导入是串行 await 的长过程，用户可能中途又拖一批进来。
+  // 两批交错会抢同一块解码内存，也容易把表格刷乱，直接挡住更省事。
+  if (importing) {
+    showMsg($('loadMsg'), 'warn', '上一批还在导入，等它做完再拖下一批');
+    return;
+  }
+  importing = true;
+
+  // ⚠️ 必须清掉上一轮点「停止」留下的标志，否则这次导入只处理第一个就断了
+  stopped = false;
+
+  try {
+    const groups = groupFiles(files);
+    const fresh = [];
+    for (const g of groups) {
+      const it = newItem(g.files, guessRole(g.name));
+      items.push(it);
+      fresh.push(it);
+    }
+    renumber();
+    renderTable();
+    refresh();
+
+    // 串行导入：解码很吃内存，并行会一起卡死
+    for (const it of fresh) {
+      await loadItem(it);
+      if (stopped) break;
+    }
+    $('loadMsg').innerHTML = '';
+  } finally {
+    importing = false;
+  }
+  renderTable();
+  refresh();
+  drawPreview();
+}
+
+/**
+ * 把一批文件分成「一次导入」的组。
+ *
+ * 图片序列（frame_001.png、frame_002.png…）要合成一个动作；
+ * 视频 / GIF 一个文件就是一组。
+ */
+function groupFiles(files) {
+  const out = [];
+  const imgGroups = new Map();
+
+  for (const f of files) {
+    const isImg = /\.(png|jpe?g|webp|bmp)$/i.test(f.name) && !/\.gif$/i.test(f.name);
+    if (!isImg) {
+      out.push({ name: f.name, files: [f] });
+      continue;
+    }
+    // 去掉结尾的数字，剩下的当组名
+    const key = f.name.replace(/[\s_\-.]*\d+(?=\.[^.]+$)/, '').toLowerCase();
+    // 名字整个就是数字（1.png、2.png）时 key 会变成空串 —— 那样所有这类文件
+    // 都会被并进同一组，两张无关的图被当成一个动画。退回用完整文件名。
+    const gk = key.replace(/\.[^.]+$/, '');
+    const useKey = gk.length > 0 ? key : f.name.toLowerCase();
+    if (!imgGroups.has(useKey)) imgGroups.set(useKey, []);
+    imgGroups.get(useKey).push(f);
+  }
+
+  for (const [key, list] of imgGroups) {
+    out.push({
+      name: list.length === 1 ? list[0].name : key + ' ×' + list.length,
+      files: list,
     });
-    if (!r.ok) {
-      showMsg($('msg1'), 'bad', r.message);
-      return;
-    }
+  }
+  return out;
+}
 
-    const box = PetEngine.computeBBox(8);
-    const info = PetEngine.info();
+async function loadItem(it) {
+  it.status = 'loading';
+  it.message = '';
+  renderRow(it);
 
-    // 预览
-    $('pv1').style.display = 'flex';
-    $('stats1').style.display = 'flex';
+  const res = await it.engine.load(it.files, {
+    fps: +$('fps').value,
+    bgMode: $('bgMode').value,
+    bgColor: hexToRgb($('bgColor').value),
+    tolerance: +$('tolerance').value,
+    feather: +$('feather').value,
+  });
 
-    // 原始
-    const c1 = $('cvOrig');
-    c1.width = info.width; c1.height = info.height;
-    PetEngine.drawFrame(c1.getContext('2d'), 0, { crop: false, outW: info.width, outH: info.height });
+  if (!res.ok) {
+    it.status = 'error';
+    it.message = res.message;
+  } else {
+    it.info = it.engine.info();
+    it.thumb = it.engine.thumbDataUrl(96);
+    it.status = 'ready';
+    it.message = res.message;
+    if (it.info.warnings.length) it.message += ' · ' + it.info.warnings.join('；');
+  }
+  renderRow(it);
+  refresh();
+}
 
-    // 裁剪后
-    const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
-    const c2 = $('cvCrop');
-    c2.width = bw; c2.height = bh;
-    PetEngine.drawFrame(c2.getContext('2d'), 0, { crop: true, outW: bw, outH: bh });
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return null;
+  const v = parseInt(m[1], 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
 
-    const bgLabel = info.bgRemoved
-      ? `已抠掉 rgb(${info.detectedBg.join(',')})`
-      : (info.sourceKind === 'video' ? '无需抠图' : '背景已透明');
+// ══════════════════════════════════════════════════════════════════
+// 表格渲染
+// ══════════════════════════════════════════════════════════════════
 
-    $('stats1').innerHTML = `
-      <div class="stat"><span class="k">来源</span><span class="v">${
-        { video: '视频', gif: 'GIF', images: '图片' }[info.sourceKind] || '—'
-      }</span></div>
-      <div class="stat"><span class="k">帧数</span><span class="v">${info.frameCount}</span></div>
-      <div class="stat"><span class="k">原始</span><span class="v">${info.width}×${info.height}</span></div>
-      <div class="stat"><span class="k">裁剪后</span><span class="v">${bw}×${bh}</span></div>
-      <div class="stat"><span class="k">空白减少</span><span class="v">${(100 - bw * bh / (info.width * info.height) * 100).toFixed(0)}%</span></div>
-      <div class="stat"><span class="k">背景</span><span class="v" style="color:${
-        info.bgRemoved ? 'var(--ok)' : 'var(--dim)'
-      }">${bgLabel}</span></div>
-    `;
+function renderTable() {
+  const body = $('tblBody');
+  body.textContent = '';
+  if (items.length === 0) {
+    body.appendChild(el('div', 'empty', '还没有素材 —— 先把视频拖进上面的框里'));
+    return;
+  }
+  for (const it of items) body.appendChild(buildRow(it));
+}
 
-    // 输出宽度默认值：跟随裁剪后宽度（上限 640）
-    $('outW').value = Math.min(640, bw);
-    $('wV').textContent = $('outW').value;
+function buildRow(it) {
+  const row = el('div', 'trow');
+  row.dataset.id = it.id;
+  row.innerHTML =
+    '<div class="cellThumb"></div>' +
+    '<div class="cellRole"></div>' +
+    '<div class="aname"></div>' +
+    '<div class="st pend"></div>' +
+    '<div class="sz"></div>' +
+    '<div class="acts"></div>';
 
-    // 帧滑块
-    $('frameScrub').max = info.frameCount - 1;
-    $('frameScrub').value = 0;
-    $('pv2').style.display = 'flex';
-    drawPreview(0);
-
-    if (info.warnings.length) {
-      showMsg($('msg1'), 'warn', info.warnings.join('；'));
-    } else {
-      const extra = info.bgRemoved
-        ? `，已自动抠掉 rgb(${info.detectedBg.join(',')}) 背景`
-        : '';
-      showMsg($('msg1'), 'ok', r.message + extra);
-    }
-
-    $('btnExport').disabled = false;
-    $('exportHint').textContent = '可以生成了';
-
-    // 换素材后旧的导出结果作废
-    currentBlob = null;
-    $('btnAddAction').disabled = true;
-    $('vOut').removeAttribute('src');
-    $('outInfo').textContent = '';
+  // 缩略图：生成完就是可悬停播放的小视频，没生成就显示首帧
+  const thumbWrap = row.querySelector('.cellThumb');
+  if (it.blob) {
+    const v = document.createElement('video');
+    v.className = 'thumb';
+    v.src = URL.createObjectURL(it.blob);
+    v.muted = true; v.loop = true; v.playsInline = true;
+    v.onmouseenter = () => v.play().catch(() => {});
+    v.onmouseleave = () => { v.pause(); v.currentTime = 0; };
+    thumbWrap.appendChild(v);
+  } else if (it.thumb) {
+    const im = document.createElement('img');
+    im.className = 'thumb';
+    im.src = it.thumb;
+    thumbWrap.appendChild(im);
+  } else {
+    thumbWrap.appendChild(el('div', 'thumb ph', it.status === 'loading' ? '⋯' : '·'));
   }
 
-  // 预览某一帧（应用当前裁剪与宽度设置）
-  function drawPreview(idx) {
-    const info = PetEngine.info();
-    if (info.frameCount === 0) return;
-    const box = PetEngine.bbox;
-    const crop = $('crop').checked;
-    const outW = Number($('outW').value);
-    const bw = crop ? (box.x1 - box.x0 + 1) : info.width;
-    const bh = crop ? (box.y1 - box.y0 + 1) : info.height;
-    const outH = Math.max(1, Math.round(outW * bh / bw));
+  // 用途下拉
+  const sel = document.createElement('select');
+  for (const r of ROLES) {
+    const o = document.createElement('option');
+    o.value = r.key; o.textContent = r.label;
+    sel.appendChild(o);
+  }
+  sel.value = it.role;
+  sel.onchange = () => {
+    it.role = sel.value;
+    renumber();
+    renderTable();
+    refresh();
+  };
+  row.querySelector('.cellRole').appendChild(sel);
 
-    const cv = $('cvPrev');
-    cv.width = outW; cv.height = outH;
-    PetEngine.drawFrame(cv.getContext('2d'), idx, { crop, outW, outH });
+  const nameCell = row.querySelector('.aname');
+  nameCell.textContent = it.actionName;
+  nameCell.title = it.actionName
+    + (it.files ? '\n来源：' + it.files.map(f => f.name).join(', ') : '');
+
+  updateRowState(row, it);
+
+  // 操作
+  const acts = row.querySelector('.acts');
+  if (it.status !== 'pending' && it.status !== 'loading') {
+    const redo = el('button', 'sm ghost', '重导入');
+    redo.title = '按当前抠色参数重新处理这个素材';
+    redo.onclick = () => { it.blob = null; it.blobData = null; it.size = 0; loadItem(it); };
+    acts.appendChild(redo);
+  }
+  const del = el('button', 'sm ghost danger', '×');
+  del.title = '移除这个动作';
+  del.onclick = () => {
+    const i = items.indexOf(it);
+    if (i >= 0) items.splice(i, 1);
+    it.engine.dispose();
+    renumber(); renderTable(); refresh(); drawPreview();
+  };
+  acts.appendChild(del);
+
+  return row;
+}
+
+function updateRowState(row, it) {
+  const st = row.querySelector('.st');
+  const sz = row.querySelector('.sz');
+
+  const map = {
+    pending: ['pend', '…', '待导入'],
+    loading: ['pend', '…', '处理中'],
+    ready:   ['ok', '●', '待生成'],
+    done:    ['ok', '●', '已生成'],
+    error:   ['err', '●', '失败'],
+  };
+  const [cls, dot, txt] = map[it.status] || map.pending;
+  st.className = 'st ' + cls;
+  st.textContent = dot + ' ' + txt;
+  st.title = it.message || '';
+
+  if (it.size > 0) {
+    sz.textContent = fmtSize(it.size);
+    sz.classList.toggle('bad', it.size > LIMIT_BYTES);
+    if (it.size > LIMIT_BYTES) sz.title = '超过单文件 6 MB 上限，装不进 App';
+  } else {
+    sz.textContent = it.info ? `${it.info.width}×${it.info.height}` : '—';
+  }
+}
+
+/** 只重画某一行（避免整表重建丢掉下拉焦点）。 */
+function renderRow(it) {
+  const old = document.querySelector('.trow[data-id="' + it.id + '"]');
+  if (!old) return;
+  old.replaceWith(buildRow(it));
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 统一裁剪框 + 预览
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * 所有素材的并集裁剪框（归一化 0..1）。
+ *
+ * ⚠️ 必须是**并集**且**所有动作共用**：每个动作各裁各的，
+ *    切换动作时角色大小/位置都会跳。
+ */
+function unifiedBox() {
+  const boxes = items
+    .filter(it => it.info && it.info.bbox)
+    .map(it => it.engine.normalizedBox());
+
+  if (boxes.length === 0) return { x0: 0, y0: 0, x1: 1, y1: 1 };
+
+  const u = {
+    x0: Math.min.apply(null, boxes.map(b => b.x0)),
+    y0: Math.min.apply(null, boxes.map(b => b.y0)),
+    x1: Math.max.apply(null, boxes.map(b => b.x1)),
+    y1: Math.max.apply(null, boxes.map(b => b.y1)),
+  };
+  // 留一点边，防止抠色后边缘贴死在画面边上
+  const padX = (u.x1 - u.x0) * 0.02;
+  const padY = (u.y1 - u.y0) * 0.02;
+  return {
+    x0: Math.max(0, u.x0 - padX),
+    y0: Math.max(0, u.y0 - padY),
+    x1: Math.min(1, u.x1 + padX),
+    y1: Math.min(1, u.y1 + padY),
+  };
+}
+
+/** 输出画布尺寸（长边 = outW 滑杆）。 */
+function outDims() {
+  const long = +$('outW').value;
+  const box = unifiedBox();
+  const first = items.find(it => it.info && it.info.width > 0);
+  if (!first) return { w: long, h: long, box };
+
+  const fw = first.info.width, fh = first.info.height;
+  const bw = (box.x1 - box.x0) * fw;
+  const bh = (box.y1 - box.y0) * fh;
+  const ratio = bw / bh;
+
+  let w, h;
+  if (ratio >= 1) { w = long; h = Math.round(long / ratio); }
+  else { h = long; w = Math.round(long * ratio); }
+  // 编码器偏好偶数尺寸
+  w = Math.max(16, Math.round(w / 2) * 2);
+  h = Math.max(16, Math.round(h / 2) * 2);
+  return { w, h, box };
+}
+
+/** 在预览画布上画出统一裁剪框的效果（算法与导出完全一致）。 */
+function drawPreview() {
+  const cv = $('preview');
+  const { w, h, box } = outDims();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+  cv.style.aspectRatio = w + ' / ' + h;
+
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  const src = items.find(it => it.thumb && it.engine.bbox);
+  if (!src) {
+    $('prevCap').textContent = '统一裁剪框预览';
+    return;
   }
 
-  $('frameScrub').oninput = e => drawPreview(Number(e.target.value));
-  $('crop').onchange = () => drawPreview(Number($('frameScrub').value));
-  $('outW').oninput = e => {
-    $('wV').textContent = e.target.value;
-    drawPreview(Number($('frameScrub').value));
+  const img = new Image();
+  img.onload = () => {
+    const fw = img.naturalWidth, fh = img.naturalHeight;
+    const sx = box.x0 * fw, sy = box.y0 * fh;
+    const sw = (box.x1 - box.x0) * fw, sh = (box.y1 - box.y0) * fh;
+    const k = Math.min(cv.width / sw, cv.height / sh);
+    const dw = sw * k, dh = sh * k;
+    ctx.drawImage(img, sx, sy, sw, sh,
+      (cv.width - dw) / 2, cv.height - dh, dw, dh);
   };
-  $('fps').oninput = e => { $('fpsV').textContent = e.target.value; };
-  $('quality').oninput = e => {
-    const v = Number(e.target.value);
-    $('qV').textContent = v < 30 ? '低' : v < 65 ? '中' : v < 85 ? '高' : '最高';
-  };
+  img.src = src.thumb;
 
-  // ── 步骤 2：导出 ─────────────────────────────────
-  let exporting = false;
+  $('prevCap').textContent = w + ' × ' + h + ' px · 裁掉空白后按底对齐';
+}
 
-  $('btnExport').onclick = async () => {
-    if (exporting) return;
-    const info = PetEngine.info();
-    if (info.frameCount === 0) return;
+// ══════════════════════════════════════════════════════════════════
+// 校验
+// ══════════════════════════════════════════════════════════════════
 
-    exporting = true;
-    $('btnExport').disabled = true;
-    $('btnPlay').disabled = true;
-    hideMsg($('msg2'));
-    $('bar').style.width = '0%';
+function validate() {
+  const errs = [];
+  const warns = [];
 
-    const crop = $('crop').checked;
-    const box = PetEngine.bbox;
-    const outW = Number($('outW').value);
-    const bw = crop ? (box.x1 - box.x0 + 1) : info.width;
-    const bh = crop ? (box.y1 - box.y0 + 1) : info.height;
-    const outH = Math.max(1, Math.round(outW * bh / bw));
+  const usable = items.filter(it => it.info && it.info.frameCount > 0);
+  if (usable.length === 0) errs.push('还没有可用的素材');
+
+  if (usable.length > MAX_ACTIONS) {
+    errs.push('动作有 ' + usable.length + ' 个，App 最多接受 ' + MAX_ACTIONS
+      + ' 个（超出的会被静默丢掉）');
+  }
+
+  // 动作名必须合法且唯一
+  const seen = new Set();
+  for (const it of usable) {
+    if (!NAME_RE.test(it.actionName)) {
+      errs.push('动作名「' + it.actionName + '」不合法（只能 a-z 0-9 _ -，最多 24 字符）');
+    }
+    if (seen.has(it.actionName)) errs.push('动作名「' + it.actionName + '」重名了');
+    seen.add(it.actionName);
+  }
+
+  // 必须有待机动作，否则球闲着时什么都不播
+  if (!usable.some(it => ROLE[it.role].pool === 'idle')) {
+    warns.push('没有待机动作 —— 宠物闲着的时候不会有任何动画');
+  }
+
+  for (const it of items) {
+    if (it.size > LIMIT_BYTES) {
+      errs.push('「' + it.actionName + '」' + fmtSize(it.size) + ' 超过单文件 6 MB 上限');
+    }
+  }
+
+  const pending = usable.filter(it => !it.blob);
+  const total = items.reduce((s, it) => s + (it.size || 0), 0);
+
+  const pkg = $('pkgName').value.trim();
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(pkg)) {
+    errs.push('包名不合法（小写字母开头，只能 a-z 0-9 . _ -）');
+  } else if (pkg === 'dsh-app-pet') {
+    warns.push('包名和官方 dsh-app-pet 一样，装的时候可能冲突，建议加个后缀');
+  }
+
+  return { errs, warns, usable, pending, total };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 生成
+// ══════════════════════════════════════════════════════════════════
+
+function logLine(text, cls) {
+  const box = $('log');
+  box.appendChild(el('div', cls, text));
+  box.scrollTop = box.scrollHeight;
+}
+
+async function generate(only) {
+  if (running) return;
+  const targets = (only || items).filter(it => it.info && it.info.frameCount > 0);
+  if (targets.length === 0) {
+    logLine('没有可生成的素材', 'e');
+    return;
+  }
+
+  running = true;
+  stopped = false;
+  $('btnGen').disabled = true;
+  $('btnGenOne').disabled = true;
+  $('btnStop').disabled = false;
+  $('log').textContent = '';
+
+  const { w, h, box } = outDims();
+  const fps = +$('fps').value;
+  const quality = +$('quality').value / 100;
+
+  logLine('画布 ' + w + '×' + h + ' · ' + fps + ' fps · 共 ' + targets.length + ' 个动作', 'g');
+  logLine('正在实时录制（每个动作约等于它的时长），别切走这个标签页…');
+
+  let okCount = 0;
+  for (let i = 0; i < targets.length; i++) {
+    if (stopped) { logLine('已停止', 'w'); break; }
+    const it = targets[i];
+    const tag = '[' + (i + 1) + '/' + targets.length + '] ' + it.actionName;
 
     try {
-      const r = await PetEngine.exportWebm({
-        crop,
-        fps: Number($('fps').value),
-        outW,
-        outH,
-        quality: Number($('quality').value) / 100,
-        onProgress: p => { $('bar').style.width = (p * 100).toFixed(0) + '%'; },
+      const res = await it.engine.exportWebm({
+        box: box, fps: fps, outW: w, outH: h, quality: quality,
+        onProgress: p => {
+          $('barFill').style.width = (((i + p) / targets.length) * 100).toFixed(1) + '%';
+        },
       });
+      it.blob = res.blob;
+      it.blobData = null;
+      it.size = res.size;
+      it.status = 'done';
+      it.message = fmtSize(res.size) + ' · ' + (res.durationMs / 1000).toFixed(1) + 's 录制';
 
-      currentBlob = r.blob;
-      currentSize = r.size;
-
-      const url = URL.createObjectURL(r.blob);
-      const v = $('vOut');
-      v.src = url;
-      v.play().catch(() => {});
-
-      $('outInfo').innerHTML =
-        `${outW}×${outH} · ${fmtSize(r.size)} · 录制耗时 ${(r.durationMs / 1000).toFixed(1)}s`;
-
-      // 体积检查
-      if (r.size > 6 * 1048576) {
-        showMsg($('msg2'), 'warn',
-          `视频 ${fmtSize(r.size)}，超过单个动作 6 MB 上限。` +
-          `把「画质」调低，或减小「输出宽度」后重试。`);
+      if (res.size > LIMIT_BYTES) {
+        logLine(tag + ' 生成完成但 ' + fmtSize(res.size) + ' 超了 6 MB 上限', 'e');
       } else {
-        showMsg($('msg2'), 'ok',
-          `生成成功：${fmtSize(r.size)}（${outW}×${outH}）。` +
-          `在步骤 3 填个动作名登记它。`);
+        okCount++;
+        logLine(tag + ' → ' + fmtSize(res.size), 'g');
       }
-
-      $('btnPlay').disabled = false;
-      $('btnAddAction').disabled = false;
-
     } catch (err) {
-      showMsg($('msg2'), 'bad', '生成失败：' + err.message);
-    } finally {
-      exporting = false;
-      $('btnExport').disabled = false;
+      it.status = 'error';
+      it.message = (err && err.message) || String(err);
+      logLine(tag + ' 失败：' + it.message, 'e');
     }
-  };
-
-  // 预览动画（循环播放所有帧）
-  $('btnPlay').onclick = () => {
-    if (playing) return;
-    const info = PetEngine.info();
-    if (info.frameCount === 0) return;
-
-    playing = true;
-    $('btnPlay').disabled = true;
-    let i = 0;
-    const fps = Number($('fps').value);
-    const interval = 1000 / fps;
-
-    const timer = setInterval(() => {
-      drawPreview(i);
-      $('frameScrub').value = i;
-      i = (i + 1) % info.frameCount;
-      if (!playing) clearInterval(timer);
-    }, interval);
-
-    setTimeout(() => {
-      playing = false;
-      clearInterval(timer);
-      $('btnPlay').disabled = false;
-      drawPreview(0);
-      $('frameScrub').value = 0;
-    }, interval * info.frameCount * 3);   // 播 3 轮
-  };
-
-  // ── 步骤 3：动作登记 ─────────────────────────────
-  $('actionName').oninput = e => {
-    const ok = validActionName(e.target.value);
-    e.target.style.borderColor = e.target.value === '' ? '' : (ok ? '#35c46a' : '#e5484d');
-  };
-
-  $('btnAddAction').onclick = () => {
-    const name = $('actionName').value.trim();
-    if (!validActionName(name)) {
-      showMsg($('msg2'), 'bad',
-        '动作名只能用 a-z 0-9 - _ ，最多 24 字符，不能中文');
-      return;
-    }
-    if (!currentBlob) {
-      showMsg($('msg2'), 'bad', '先生成视频');
-      return;
-    }
-    if (actions.some(a => a.name === name)) {
-      showMsg($('msg2'), 'bad', `动作「${name}」已存在，换个名字`);
-      return;
-    }
-    if (actions.reduce((s, a) => s + a.size, 0) + currentSize > 12 * 1048576) {
-      showMsg($('msg2'), 'warn',
-        '全部动作合计超过 12 MB 上限了，再添加会下发失败。');
-    }
-
-    actions.push({
-      name,
-      blob: currentBlob,
-      size: currentSize,
-      role: actions.length === 0 ? 'idle' : 'extra',
-    });
-
-    // 自动推荐下一个名字
-    $('actionName').value = 'action-' + (actions.length + 1);
-
-    renderActions();
-    showMsg($('msg2'), 'ok', `已登记「${name}」。继续导入下一段素材。`);
-
-    // 清空当前，方便做下一个
-    currentBlob = null;
-    $('btnAddAction').disabled = true;
-  };
-
-  function renderActions() {
-    const tb = $('actionTable').querySelector('tbody');
-    tb.innerHTML = '';
-    $('actionEmpty').style.display = actions.length ? 'none' : 'block';
-
-    const ROLES = [
-      ['idle', '待机（必填）'],
-      ['thinking', '思考'],
-      ['working', '干活'],
-      ['waiting', '等待'],
-      ['error', '出错'],
-      ['result', '整理'],
-      ['success', '完成'],
-      ['click', '点击回应'],
-      ['drag', '拖拽'],
-      ['move', '走路'],
-    ];
-
-    actions.forEach((a, i) => {
-      const tr = document.createElement('tr');
-
-      // 动作名
-      const td1 = document.createElement('td');
-      const inp = document.createElement('input');
-      inp.type = 'text'; inp.value = a.name;
-      inp.onchange = () => {
-        const v = inp.value.trim();
-        if (!validActionName(v) || actions.some((x, j) => j !== i && x.name === v)) {
-          inp.style.borderColor = '#e5484d';
-          inp.value = a.name;
-          return;
-        }
-        a.name = v;
-        inp.style.borderColor = '';
-        updateJson();
-      };
-      td1.appendChild(inp);
-
-      // 大小
-      const td2 = document.createElement('td');
-      td2.textContent = fmtSize(a.size);
-      td2.style.color = 'var(--dim)';
-
-      // 用途
-      const td3 = document.createElement('td');
-      const sel = document.createElement('select');
-      ROLES.forEach(([v, t]) => {
-        const o = document.createElement('option');
-        o.value = v; o.textContent = t;
-        if (a.role === v) o.selected = true;
-        sel.appendChild(o);
-      });
-      sel.onchange = () => { a.role = sel.value; updateJson(); };
-      td3.appendChild(sel);
-
-      // 删除
-      const td4 = document.createElement('td');
-      const del = document.createElement('button');
-      del.textContent = '删除';
-      del.className = 'ghost';
-      del.style.padding = '4px 10px';
-      del.onclick = () => { actions.splice(i, 1); renderActions(); };
-      td4.appendChild(del);
-
-      tr.append(td1, td2, td3, td4);
-      tb.appendChild(tr);
-    });
-
-    updateJson();
+    renderRow(it);
+    refresh();
   }
 
-  // ── 步骤 4：生成 preset ──────────────────────────
-  function buildPreset() {
-    const actionMap = {};
-    const pools = { idle: [], click: [], drag: [], move: [] };
+  $('barFill').style.width = '100%';
+  logLine('完成 ' + okCount + '/' + targets.length,
+    okCount === targets.length ? 'g' : 'w');
 
-    for (const a of actions) {
-      if (a.role === 'idle') { actionMap.idle = a.name; pools.idle.push(a.name); }
-      else if (['thinking', 'working', 'waiting', 'error', 'result', 'success'].includes(a.role)) {
-        actionMap[a.role] = a.name;
-      }
-      else if (['click', 'drag', 'move'].includes(a.role)) {
-        pools[a.role].push(a.name);
-      }
-    }
+  running = false;
+  $('btnGen').disabled = false;
+  $('btnGenOne').disabled = false;
+  $('btnStop').disabled = true;
+  refresh();
+}
 
-    // 清掉空池
-    for (const k of Object.keys(pools)) {
-      if (pools[k].length === 0) delete pools[k];
-    }
+// ══════════════════════════════════════════════════════════════════
+// 预设生成
+// ══════════════════════════════════════════════════════════════════
 
-    // 没配 idle 时兜底用第一个动作
-    if (!actionMap.idle && actions.length > 0) {
-      actionMap.idle = actions[0].name;
-      pools.idle = [actions[0].name];
-    }
+const DEFAULT_STATUS_TEXTS = [
+  ['发着呆呢~', '闲下来了，摸会儿鱼'],
+  ['正在认真想下一步呢', '让我整理一下思路~'],
+  ['正在处理任务呢', '这一步正在进行中哦'],
+  ['需要你确认一下呢', '等你来定~'],
+  ['这一步好像没跑通呢', '刚才的操作遇到点问题'],
+  ['这一步处理好啦，接着看下一步'],
+  ['这一轮搞定啦，真棒！'],
+];
 
-    const preset = {
-      name: $('petName').value.trim() || '我的宠物',
-      assets: 'assets',
-      actions: Object.fromEntries(actions.map(a => [a.name, a.name])),
-      pools,
-      actionMap,
-      appearance: {
-        size: 160,
-        bgOpacity: 0,
-        avatar: 'none',
-        showDot: false,
-        flipOnTurn: true,
-        throwEnabled: true,
-      },
-      statusAutoHideMs: 4000,
+function buildPreset() {
+  const usable = items.filter(it => it.info && it.info.frameCount > 0);
+
+  const actions = {};
+  const sources = {};
+  const pools = {};
+  const actionMap = {};
+
+  for (const it of usable) {
+    const r = ROLE[it.role];
+    actions[it.actionName] = it.actionName;
+    sources[it.actionName] = r.label;
+    if (r.pool) (pools[r.pool] = pools[r.pool] || []).push(it.actionName);
+    if (r.state) actionMap[r.state] = it.actionName;
+  }
+
+  // actionMap.idle 指向待机池的第一个（没有就留空 = 交给池抽签）
+  if (pools.idle && pools.idle.length > 0) actionMap.idle = pools.idle[0];
+
+  const poolWeights = {};
+  if (pools.idle) poolWeights.idle = 10;
+  if (pools.turn) poolWeights.turn = 2;
+
+  // 走动参数：给 move 池的每个动作一档距离
+  const moveParams = {};
+  if (pools.move) {
+    for (const name of pools.move) moveParams[name] = { minDp: 40, maxDp: 120 };
+  }
+
+  const size = +$('sizeDp').value;
+  const { w: pw, h: ph } = outDims();
+  const longSide = Math.max(pw, ph);
+  // ⚠️ boxWidth/boxHeight 只表达**长宽比**，长边由 size 决定（见 BubbleAppearance.boxPx）
+  const boxW = Math.round((pw / longSide) * size);
+  const boxH = Math.round((ph / longSide) * size);
+
+  return {
+    name: $('petName').value.trim() || '我的桌宠',
+    description: '桌面宠物，' + Object.keys(actions).length
+      + ' 段透明动画。由 DSH 桌宠制作工作台生成。',
+    assets: 'assets/webm',
+    sources: sources,
+    actions: actions,
+    pools: pools,
+    poolWeights: poolWeights,
+    actionMap: actionMap,
+    moveParams: moveParams,
+    appearance: {
+      shape: 'path',
+      shapePath: 'M0 0 L' + boxW + ' 0 L' + boxW + ' ' + boxH + ' L0 ' + boxH + ' Z',
+      shapeViewBox: '0 0 ' + boxW + ' ' + boxH,
+      size: size,
+      boxWidth: boxW,
+      boxHeight: boxH,
+      cornerRadius: 16,
+      showDot: false,
+      bgOpacity: 0,
+      bg: '#00000000',
+      avatar: 'none',
+      avatarScale: 1,
+      flipOnTurn: true,
+      throwEnabled: true,
+      edgeSnap: $('edgeSnap').value === '1',
+    },
+    move: {
+      enabled: $('moveEnabled').value === '1',
+      intervalSec: 30,
+      minDp: 40,
+      maxDp: 120,
+    },
+    statusAutoHideMs: 4000,
+    workStatusTexts: DEFAULT_STATUS_TEXTS,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// tar + gzip 打包
+// ══════════════════════════════════════════════════════════════════
+
+const Tar = (() => {
+  const enc = new TextEncoder();
+
+  function header(name, size, mtime, typeflag) {
+    const h = new Uint8Array(512);
+    const put = (str, off) => {
+      const b = enc.encode(str);
+      h.set(b.subarray(0, 512 - off), off);
     };
+    const oct = (v, len) => v.toString(8).padStart(len - 1, '0') + '\0';
 
-    if (pools.idle && pools.idle.length > 0) {
-      preset.poolWeights = { idle: 10 };
-    }
+    put(name, 0);                    // name[100]
+    put(oct(0o644, 8), 100);         // mode
+    put(oct(0, 8), 108);             // uid
+    put(oct(0, 8), 116);             // gid
+    put(oct(size, 12), 124);         // size
+    put(oct(mtime, 12), 136);        // mtime
+    for (let i = 148; i < 156; i++) h[i] = 0x20;   // chksum 先填空格
+    h[156] = typeflag;               // typeflag
+    put('ustar\0', 257);             // magic
+    put('00', 263);                  // version
+    put('dsh', 265);                 // uname
+    put('dsh', 297);                 // gname
 
-    return preset;
+    let sum = 0;
+    for (let i = 0; i < 512; i++) sum += h[i];
+    put(sum.toString(8).padStart(6, '0') + '\0 ', 148);
+    return h;
   }
 
-  function updateJson() {
-    const has = actions.length > 0;
-    $('btnPreset').disabled = !has;
-    $('btnZip').disabled = !has;
+  /** @param {Array<{name: string, data: Uint8Array}>} files */
+  function build(files) {
+    const parts = [];
+    const mtime = Math.floor(Date.now() / 1000);
 
-    if (!has) {
-      $('jsonPreview').textContent = '（还没有内容）';
-      $('presetHint').textContent = '先在步骤 3 至少登记一个动作。';
-      return;
+    for (const f of files) {
+      parts.push(header(f.name, f.data.length, mtime, 0x30));   // '0' = 普通文件
+      parts.push(f.data);
+      const pad = (512 - (f.data.length % 512)) % 512;
+      if (pad > 0) parts.push(new Uint8Array(pad));
     }
+    parts.push(new Uint8Array(1024));   // 两个零块 = 归档结束
 
-    const preset = buildPreset();
-    $('jsonPreview').textContent = JSON.stringify(preset, null, 2);
-    $('presetHint').innerHTML =
-      `已登记 <b>${actions.length}</b> 个动作，合计 ` +
-      `<b>${fmtSize(actions.reduce((s, a) => s + a.size, 0))}</b>。`;
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
   }
 
-  $('btnPreset').onclick = () => {
-    const preset = buildPreset();
-    const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' });
-    download(blob, 'preset.json');
-    showMsg($('msg4'), 'ok', 'preset.json 已下载');
+  return { build };
+})();
+
+/**
+ * 检查预设里所有"引用动作名"的地方是否都真有对应素材。
+ *
+ * 对应 lib/index.js 的 buildFields：它会把 actions / pools / actionMap /
+ * moveParams 全查一遍，缺任何一项就整份中止。这里提前做同样的检查。
+ *
+ * @returns {string[]} 有问题的引用，空数组表示没问题
+ */
+function checkPresetRefs(preset) {
+  const acts = new Set(Object.keys(preset.actions || {}));
+  const bad = [];
+  for (const [pool, names] of Object.entries(preset.pools || {})) {
+    for (const n of names || []) {
+      if (!acts.has(n)) bad.push('pools.' + pool + ' → ' + n);
+    }
+  }
+  for (const [state, n] of Object.entries(preset.actionMap || {})) {
+    if (n && !acts.has(n)) bad.push('actionMap.' + state + ' → ' + n);
+  }
+  for (const n of Object.keys(preset.moveParams || {})) {
+    if (!acts.has(n)) bad.push('moveParams → ' + n);
+  }
+  // 声明了动作但包里没这个 webm，同样是"装上去不出现"
+  const made = new Set(
+    items.filter(it => it.blob).map(it => it.actionName)
+  );
+  for (const n of acts) {
+    if (!made.has(n)) bad.push('actions → ' + n + '（没有素材）');
+  }
+  return bad;
+}
+
+async function gzip(u8) {
+  if (typeof CompressionStream === 'undefined') {
+    throw new Error('这个浏览器不支持 gzip 压缩，请用 Chrome / Edge');
+  }
+  const stream = new Blob([u8]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 模板（构建时由 build.py 内联成 text/plain 的 script 块）
+// ══════════════════════════════════════════════════════════════════
+
+function tpl(id) {
+  const node = document.getElementById('tpl-' + id);
+  return node ? node.textContent : '';
+}
+
+function fillTpl(text, pkg) {
+  return text.split('__PKG_NAME__').join(pkg);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 打包
+// ══════════════════════════════════════════════════════════════════
+
+function packageFiles(presetOverride) {
+  const pkg = $('pkgName').value.trim();
+  const ver = $('pkgVer').value.trim() || '1.0.0';
+  const preset = presetOverride || buildPreset();
+  const usable = items.filter(it => it.info && it.info.frameCount > 0 && it.blob);
+
+  const packageJson = {
+    name: pkg,
+    version: ver,
+    description: preset.description,
+    type: 'module',
+    main: './lib/index.js',
+    exports: {
+      '.': { default: './lib/index.js' },
+      './cordis.patch.yml': './cordis.patch.yml',
+      './package.json': './package.json',
+    },
+    files: ['lib', 'presets', 'assets/webm', 'cordis.patch.yml', 'README.md'],
+    keywords: ['dsh', 'dsh-plugin', 'DeepSeek', 'desktop-pet', 'pet', 'android', 'bubble'],
+    license: 'MIT',
+    // ⚠️ 刻意不声明 engines.dsh、也不声明 @deepseek-ai/dsh* 的 peerDependencies：
+    //    那两个一旦版本对不上，插件管理器会直接判 incompatible 并拒绝安装。
+    //    本包只依赖文件信箱（bubble-cmd.json），各版本都兼容。
+    dsh: {
+      manifestVersion: 1,
+      bundle: { patch: './cordis.patch.yml' },
+    },
   };
 
-  $('btnZip').onclick = async () => {
-    showMsg($('msg4'), 'ok', '正在打包…');
+  const enc = new TextEncoder();
+  const files = [
+    { name: 'package/package.json',
+      data: enc.encode(JSON.stringify(packageJson, null, 2) + '\n') },
+    { name: 'package/cordis.patch.yml',
+      data: enc.encode(fillTpl(tpl('patch.yml'), pkg)) },
+    { name: 'package/lib/index.js',
+      data: enc.encode(fillTpl(tpl('index.js'), pkg)) },
+    { name: 'package/presets/pet.json',
+      data: enc.encode(JSON.stringify(preset, null, 2) + '\n') },
+    { name: 'package/README.md',
+      data: enc.encode(fillTpl(tpl('readme'), pkg)) },
+    { name: 'package/LICENSE',
+      data: enc.encode(fillTpl(tpl('license'), pkg)) },
+  ];
 
-    const preset = buildPreset();
-    const files = [{
-      name: 'preset.json',
-      data: new TextEncoder().encode(JSON.stringify(preset, null, 2)),
-    }];
+  for (const it of usable) {
+    files.push({
+      name: 'package/assets/webm/' + it.actionName + '.webm',
+      data: it.blobData ? new Uint8Array(it.blobData) : new Uint8Array(0),
+      size: it.size,
+    });
+  }
+  return { files: files, preset: preset, pkg: pkg, ver: ver };
+}
 
-    for (const a of actions) {
-      const buf = new Uint8Array(await a.blob.arrayBuffer());
-      files.push({ name: 'assets/' + a.name + '.webm', data: buf });
+async function doExport() {
+  const v = validate();
+  if (v.errs.length > 0) {
+    showMsg($('checkMsg'), 'err', '还不能导出：' + v.errs[0]);
+    return;
+  }
+  if (v.pending.length > 0) {
+    showMsg($('checkMsg'), 'err', '还有 ' + v.pending.length + ' 个动作没生成，先点「开始生成」');
+    return;
+  }
+
+  const btn = $('btnExport');
+  btn.disabled = true;
+  btn.textContent = '打包中…';
+  try {
+    // 用户可能手改过预设 JSON，以文本框里的为准
+    let preset = null;
+    const raw = $('presetJson').value.trim();
+    if (raw) {
+      try {
+        preset = JSON.parse(raw);
+      } catch (e) {
+        showMsg($('checkMsg'), 'err', '预设 JSON 有语法错误：' + e.message);
+        return;
+      }
     }
 
-    const out = MiniZip.build(files);
-    download(out, 'my-pet.zip');
-    showMsg($('msg4'), 'ok',
-      `完整包已下载（${fmtSize(out.size)}）：preset.json + ${actions.length} 个视频`);
-  };
+    for (const it of items) {
+      if (it.blob && !it.blobData) it.blobData = await it.blob.arrayBuffer();
+    }
 
-  function download(blob, name) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = name;
-    document.body.appendChild(a);
-    a.click();
+    // 用户可能手改过预设 JSON。插件入口在发现"预设引用了不存在的素材"时
+    // 会整份中止（刻意的，避免宠物半死不活），装上去就是"宠物不出现"。
+    // 所以在导出这一步先查一遍，把问题说在前面。
+    if (preset) {
+      const bad = checkPresetRefs(preset);
+      if (bad.length > 0) {
+        showMsg($('checkMsg'), 'err',
+          '预设引用了不存在的动作：' + bad.slice(0, 5).join('、')
+          + (bad.length > 5 ? ' 等 ' + bad.length + ' 处' : '')
+          + '。要么改回预设，要么补齐对应素材。');
+        return;
+      }
+    }
+
+    const out = packageFiles(preset);
+    const tar = Tar.build(out.files);
+    const gz = await gzip(tar);
+    const blob = new Blob([gz], { type: 'application/gzip' });
+    const name = out.pkg + '-' + out.ver + '.tgz';
+    download(blob, name);
+
+    showMsg($('checkMsg'), 'ok',
+      '已导出 ' + name + '（' + fmtSize(gz.length) + '）。装法见下面三步。');
+  } catch (err) {
+    showMsg($('checkMsg'), 'err', '打包失败：' + ((err && err.message) || err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '导出 .tgz 插件包';
+    refresh();
+  }
+}
+
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }, 4000);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 刷新界面
+// ══════════════════════════════════════════════════════════════════
+
+function refresh() {
+  const usable = items.filter(it => it.info && it.info.frameCount > 0);
+  const done = items.filter(it => it.blob);
+  const total = items.reduce((s, it) => s + (it.size || 0), 0);
+
+  $('mActions').textContent = usable.length + ' / ' + MAX_ACTIONS;
+  $('mDone').textContent = done.length + ' / ' + usable.length;
+  $('mSize').textContent = fmtSize(total);
+
+  const pill = $('mState');
+  if (items.length === 0) {
+    pill.className = 'pill dim'; pill.textContent = '待导入';
+  } else if (items.some(it => it.status === 'loading')) {
+    pill.className = 'pill warn'; pill.textContent = '导入中';
+  } else if (usable.length === 0) {
+    pill.className = 'pill err'; pill.textContent = '无可用素材';
+  } else if (done.length === usable.length && usable.length > 0) {
+    pill.className = 'pill ok'; pill.textContent = '可以导出';
+  } else {
+    pill.className = 'pill warn'; pill.textContent = '待生成';
   }
 
-  // ── 启动检查 ─────────────────────────────────────
-  if (typeof MediaRecorder === 'undefined' ||
-      !MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
-    showMsg($('msg1'), 'bad',
-      '这个浏览器不支持 VP9 录制，生成不了透明视频。请用 Chrome 或 Edge 打开。');
+  // 步骤标记
+  setDone('s1', usable.length > 0);
+  setDone('s3', usable.length > 0 && done.length === usable.length);
+  setDone('s4', usable.length > 0 && done.length === usable.length);
+
+  // 导出区
+  const v = validate();
+  const checkBox = $('checkMsg');
+  if (usable.length === 0) {
+    checkBox.innerHTML = '';
+  } else if (v.errs.length > 0) {
+    showMsg(checkBox, 'err', v.errs.join('；'));
+  } else if (v.warns.length > 0) {
+    showMsg(checkBox, 'warn', v.warns.join('；'));
+  } else if (v.pending.length > 0) {
+    showMsg(checkBox, 'warn', '还有 ' + v.pending.length + ' 个动作没生成');
+  } else {
+    showMsg(checkBox, 'ok', '检查通过，可以导出');
   }
 
-  updateJson();
+  // 概要
+  const infoBox = $('pkgInfo');
+  if (usable.length > 0) {
+    const dims = outDims();
+    const pools = Object.keys(buildPreset().pools);
+    infoBox.innerHTML =
+      '<dl class="kv" style="margin-top:12px">' +
+        '<dt>动作</dt><dd>' + usable.length + ' 个'
+          + (pools.length ? ' · 池 ' + pools.join(' / ') : '') + '</dd>' +
+        '<dt>画布</dt><dd>' + dims.w + ' × ' + dims.h + ' px</dd>' +
+        '<dt>包体积</dt><dd>' + fmtSize(total) + ' 左右（含配置与脚本）</dd>' +
+        '<dt>包名</dt><dd><code>' + esc($('pkgName').value.trim()) + '</code></dd>' +
+      '</dl>';
+  } else {
+    infoBox.innerHTML = '';
+  }
+
+  // 文件清单
+  try {
+    const out = packageFiles();
+    const list = $('filesList');
+    list.textContent = '';
+    let lastDir = '';
+    for (const f of out.files) {
+      const slash = f.name.lastIndexOf('/');
+      const dir = f.name.slice(0, slash + 1);
+      if (dir !== lastDir && dir !== 'package/') {
+        lastDir = dir;
+        list.appendChild(el('div', 'dir', dir));
+      }
+      const row = el('div');
+      const nm = el('span', null, f.name.slice(slash + 1));
+      row.appendChild(nm);
+      const sz = f.size != null ? f.size : f.data.length;
+      if (sz > 0) {
+        const s = el('span', 'n', '  ' + fmtSize(sz));
+        s.style.color = 'var(--dim2)';
+        row.appendChild(s);
+      }
+      list.appendChild(row);
+    }
+  } catch (e) { /* 包名还不合法时跳过 */ }
+
+  // 预设 JSON（用户正在编辑时不覆盖）
+  try {
+    const ta = $('presetJson');
+    if (document.activeElement !== ta) {
+      ta.value = JSON.stringify(buildPreset(), null, 2);
+    }
+  } catch (e) { /* 忽略 */ }
+
+  $('btnExport').disabled = !(v.errs.length === 0 && v.pending.length === 0 && usable.length > 0);
+  $('exportHint').textContent = $('btnExport').disabled
+    ? '先把动作都生成完'
+    : '会下载一个 .tgz，直接拿去 App 里装';
+}
+
+function setDone(id, on) {
+  const head = $(id).querySelector('.shead');
+  if (head) head.classList.toggle('done', !!on);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+  ));
+}
+
+function showMsg(box, kind, text) {
+  box.innerHTML = '';
+  box.appendChild(el('div', 'msg ' + kind, text));
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 事件绑定
+// ══════════════════════════════════════════════════════════════════
+
+for (const h of document.querySelectorAll('[data-toggle]')) {
+  h.onclick = () => h.parentElement.classList.toggle('collapsed');
+}
+
+const drop = $('drop');
+drop.onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => {
+  addFiles(e.target.files);
+  e.target.value = '';
+};
+for (const ev of ['dragenter', 'dragover']) {
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); });
+}
+for (const ev of ['dragleave', 'drop']) {
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); });
+}
+drop.addEventListener('drop', e => {
+  if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+});
+// 整页都拦掉拖放，否则拖偏一点浏览器就直接打开文件了
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => e.preventDefault());
+
+$('bgMode').onchange = () => {
+  $('bgColorWrap').style.display = $('bgMode').value === 'manual' ? '' : 'none';
+};
+$('tolerance').oninput = () => { $('tolV').textContent = $('tolerance').value; };
+$('feather').oninput = () => { $('feaV').textContent = $('feather').value; };
+$('sizeDp').oninput = () => { $('sizeV').textContent = $('sizeDp').value; refresh(); };
+$('outW').oninput = () => {
+  $('outWV').textContent = $('outW').value;
+  drawPreview(); refresh();
+};
+$('fps').oninput = () => { $('fpsV').textContent = $('fps').value; };
+$('quality').oninput = () => { $('qualV').textContent = $('quality').value; };
+$('pkgName').oninput = () => refresh();
+$('petName').oninput = () => refresh();
+$('moveEnabled').onchange = () => refresh();
+$('edgeSnap').onchange = () => refresh();
+$('pkgVer').oninput = () => refresh();
+
+$('btnGen').onclick = () => generate(null);
+$('btnGenOne').onclick = () => {
+  const left = items.filter(it => it.info && it.info.frameCount > 0 && !it.blob);
+  if (left.length === 0) {
+    // 全都生成过了，就别默默重做一遍 —— 实时录制很费时间
+    logLine('所有动作都已经生成过了。要重做请点「开始生成」', 'w');
+    return;
+  }
+  generate(left);
+};
+$('btnStop').onclick = () => { stopped = true; };
+
+$('btnExport').onclick = doExport;
+$('btnPresetReset').onclick = () => {
+  $('presetJson').value = JSON.stringify(buildPreset(), null, 2);
+};
+
+// 环境自检：这三样缺一个都做不成事，早说比做到一半失败好
+(function preflight() {
+  const issues = [];
+  if (typeof MediaRecorder === 'undefined'
+      || !MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+    issues.push('这个浏览器不支持 VP9 编码 —— 请用 Chrome / Edge 打开本页面');
+  }
+  if (typeof CompressionStream === 'undefined') {
+    issues.push('这个浏览器不支持 gzip —— 请用 Chrome / Edge');
+  }
+  if (typeof ImageDecoder === 'undefined') {
+    issues.push('这个浏览器不支持 GIF 解码（GIF 只会取到第一帧）');
+  }
+  if (issues.length > 0) showMsg($('loadMsg'), 'err', issues.join('；'));
+})();
+
+refresh();
+drawPreview();
+
 })();
 </script>
 </body>

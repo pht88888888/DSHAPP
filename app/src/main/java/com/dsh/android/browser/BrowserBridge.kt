@@ -386,6 +386,11 @@ object BrowserBridge {
             for (var i = 0; i < list.length; i++) infos.push(list[i].info);
             var body = document.body ? (document.body.innerText || '') : '';
             return JSON.stringify({
+              // ⚠️ **必须有 ok:true**。工具层用 `reply.ok !== true` 判定失败，
+              //   漏了这个字段 ⇒ 每次 read 都变成「✗ 未知错误」，
+              //   模型就以为 read 用不了，连带 type/click（都靠 read 给的
+              //   index 定位）一起废掉。其他 action 的成功分支都带 ok。
+              ok: true,
               url: location.href,
               title: document.title,
               scrollY: Math.round(window.scrollY || 0),
@@ -559,6 +564,14 @@ object BrowserBridge {
             .replace("\n", "\\n")
             .replace("\r", "\\r")
             .replace("</", "<\\/")
+            // ⚠️ **必须转义 U+2028 / U+2029**。这两个字符在 JSON 里是合法字符，
+            //   但在 JS **源码**里是行终止符 —— 原样嵌进单引号字符串会让整段
+            //   JS 变成语法错误，`evaluateJavascript` 直接不执行、回调拿到
+            //   null，模型看到的就是「read/type 用不了」。
+            //   真实来源：从网页复制的文本（部分 CMS 的段落分隔符就是 U+2028）、
+            //   以及 JSON.stringify 出来的值（它**不**转义这两个字符）。
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
         return "'$escaped'"
     }
 }

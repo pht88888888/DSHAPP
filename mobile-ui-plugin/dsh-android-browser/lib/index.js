@@ -223,7 +223,13 @@ function validate(args) {
  * @returns {string} 渲染后的文本。
  */
 function render(args, reply) {
-	if (reply?.ok !== true) {
+	// `read` 的回执是「页面内容」而不是「操作结果」，早期原生侧漏了 ok 字段，
+	// 导致每次 read 都渲染成「✗ 未知错误」。这里按形状兜一层：带 url/elements
+	// 的 read 回执就认为是成功的，不再只认 ok 标志。
+	const looksLikeRead = args.action === 'read'
+		&& reply && typeof reply === 'object'
+		&& Array.isArray(reply.elements);
+	if (reply?.ok !== true && !looksLikeRead) {
 		return `✗ ${reply?.error ?? '未知错误'}`;
 	}
 
@@ -426,8 +432,13 @@ function browserTool(home) {
 			}
 
 			const message = render(args, reply);
+			// 与 render 同一套判定：read 的成功以「回执形状」为准，
+			// 否则工具会以 ok:false 收场，上层可能据此判定调用失败。
+			const looksLikeRead = args.action === 'read'
+				&& reply && typeof reply === 'object'
+				&& Array.isArray(reply.elements);
 			return {
-				ok: reply?.ok === true,
+				ok: reply?.ok === true || looksLikeRead,
 				message,
 				// 原始回执附回去：模型需要精确值时（比如截图路径）可以读
 				details: reply,
