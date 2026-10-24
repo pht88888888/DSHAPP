@@ -794,19 +794,43 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             ?: FrameLayout.LayoutParams(width, height)
         val w = width.coerceAtLeast(1)
         val h = height.coerceAtLeast(1)
+        val curLeft = lp.leftMargin
+        val curTop = lp.topMargin
         if (lp.width == w && lp.height == h &&
-            lp.leftMargin == left && lp.topMargin == top &&
+            curLeft == left && curTop == top &&
             visibility == View.VISIBLE
         ) {
-            return   // 没变就别重建布局（ResizeObserver 会高频打过来）
+            return   // 没变就别动（收起动画期间会每帧来一次）
         }
-        lp.width = w
-        lp.height = h
-        lp.leftMargin = left
-        lp.topMargin = top
-        lp.gravity = Gravity.TOP or Gravity.START
-        layoutParams = lp
-        requestLayout()
+
+        // ⚠️ **不能用 requestLayout() 移动** —— 那会触发整棵视图树重新测量/布局，
+        //   WebView 的表面（SurfaceView / 合成层）随之重建，收起动画期间每帧一次，
+        //   屏幕上就是**一闪一闪**（实测录屏里帧差在 160 和 3 之间来回跳）。
+        //
+        // 正确做法是两条路分开：
+        //   · 尺寸没变、只是位置变了（收起动画就是这种）→ offsetLeftAndRight /
+        //     offsetTopAndBottom，只平移，不测量、不重建表面；
+        //   · 尺寸变了 → 改 layoutParams 的宽高再 requestLayout（这种场景很少：
+        //     键盘弹出、旋转、侧栏拖宽，一次性，不会闪）。
+        val sizeChanged = lp.width != w || lp.height != h
+        if (sizeChanged) {
+            lp.width = w
+            lp.height = h
+            layoutParams = lp
+            requestLayout()
+        }
+        // 平移放在尺寸处理之后：offset* 改的是当前实测位置，requestLayout 之后
+        // 会被重新布局覆盖，所以尺寸变了就等下一次上报再对齐位置。
+        if (!sizeChanged) {
+            val dx = left - curLeft
+            val dy = top - curTop
+            if (dx != 0 || dy != 0) {
+                lp.leftMargin = left
+                lp.topMargin = top
+                offsetLeftAndRight(dx)
+                offsetTopAndBottom(dy)
+            }
+        }
     }
 
     /** 退回全屏铺满（面板关掉、或宿主想全屏展示时）。 */

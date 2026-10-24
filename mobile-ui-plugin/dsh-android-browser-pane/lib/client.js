@@ -109,6 +109,26 @@ window.__ModuleLoader__.load({
 		 * @returns {object} React 元素。
 		 */
 		function BrowserPane(props) {
+			// ⚠️ `useTabInfo` **必须作为形参声明**才能拿到。
+			//   渲染器只把「槽位声明的 hook 依赖」展开成同名 props
+			//   （`standardHookPropName("tabInfo")` → `useTabInfo`），
+			//   而 `hookContext` 本身**不会**作为 prop 传下来。
+			//   之前写 `props.hookContext.actions` 永远是 undefined，
+			//   于是「点 ✕ 关 tab」静默失效 —— 用户看到的就是
+			//   「浏览器关了，但 DSH 的浏览器标签还在」。
+			const useTabInfo = props && props.useTabInfo;
+			// ⚠️ 官方 `useTabInfo()` 在 tab 尚未 commit 时会**抛异常**
+			//   （`sidebarRight: tab "..." is not committed in session "..."`）。
+			//   正常渲染不会撞上，但错误边界或热重载的瞬间可能，不能让整个
+			//   面板白屏 —— 退化成「拿不到动作」，功能降级而不是崩。
+			let tabInfo = null;
+			if (typeof useTabInfo === "function") {
+				try {
+					tabInfo = useTabInfo();
+				} catch (error) {
+					tabInfo = null;
+				}
+			}
 			const React = require("react");
 			const e = React.createElement;
 			const slotRef = React.useRef(null);
@@ -127,7 +147,7 @@ window.__ModuleLoader__.load({
 			const closeTabRef = React.useRef(null);
 			// 座位通过 hookContext 把该 tab 的动作传进来（`useTabInfo().actions`）。
 			// `actions.close()` 就是标题栏那个 ✕ 做的事 —— 关掉本 tab。
-			const tabActions = props && props.hookContext && props.hookContext.actions;
+			const tabActions = tabInfo && tabInfo.tab && tabInfo.tab.actions;
 			React.useEffect(() => {
 				closeTabRef.current =
 					tabActions && typeof tabActions.close === "function"
@@ -349,7 +369,9 @@ window.__ModuleLoader__.load({
 
 			// 侧栏 tab 的标题栏 chip 会渲染同一个组件，但 `props.hookContext.title`
 			// 为真 —— 那边只需要一行文字，不能去抢浏览器。
-			const isTitleChip = !!(props && props.hookContext && props.hookContext.title);
+			// 标题栏 chip 与正文会各自渲染一次本组件，靠 seat 区分的只有
+			// `useTabInfo()` 返回的 `title` 标志。
+			const isTitleChip = !!(tabInfo && tabInfo.title);
 			if (isTitleChip) return e("span", null, "AI 浏览器");
 
 			const note = { fontSize: "12px", lineHeight: 1.65, opacity: 0.72 };
