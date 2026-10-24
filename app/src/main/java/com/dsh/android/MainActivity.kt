@@ -1280,7 +1280,9 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         // ✕ 只是隐藏，页面状态与登录态都留在内存里。
-        v.onClose = { closeAiBrowser() }
+        // ✕ / 关到最后一个标签 = 用户主动关掉浏览器 ⇒ 连侧栏 tab 一起关。
+        // （返回键那条路径仍然只隐藏，见 onBackPressed。）
+        v.onClose = { closeAiBrowser(closeTab = true) }
         // 截图落在 workspace 下的隐藏目录，模型可以直接 read 那张图。
         v.shotDir = java.io.File(workspaceDir(), ".browser-shots")
         // 文件上传走宿主已有的系统选择器（三条收尾路径由 launchFileChooser 保证）
@@ -1315,10 +1317,13 @@ class MainActivity : AppCompatActivity() {
      *   ✕ 之后面板会留在一片空白里（浏览器没了，占位区域还在），而且再点也没
      *   反应 —— 他得先关掉整个 tab 再重新打开。
      */
-    fun closeAiBrowser() {
+    fun closeAiBrowser(closeTab: Boolean = false) {
         aiBrowser?.visibility = View.GONE
-        notifyBrowserPane(visible = false)
-        Log.i(DshApplication.TAG, "AI 浏览器已隐藏")
+        notifyBrowserPane(visible = false, userClosed = closeTab)
+        Log.i(
+            DshApplication.TAG,
+            if (closeTab) "AI 浏览器已关闭（同时关闭侧栏 tab）" else "AI 浏览器已隐藏",
+        )
     }
 
     /**
@@ -1329,10 +1334,10 @@ class MainActivity : AppCompatActivity() {
      *
      * ⚠️ 事件名 `dsh:browser-state` 与插件 `lib/client.js` 里的常量必须一致。
      */
-    private fun notifyBrowserPane(visible: Boolean) {
+    private fun notifyBrowserPane(visible: Boolean, userClosed: Boolean = false) {
         if (!::web.isInitialized) return
         val script = "window.dispatchEvent(new CustomEvent('dsh:browser-state'," +
-            "{detail:{visible:$visible}}))"
+            "{detail:{visible:$visible,userClosed:$userClosed}}))"
         runCatching { web.evaluateJavascript(script, null) }
             .onFailure { Log.w(DshApplication.TAG, "通知侧栏面板失败: ${it.message}") }
     }

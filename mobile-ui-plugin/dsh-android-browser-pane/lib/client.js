@@ -74,37 +74,66 @@ window.__ModuleLoader__.load({
 		 * 空 div，把它 `getBoundingClientRect()` 量出来上报给原生，原生再把
 		 * WebView 摆到屏幕上同一块矩形上。
 		 *
-		 * ## 两个方向都必须有通知（只做单向会留下两个 bug）
+		 * ## 为什么是「逐帧跟随」而不是观察者
+		 *
+		 * 收起侧栏时官方**不卸载面板**，只是给容器加 `transform: translateX(...)`
+		 * 把它滑到屏幕外（`dsh-client-ui-sidebar-right` 的注释写得很清楚：
+		 * "Docked content stays mounted while collapsed, translated off the
+		 * frame's right edge"）。
+		 *
+		 * transform **不改变 `getBoundingClientRect()` 之外任何观察者能感知的东西**：
+		 *
+		 * | 观察者 | 收起时会不会触发 | 为什么 |
+		 * |---|---|---|
+		 * | `ResizeObserver` | **不会** | 尺寸一个像素都没变 |
+		 * | `IntersectionObserver` | 会，但**晚** | 它是异步的、按空闲时机回调，动画早跑完了 |
+		 * | `requestAnimationFrame` | **每帧都跑** | 自己轮询位置，跟得上动画 |
+		 *
+		 * 实测（用户录屏）：收起动画 ~250ms，用 IntersectionObserver 时浏览器
+		 * 停在原地约 1 秒才突然消失，看起来就是「延迟收回、没跟上」。
+		 * 所以这里改成**浏览器显示期间每帧量一次位置**，矩形一变就推给原生。
+		 *
+		 * 代价是显示期间每帧一次 `getBoundingClientRect()`。它是只读布局查询，
+		 * 面板本身不动时读的是缓存值，开销可忽略；而且矩形没变时**不上报**，
+		 * 原生那边也会短路。不显示时（`liveRef` 为 false）整个循环直接停掉，
+		 * 不空转。
+		 *
+		 * ## 两个方向都必须有通知
 		 *
 		 * ```
 		 * 前端 → 原生：aiBrowserLayout(rect)   面板在哪、多大
 		 * 原生 → 前端：dsh:browser-state      浏览器还在不在
 		 * ```
 		 *
-		 * 少了第二条，用户点 ✕ 之后面板会僵在「一片空白 + 不再响应点击」：
-		 * 浏览器已经被原生隐藏，面板却以为还在显示，于是既不重开也不提示。
-		 *
-		 * ## 为什么要 ResizeObserver 而不是量一次
-		 *
-		 * 面板宽度会变（侧栏拖宽、旋转屏幕）、高度会变（键盘弹出、窗口调整）、
-		 * 位置也会变（抽屉动画）。只量一次就会错位。
-		 * 上报按 `requestAnimationFrame` 节流 —— ResizeObserver 在动画期间可能
-		 * 一帧来好几次，直接转发会把原生的 layout 打爆。
-		 *
+		 * @param {object} props - 座位注入的 hook 上下文。
 		 * @returns {object} React 元素。
 		 */
-		function BrowserPane() {
+		function BrowserPane(props) {
 			const React = require("react");
 			const e = React.createElement;
 			const slotRef = React.useRef(null);
-			// idle = 还没量到有效矩形；live = 浏览器正在这块区域里显示
+			// idle = 还没打开；live = 浏览器正在这块区域里显示
 			const [phase, setPhase] = React.useState("idle");
-			// ⚠️ 这两个必须用 ref 而不是闭包变量 / state：
-			//   闭包变量在 effect 外（点击回调里）读不到，state 在 measure 那个
-			//   rAF 回调里读到的是旧值。ref 两边都能读写当前值。
+			// ⚠️ 这几个必须用 ref 而不是闭包变量 / state：
+			//   闭包变量在 effect 外（点击回调里）读不到，state 在 rAF 回调里
+			//   读到的是旧值。ref 两边都能读写当前值。
 			const liveRef = React.useRef(false);
-			const scheduleRef = React.useRef(null);
 			const rectPayloadRef = React.useRef(null);
+			const detachRef = React.useRef(null);
+			/**
+			 * 关闭整个侧栏 tab。座位通过 `useTabInfo().actions.close` 提供，
+			 * 拿不到时退化成只隐藏浏览器（老版本官方前端没有这个动作）。
+			 */
+			const closeTabRef = React.useRef(null);
+			// 座位通过 hookContext 把该 tab 的动作传进来（`useTabInfo().actions`）。
+			// `actions.close()` 就是标题栏那个 ✕ 做的事 —— 关掉本 tab。
+			const tabActions = props && props.hookContext && props.hookContext.actions;
+			React.useEffect(() => {
+				closeTabRef.current =
+					tabActions && typeof tabActions.close === "function"
+						? () => tabActions.close()
+						: null;
+			}, [tabActions]);
 
 			React.useEffect(() => {
 				const bridge = window.DSHAndroid;
@@ -115,11 +144,13 @@ window.__ModuleLoader__.load({
 
 				let raf = 0;
 				let lastPayload = "";
+				// 卸载后 rAF 回调可能还在队列里，必须能一眼看出来。
+				let disposed = false;
 
 				/**
 				 * 量出占位区域的当前矩形（CSS 视口坐标）。
 				 *
-				 * @returns {object|null} 尺寸无效（面板收起中）时 null。
+				 * @returns {string|null} JSON 串；尺寸无效时 null。
 				 */
 				const rectPayload = () => {
 					const node = slotRef.current;
@@ -142,29 +173,33 @@ window.__ModuleLoader__.load({
 				};
 				rectPayloadRef.current = rectPayload;
 
-				const measure = () => {
-					raf = 0;
+				/**
+				 * 收起浏览器（只隐藏，页面与登录态都留着）。
+				 *
+				 * @param {boolean} resetPhase - 是否把面板切回「未打开」。
+				 */
+				const detach = (resetPhase) => {
+					liveRef.current = false;
+					lastPayload = "";
+					if (resetPhase) setPhase("idle");
+					try {
+						if (typeof bridge.aiBrowserDetach === "function") bridge.aiBrowserDetach();
+					} catch (error) {
+						/* 面板正在收起 / 已卸载，忽略 */
+					}
+				};
+				detachRef.current = detach;
+
+				/** 把当前矩形推给原生。矩形没变就不推。 */
+				const push = () => {
+					if (!liveRef.current) return;
 					const payload = rectPayload();
-					// ⚠️ 量不出有效矩形 = 面板被收起了（点右上角收起侧栏、窗口太窄）。
-					//   这时要主动 detach，否则原生那块 WebView 还留在屏幕上，
-					//   看起来就是「侧栏收起来了但浏览器赖着不走」。
+					// 量不出矩形 = 面板被完全收起（宽度塌陷 / 移出视口）。
+					// 这时候要立刻隐藏，否则原生那块 WebView 会留在屏幕上。
 					if (!payload) {
-						if (liveRef.current) {
-							liveRef.current = false;
-							lastPayload = "";
-							setPhase("idle");
-							try {
-								if (typeof bridge.aiBrowserDetach === "function") bridge.aiBrowserDetach();
-							} catch (error) {
-								/* 面板正在收起，什么都不做 */
-							}
-						}
+						detach(true);
 						return;
 					}
-					// 只有「正在显示」时才上报矩形：浏览器没开的时候上报会让原生
-					// 把它显示出来（applyEmbedRect 末尾会 setVisibility(VISIBLE)），
-					// 于是用户一打开侧栏 tab，浏览器就自己冒出来了。
-					if (!liveRef.current) return;
 					if (payload === lastPayload) return;
 					lastPayload = payload;
 					try {
@@ -174,108 +209,131 @@ window.__ModuleLoader__.load({
 					}
 				};
 
-				const schedule = () => {
-					if (raf) return;
-					raf = window.requestAnimationFrame(measure);
+				/**
+				 * 逐帧跟随循环。
+				 *
+				 * 只在浏览器显示期间跑；隐藏后**自己停掉**，不空转。
+				 * 用 rAF 而不是 `setInterval`：前者跟着屏幕刷新走，动画期间
+				 * 一帧一次刚好对齐；后者会跟渲染抢时间、还可能重复上报。
+				 */
+				const tick = () => {
+					raf = 0;
+					if (!liveRef.current) return;
+					push();
+					if (liveRef.current) raf = window.requestAnimationFrame(tick);
 				};
-				scheduleRef.current = schedule;
+
+				const startLoop = () => {
+					if (raf) return;
+					raf = window.requestAnimationFrame(tick);
+				};
 
 				/** 原生通知浏览器开了 / 关了。 */
 				const onState = (event) => {
 					const visible = !!(event && event.detail && event.detail.visible);
-					liveRef.current = visible;
 					lastPayload = "";
-					setPhase(visible ? "live" : "idle");
-					// 重新变可见时要立刻把矩形补上：面板自己的尺寸没变，
-					// ResizeObserver 不会再触发。
-					if (visible) schedule();
+					if (visible) {
+						liveRef.current = true;
+						setPhase("live");
+						startLoop();
+					} else {
+						liveRef.current = false;
+						// ⚠️ 用户点 ✕ 主动关掉浏览器 ⇒ **连侧栏 tab 一起关**。
+						//   只把面板切回 idle 的话，用户看到的是「浏览器没了、
+						//   但 tab 还在」，还得自己去点那个 ✕ —— 这正是他抱怨的
+						//   「APP 没有关掉浏览器的标签页」。
+						//   侧栏自己收起（detach）不会带这个标记，tab 要留着。
+						if (event && event.detail && event.detail.userClosed) {
+							setPhase("idle");
+							if (closeTabRef.current) {
+								try {
+									closeTabRef.current();
+									return;
+								} catch (error) {
+									console.warn("[dsh-android-browser-pane] 关闭 tab 失败:", error && error.message);
+								}
+							}
+						}
+						setPhase("idle");
+					}
 				};
 
 				window.addEventListener(STATE_EVENT, onState);
 
-				let observer = null;
-				try {
-					observer = new ResizeObserver(schedule);
-					if (slotRef.current) observer.observe(slotRef.current);
-				} catch (error) {
-					// 老内核没有 ResizeObserver：退回定时测量（下面那几拍）也够用
-					console.warn("[dsh-android-browser-pane] 无 ResizeObserver，退回定时测量");
-				}
+				// 尺寸 / 位置突变时的兜底（键盘弹出、旋转、侧栏拖宽）。
+				// 正常跟随靠 tick，这里只负责在隐藏状态下也别漏掉首次布局。
+				const onViewport = () => {
+					if (liveRef.current) startLoop();
+				};
+				window.addEventListener("resize", onViewport);
+				window.addEventListener("orientationchange", onViewport);
 
-				// ⚠️ 收起侧栏时占位元素的**尺寸常常不变**（只是被移出可视区 / 换了
-				//   父容器），ResizeObserver 不会触发，浏览器就会赖在屏幕上不走。
-				//   IntersectionObserver 专门抓「离开可视区」这一种情况。
-				let viewObserver = null;
+				// ⚠️ 挂载即打开 —— 不要留「再点一次才能用」的二级入口。
+				//
+				// 用户点开侧栏的「AI 浏览器」，要的就是浏览器本身。之前这里先渲染
+				// 一张说明卡片 + 「打开浏览器」按钮，等于让他多点一步，体验很别扭。
+				//
+				// 顺序仍然是「先摆位、再显示」：rectPayload 此时可能还量不到
+				// （首帧布局未完成），所以推不进矩形时交给 tick 循环，它会等到
+				// 量得出矩形的那一刻再推。
+				let already = false;
 				try {
-					viewObserver = new IntersectionObserver((entries) => {
-						for (const entry of entries) {
-							// 完全不可见 + 浏览器正开着 ⇒ 立即 detach
-							if (!entry.isIntersecting && entry.intersectionRatio === 0 && liveRef.current) {
-								liveRef.current = false;
-								setPhase("idle");
-								try {
-									if (typeof bridge.aiBrowserDetach === "function") bridge.aiBrowserDetach();
-								} catch (error) {
-									/* 面板正在卸载，忽略 */
-								}
-								return;
+					already =
+						typeof bridge.aiBrowserState === "function" &&
+						bridge.aiBrowserState() === "visible";
+				} catch (error) {
+					/* 老 APK 没有这个方法：按「没开」处理，直接打开 */
+				}
+				if (already) {
+					liveRef.current = true;
+					setPhase("live");
+					startLoop();
+				} else {
+					// 用一帧的延迟让面板先完成首次布局，否则量到的是 0×0。
+					window.requestAnimationFrame(() => {
+						if (disposed) return;
+						const payload = rectPayload();
+						if (payload && typeof bridge.aiBrowserLayout === "function") {
+							try {
+								bridge.aiBrowserLayout(payload);
+							} catch (error) {
+								/* 下一帧 tick 还会再推 */
 							}
 						}
-						schedule();
-					}, { threshold: [0, 1] });
-					if (slotRef.current) viewObserver.observe(slotRef.current);
-				} catch (error) {
-					console.warn("[dsh-android-browser-pane] 无 IntersectionObserver，收起侧栏可能不会自动隐藏浏览器");
-				}
-				window.addEventListener("resize", schedule);
-				window.addEventListener("orientationchange", schedule);
-
-				// 挂载时先对齐一次原生状态：AI 可能已经用工具打开了网页，
-				// 用户这时才点开 tab —— 面板得直接进入 live，而不是显示一个按钮。
-				try {
-					if (typeof bridge.aiBrowserState === "function" && bridge.aiBrowserState() === "visible") {
 						liveRef.current = true;
 						setPhase("live");
-					}
-				} catch (error) {
-					/* 老 APK 没有这个方法：按「没开」处理即可 */
+						openNativeAiBrowser();
+						startLoop();
+					});
 				}
 
-				// 面板打开的动画 / 抽屉滑动不触发 resize，补几拍。
-				schedule();
-				const timers = [80, 200, 420, 900].map((ms) => window.setTimeout(schedule, ms));
-
 				return () => {
-					scheduleRef.current = null;
+					disposed = true;
 					rectPayloadRef.current = null;
-					for (const t of timers) window.clearTimeout(t);
+					detachRef.current = null;
 					if (raf) window.cancelAnimationFrame(raf);
-					if (observer) observer.disconnect();
-					if (viewObserver) viewObserver.disconnect();
 					window.removeEventListener(STATE_EVENT, onState);
-					window.removeEventListener("resize", schedule);
-					window.removeEventListener("orientationchange", schedule);
+					window.removeEventListener("resize", onViewport);
+					window.removeEventListener("orientationchange", onViewport);
 					// tab 切走 / 面板卸载：把浏览器收起来（只隐藏，状态保留）。
 					try {
 						if (typeof bridge.aiBrowserDetach === "function") bridge.aiBrowserDetach();
 					} catch (error) {
-						/* 面板已经在拆，什么都做不了；不刷日志 */
+						/* 面板已经在拆，什么都做不了 */
 					}
 				};
 			}, []);
 
 			/**
-			 * 点「打开」时的动作。
+			 * 打开浏览器。
 			 *
-			 * 先切到 live 再上报矩形：`measure` 只在 live 时才肯上报（见上面的
-			 * 注释），所以顺序不能反 —— 反了就是「点了没反应」。
+			 * ⚠️ **顺序不能反**：先把矩形推过去让原生把 WebView 摆到面板上并
+			 * 显示，再调 `openAiBrowser()` 加载首页。反过来的话 WebView 会先以
+			 * MATCH_PARENT（全屏）露出来一帧，用户看到一次「闪全屏」。
 			 */
 			const openBrowser = () => {
 				const bridge = window.DSHAndroid;
 				if (!bridge || typeof bridge.openAiBrowser !== "function") return;
-				// ⚠️ 顺序不能反：先把矩形推过去让原生把 WebView 摆到面板上并显示，
-				//   再调 openAiBrowser 加载首页。反过来的话 WebView 会先以
-				//   MATCH_PARENT（全屏）露出来一帧，用户看到一次「闪全屏」。
 				const payload = rectPayloadRef.current ? rectPayloadRef.current() : null;
 				if (payload && typeof bridge.aiBrowserLayout === "function") {
 					try {
@@ -284,31 +342,17 @@ window.__ModuleLoader__.load({
 						console.warn("[dsh-android-browser-pane] 摆位失败:", error && error.message);
 					}
 				}
-				openNativeAiBrowser();
 				liveRef.current = true;
 				setPhase("live");
-				// 面板尺寸没变，ResizeObserver 不会再触发 —— 补一拍。
-				if (scheduleRef.current) scheduleRef.current();
+				openNativeAiBrowser();
 			};
 
+			// 侧栏 tab 的标题栏 chip 会渲染同一个组件，但 `props.hookContext.title`
+			// 为真 —— 那边只需要一行文字，不能去抢浏览器。
+			const isTitleChip = !!(props && props.hookContext && props.hookContext.title);
+			if (isTitleChip) return e("span", null, "AI 浏览器");
+
 			const note = { fontSize: "12px", lineHeight: 1.65, opacity: 0.72 };
-			const card = {
-				padding: "14px",
-				borderRadius: "12px",
-				background: "rgba(127,127,147,.10)",
-				border: "1px solid rgba(127,127,147,.22)",
-			};
-			const button = {
-				marginTop: "10px",
-				padding: "7px 16px",
-				fontSize: "13px",
-				fontWeight: 600,
-				borderRadius: "999px",
-				border: "1px solid rgba(127,127,147,.34)",
-				background: "transparent",
-				color: "inherit",
-				cursor: "pointer",
-			};
 
 			return e("div", {
 				style: {
@@ -325,23 +369,14 @@ window.__ModuleLoader__.load({
 					ref: slotRef,
 					style: { position: "absolute", left: 0, top: 0, right: 0, bottom: 0 },
 				}),
-				phase === "live"
-					? null
-					: e("div", { style: Object.assign({}, card, { position: "absolute", left: 0, top: 0, right: 0 }) },
-						e("div", { style: { fontSize: "13.5px", fontWeight: 600, marginBottom: "6px" } }, "AI 浏览器"),
-						phase === "noBridge"
-							? e("div", { style: Object.assign({}, note, { color: "#E0A33A" }) },
-								"这个 APK 的原生桥还没有 aiBrowserLayout —— 面板没法把浏览器嵌进来。")
-							: e("div", { style: note },
-								"这台浏览器跑在你自己的手机上，登录状态会保留。AI 可以直接用它上网、登录、填表单；你也可以随时从顶部状态按钮接管。"),
-						phase === "noBridge"
-							? null
-							: e("button", {
-								type: "button",
-								style: button,
-								onClick: openBrowser,
-							}, "打开浏览器"),
-					),
+				// ⚠️ 这里**刻意不放任何提示 / 按钮**：
+				//   用户点开侧栏的「AI 浏览器」，要的就是浏览器本身，不是
+				//   「再点一下才能用」的二级入口。打开动作在挂载时由
+				//   `autoOpenRef` 那条路径自动触发（见下方 useEffect）。
+				phase === "live" ? null : e("div", { style: Object.assign({}, note, {
+					position: "absolute", left: 0, top: 0, right: 0,
+					padding: "14px", opacity: 0.55,
+				}) }, "正在打开浏览器…"),
 			);
 		}
 
