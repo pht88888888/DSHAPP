@@ -296,7 +296,11 @@ function render(args, reply) {
 		case 'scroll':
 			return `✓ 已滚动，当前位置 ${reply.y ?? '?'}。`;
 		case 'eval':
-			return typeof reply.value === 'string' ? reply.value : JSON.stringify(reply);
+			// 原生侧把页面返回值原样包成 value 字符串（不解析成对象），
+			// 所以这里只需把它交回去。value 缺失时才退化为序列化整个回执。
+			if (typeof reply.value === 'string') return reply.value;
+			if (reply.value !== undefined) return JSON.stringify(reply.value);
+			return JSON.stringify(reply);
 		default:
 			return JSON.stringify(reply);
 	}

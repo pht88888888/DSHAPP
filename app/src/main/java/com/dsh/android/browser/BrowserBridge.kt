@@ -168,14 +168,14 @@ object BrowserBridge {
             "read" -> evalJson(READ_JS)
             "click" -> evalJson(clickJs(cmd))
             "type" -> evalJson(typeJs(cmd))
-            "press" -> evalJson(pressJs(cmd.optString("key", "Enter")))
+            "press" -> opPress(cmd.optString("key", "Enter"))
             "scroll" -> evalJson(scrollJs(cmd))
             "screenshot" -> opScreenshot()
             "back" -> opNav { it.goBack() }
             "forward" -> opNav { it.goForward() }
             "reload" -> opNav { it.reload() }
             "tabs" -> opTabs(cmd)
-            "eval" -> evalJson(cmd.optString("js", ""))
+            "eval" -> opEval(cmd.optString("js", ""))
             "wait" -> opWait(cmd)
             else -> err("未知 action: $action")
         }
@@ -227,7 +227,21 @@ object BrowserBridge {
                 "select" -> {
                     val idx = cmd.optInt("index", -1)
                     val ok = view.selectTab(idx)
-                    done(if (ok) okJson(mapOf("url" to view.currentUrl())) else err("没有第 $idx 个标签"))
+                    // count 必须带上：工具层文案是「现在 N 个标签」，
+                    // 漏了这个字段就会渲染成「现在 ? 个标签」。
+                    done(
+                        if (ok) {
+                            okJson(
+                                mapOf(
+                                    "url" to view.currentUrl(),
+                                    "count" to view.tabsCount(),
+                                    "active" to idx,
+                                ),
+                            )
+                        } else {
+                            err("没有第 $idx 个标签")
+                        },
+                    )
                 }
                 else -> {
                     val arr = JSONArray()
@@ -299,6 +313,27 @@ object BrowserBridge {
         if (!posted) finish(err("主线程拒绝执行"))
         latch.await(OP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         return box[0] ?: err("等待页面响应超时（${OP_TIMEOUT_MS}ms），页面可能正在加载或已崩溃")
+    }
+
+    /**
+     * 执行用户给的任意 JS，把结果原样包成 `{ok:true, value:<原始文本>}`。
+     *
+     * **不能复用 [evalJson]**：evalJson 会把页面返回值当 JSON 解析成回执对象，
+     * 而 eval 的返回值是**用户的数据**——用户执行 `JSON.stringify({a:1})`
+     * 得到 `{"a":1}`，被解析后就成了一个没有 `ok` 字段的回执，
+     * 工具层一律渲染成「✗ 未知错误」。所以这里只做包装、不做解析。
+     */
+    private fun opEval(js: String): JSONObject {
+        if (js.isBlank()) return err("空的 JS")
+        return mainThreadOp { view, done ->
+            view.evaluate(js) { result ->
+                if (result == null) {
+                    done(err("页面没有返回结果（可能已导航或崩溃）"))
+                    return@evaluate
+                }
+                done(okJson(mapOf("value" to result)))
+            }
+        }
     }
 
     /** 执行一段 JS 并解析它返回的 JSON 字符串。 */
@@ -502,6 +537,46 @@ object BrowserBridge {
               }
             })()
         """.trimIndent()
+    }
+
+    /** 常见键名 → Android keyCode。用于把 press 变成真实按键注入。 */
+    private fun keyCodeOf(key: String): Int? = when (key.trim().lowercase()) {
+        "enter", "return" -> android.view.KeyEvent.KEYCODE_ENTER
+        "tab" -> android.view.KeyEvent.KEYCODE_TAB
+        "escape", "esc" -> android.view.KeyEvent.KEYCODE_ESCAPE
+        "backspace" -> android.view.KeyEvent.KEYCODE_DEL
+        "delete", "del" -> android.view.KeyEvent.KEYCODE_FORWARD_DEL
+        "space", " " -> android.view.KeyEvent.KEYCODE_SPACE
+        "arrowup", "up" -> android.view.KeyEvent.KEYCODE_DPAD_UP
+        "arrowdown", "down" -> android.view.KeyEvent.KEYCODE_DPAD_DOWN
+        "arrowleft", "left" -> android.view.KeyEvent.KEYCODE_DPAD_LEFT
+        "arrowright", "right" -> android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+        "home" -> android.view.KeyEvent.KEYCODE_MOVE_HOME
+        "end" -> android.view.KeyEvent.KEYCODE_MOVE_END
+        "pageup" -> android.view.KeyEvent.KEYCODE_PAGE_UP
+        "pagedown" -> android.view.KeyEvent.KEYCODE_PAGE_DOWN
+        else -> null
+    }
+
+    /**
+     * 给当前焦点元素发一个按键。
+     *
+     * **优先走原生注入**（[AiBrowserView.dispatchKey]）：只有真实按键才会触发
+     * 浏览器默认行为（Tab 移焦点、Enter 提交表单、方向键移光标）。
+     * 用 JS 合成事件时 `isTrusted=false`，页面监听器能收到但默认行为不执行，
+     * 表现就是「提示按成功了，但焦点没动」。
+     *
+     * 键名不在映射表里时退回 JS 合成事件，至少让页面监听器收到事件。
+     */
+    private fun opPress(key: String): JSONObject {
+        val code = keyCodeOf(key) ?: return evalJson(pressJs(key))
+        return mainThreadOp { view, done ->
+            if (view.dispatchKey(code)) {
+                done(okJson(mapOf("key" to key, "native" to true)))
+            } else {
+                done(err("没有可用的页面，按键没发出去"))
+            }
+        }
     }
 
     private fun pressJs(key: String): String = """

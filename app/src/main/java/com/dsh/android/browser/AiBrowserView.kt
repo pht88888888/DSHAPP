@@ -691,6 +691,24 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     /** 读当前页面 URL。 */
     fun currentUrl(): String = currentWebView()?.url ?: ""
 
+    /**
+     * 往当前 WebView 注入一个**真实**按键（走 View 的输入分发，不是 JS 合成事件）。
+     *
+     * 为什么不能用 JS 的 `dispatchEvent(new KeyboardEvent(...))`：
+     *   合成事件的 `isTrusted` 恒为 `false`，浏览器**不执行默认行为**。
+     *   于是 Tab 不移动焦点、Enter 不提交表单、方向键不移动光标——页面上的
+     *   keydown 监听器能收到事件，但什么也不会发生。只有真实按键才触发默认行为，
+     *   这里用 [android.view.View.dispatchKeyEvent] 从 View 根部分发下去。
+     *
+     * @return 当前标签是否存在（没有 WebView 时返回 false）。
+     */
+    fun dispatchKey(keyCode: Int): Boolean {
+        val wv = currentWebView() ?: return false
+        wv.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode))
+        wv.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, keyCode))
+        return true
+    }
+
     fun goBack() { currentWebView()?.let { if (it.canGoBack()) it.goBack() } }
     fun goForward() { currentWebView()?.let { if (it.canGoForward()) it.goForward() } }
     fun reload() { currentWebView()?.reload() }
