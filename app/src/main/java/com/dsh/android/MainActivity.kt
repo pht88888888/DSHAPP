@@ -2040,8 +2040,15 @@ class MainActivity : AppCompatActivity() {
             val widthPx = (w * scale).toInt()
             val heightPx = (h * scale).toInt()
 
+            // DSH 当前主题（深/浅 + 背景色）。面板插件顺路带上来，见
+            // browser-pane 的 themePayload()：原生这个 WebView 是独立实例，
+            // 自己判断不了 DSH 的主题，只能靠前端喂。
+            val dark = rect.optBoolean("dark", true)
+            val themeBg = rect.optString("bg", "")
+
             runOnUiThread {
                 val view = ensureAiBrowser() ?: return@runOnUiThread
+                view.applyTheme(dark, themeBg)
                 view.applyEmbedRect(left, top, widthPx, heightPx)
                 if (view.visibility != View.VISIBLE) {
                     view.visibility = View.VISIBLE

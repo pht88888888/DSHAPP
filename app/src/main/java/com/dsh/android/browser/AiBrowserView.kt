@@ -83,6 +83,37 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         /** 工具栏高度（dp）。进度条与页面容器都按它对齐，**只能有一个来源**。 */
         private const val BAR_H_DP = 46
 
+        /** 深色：贴近 DSH 深色主题（body 背景实测 rgb(67,69,74)）。 */
+        internal val DARK_PALETTE = Palette(
+            bar = 0xFF22252B.toInt(),
+            barAlt = 0xFF1B1E23.toInt(),
+            field = 0xFF2C3037.toInt(),
+            fieldActive = 0xFF3A3F48.toInt(),
+            text = 0xFFE8EAED.toInt(),
+            textDim = 0xFF9AA0A8.toInt(),
+            root = 0xFF1B1E23.toInt(),
+            pill = 0xF22C3037.toInt(),
+            pillText = 0xFFF2F4F7.toInt(),
+            accent = 0xFF6FA8DC.toInt(),
+            aiAccent = 0xFFE0A33A.toInt(),
+        )
+
+        /** 浅色：贴近 DSH 浅色主题（body 背景实测 rgb(248,249,250)）。 */
+        internal val LIGHT_PALETTE = Palette(
+            bar = 0xFFF1F3F5.toInt(),
+            barAlt = 0xFFE8EAED.toInt(),
+            field = 0xFFE4E7EB.toInt(),
+            fieldActive = 0xFFD3D8DE.toInt(),
+            text = 0xFF1F2328.toInt(),
+            textDim = 0xFF6B7280.toInt(),
+            root = 0xFFFFFFFF.toInt(),
+            pill = 0xF2FFFFFF.toInt(),
+            pillText = 0xFF1F2328.toInt(),
+            accent = 0xFF2C6FB5.toInt(),
+            aiAccent = 0xFFB4700C.toInt(),
+        )
+    
+
         /** 标签条高度（dp）。只在标签数 > 1 时占位。 */
         private const val TABBAR_H_DP = 34
 
@@ -92,6 +123,44 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
 
     /** 谁在操作。 */
     enum class Control { AI, USER }
+
+    /**
+     * 浏览器外框的配色。深/浅两套，跟随 DSH 主题。
+     *
+     * ## 为什么要从 DSH 那边取，而不是自己定死
+     *
+     * 这个浏览器是**贴在 DSH 界面里**的（右侧栏面板），不是独立窗口。它自
+     * 己一套紫黑配色摆在 DSH 浅色主题旁边，看起来像从别的 App 里抠出来的一块。
+     * 而原生这个 WebView 是**独立实例**，既不知道 DSH 现在是深是浅，也拿不到
+     * DSH 的配色变量 —— 只能由面板插件（跑在 DSH 页面里）读 `getComputedStyle`
+     * 后顺路上报，见 `browser-pane/lib/client.js` 的 `themePayload()`。
+     *
+     * ## 为什么不是「一个背景色 + 算亮度」
+     *
+     * 试过从上报的 `bg` 反推整套色阶（叠白/叠黑算百分比），结果是灰阶偏移，
+     * 跟 DSH 的观感差一截。DSH 的主题色本来就只有深浅两种，直接各写一套
+     * 精确色值更可控，也不会因为某个站点背景透明就算出一片死黑。
+     *
+     * @param dark 是否深色主题。
+     * @param bgHint DSH 报上来的背景色（`rgb(r, g, b)` 或 `#rrggbb`），可能为空。
+     */
+    internal data class Palette(
+        val bar: Int,
+        val barAlt: Int,
+        val field: Int,
+        val fieldActive: Int,
+        val text: Int,
+        val textDim: Int,
+        val root: Int,
+        val pill: Int,
+        val pillText: Int,
+        val accent: Int,
+        val aiAccent: Int,
+    )
+
+    private var dark: Boolean = true
+    private var palette: Palette = DARK_PALETTE
+
 
     /**
      * 一个标签页 = 一个独立 WebView。
@@ -199,6 +268,9 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
      */
     private lateinit var actionPill: TextView
 
+    /** 顶部工具栏。留字段是为了 [applyPalette] 能重刷它的底色。 */
+    private var chromeBar: LinearLayout? = null
+
     private val tabs = ArrayList<Tab>()
     private var activeIndex = -1
 
@@ -223,7 +295,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
 
     init {
-        setBackgroundColor(0xFF0F1115.toInt())
+        setBackgroundColor(palette.root)
 
         val barH = dp(BAR_H_DP)
         val tabH = dp(TABBAR_H_DP)
@@ -232,9 +304,10 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         val chrome = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xFF1A1F2A.toInt())
+            setBackgroundColor(palette.bar)
             setPadding(dp(4), 0, dp(4), 0)
         }
+        chromeBar = chrome
 
         backBtn = toolButton("←") { if (currentWebView()?.canGoBack() == true) currentWebView()?.goBack() }
         forwardBtn = toolButton("→") { if (currentWebView()?.canGoForward() == true) currentWebView()?.goForward() }
@@ -242,22 +315,22 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         val homeBtn = toolButton("⌂") { loadUrl(HOME_URL) }
 
         addressBar = TextView(context).apply {
-            setTextColor(0xFFDCE6F5.toInt())
+            setTextColor(palette.text)
             textSize = 11.5f
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.MIDDLE
             setPadding(dp(9), dp(7), dp(9), dp(7))
-            background = rounded(0xFF232936.toInt(), 8)
+            background = rounded(palette.field, 8)
             text = HOME_URL
             setOnClickListener { showUrlEditor() }
         }
 
         statusChip = TextView(context).apply {
-            setTextColor(0xFF7EC8A0.toInt())
+            setTextColor(palette.accent)
             textSize = 10.5f
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(5), dp(8), dp(5))
-            background = rounded(0xFF232936.toInt(), 8)
+            background = rounded(palette.field, 8)
             text = "你"
             isClickable = true
             setOnClickListener { toggleControl() }
@@ -293,7 +366,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         tabBar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xFF141922.toInt())
+            setBackgroundColor(palette.barAlt)
             setPadding(dp(4), 0, dp(4), 0)
             addView(
                 HorizontalScrollView(context).apply {
@@ -330,23 +403,26 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         // 用户打开侧边栏时只能看到浏览器，看不到对话流。没有这条反馈，
         // AI 每次操作他都只能对着一个不动的页面干等，不知道是在干活还是卡住了。
         actionPill = TextView(context).apply {
-            setTextColor(0xFFEAF2FF.toInt())
-            textSize = 12f
+            setTextColor(palette.pillText)
+            textSize = 12.5f
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = rounded(0xF21B2130.toInt(), 18)
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(9), dp(16), dp(9))
+            background = pillBackground()
             visibility = View.GONE
-            elevation = dp(6).toFloat()
+            elevation = dp(8).toFloat()
+            alpha = 0f
         }
         addView(
             actionPill,
             LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = barH + dp(10)
-                leftMargin = dp(12)
-                rightMargin = dp(12)
-                gravity = Gravity.TOP or Gravity.START
+                topMargin = barH + dp(12)
+                leftMargin = dp(16)
+                rightMargin = dp(16)
+                // 屏幕上方居中（用户明确要求）。用 CENTER_HORIZONTAL 而不是
+                // START：胶囊宽度是随文字变的，靠左会随文案长度左右跳。
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             },
         )
 
@@ -359,51 +435,148 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     }
 
     // ── AI 动作胶囊 ─────────────────────────────────────────────────────
+    //
+    // 用户打开侧边栏时只能看到浏览器，看不到对话流。没有这条反馈，AI 每次
+    // 操作他都只能对着一个不动的页面干等，不知道是在干活还是卡住了。
+    //
+    // ## 停留策略（用户明确要求）
+    //
+    // · **每个状态至少显示 5 秒** —— 一个 click 往往只花 80ms，之前「操作结束
+    //   就淡出」的结果是文字一闪而过，根本看不清。
+    // · **新状态直接替换**，不排队、不等待 —— 排队会让胶囊里的文字远远落后于
+    //   AI 的实际动作，反而更让人困惑。
+    //
+    // 于是用两个时间戳来判断：`pillShownAt` 记它什么时候出现，`pillDueAt` 记
+    // 最早什么时候可以收。操作结束时只把「到点该收」这件事挂上去，真正收不收
+    // 由 [pillSweep] 按 5 秒下限决定。
 
-    /** 显示/更新「AI 正在做什么」胶囊。传空字符串即隐藏。 */
+    /** 胶囊当前这轮文字的起始时刻（`SystemClock.elapsedRealtime()`）。 */
+    private var pillShownAt = 0L
+
+    /** 最早可以收走的时刻。新状态进来会重置它。 */
+    private var pillDueAt = 0L
+
+    /** 这轮操作是否已经结束（结束后才允许按 5 秒下限收走）。 */
+    private var pillOpDone = false
+
+    /** 胶囊最短停留时长（用户要求 5 秒）。 */
+    private val PILL_MIN_MS = 5_000L
+
+    /** 到点后淡出的时长。 */
+    private val PILL_FADE_MS = 260L
+
+    /**
+     * 显示/更新「AI 正在做什么」胶囊。
+     *
+     * 文案与当前显示相同则不重置计时（否则 AI 连发同一条描述时，胶囊会一直
+     * 赖在屏幕上不消失）。
+     */
     fun showAction(text: String) {
-        val pill = actionPill
         val t = text.trim()
-        pill.removeCallbacks(hideActionRunnable)
-        pill.animate().cancel()
         if (t.isEmpty()) {
-            pill.visibility = View.GONE
-            pill.alpha = 1f
+            hideActionNow()
             return
         }
+        val pill = actionPill
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (pill.visibility == View.VISIBLE && pill.text.toString() == t) {
+            // 同一句描述：只是新一轮操作，重新给满 5 秒，但不重新播入场动画。
+            pillOpDone = false
+            pillDueAt = now + PILL_MIN_MS
+            return
+        }
+        pill.removeCallbacks(pillSweep)
+        pill.animate().cancel()
         pill.text = t
-        pill.alpha = 1f
-        pill.visibility = View.VISIBLE
+        pillOpDone = false
+        pillShownAt = now
+        pillDueAt = now + PILL_MIN_MS
+        if (pill.visibility != View.VISIBLE) {
+            pill.alpha = 0f
+            pill.visibility = View.VISIBLE
+        }
+        // 入场：轻微放大 + 淡入。比纯淡入「灵动」一点，又不至于晃眼。
+        pill.scaleX = 0.92f
+        pill.scaleY = 0.92f
+        pill.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(200L)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
+            .start()
     }
 
     /**
-     * 操作结束：延迟淡出。
+     * 操作结束：**不立刻收**，交给 [pillSweep] 按 5 秒下限处理。
      *
-     * ⚠️ 不能立刻隐藏：一个 click 可能只花 80ms，胶囊闪一下就没了，
-     *   用户根本来不及看。留 [delayMs] 让他看清刚才发生了什么。
+     * 注意这里已经**没有**延迟参数了：收不收由「至少显示 5 秒」这条规则决定，
+     * 调用方不需要（也不应该）自己算时长。
      */
+    fun hideActionSoon() {
+        pillOpDone = true
+        scheduleSweep()
+    }
+
     /** 立刻收走胶囊（超时、异常等「操作没正常结束」的路径用）。 */
     fun hideActionNow() {
         val pill = actionPill
-        pill.removeCallbacks(hideActionRunnable)
+        pill.removeCallbacks(pillSweep)
         pill.animate().cancel()
-        pill.alpha = 1f
         pill.visibility = View.GONE
+        pill.alpha = 0f
+        pillOpDone = false
+        pillDueAt = 0L
     }
 
-    fun hideActionSoon(delayMs: Long = 900L) {
+    /** 安排一次到点检查：不早于 `pillDueAt`。 */
+    private fun scheduleSweep() {
         val pill = actionPill
-        pill.removeCallbacks(hideActionRunnable)
-        pill.postDelayed(hideActionRunnable, delayMs)
+        pill.removeCallbacks(pillSweep)
+        if (!pillOpDone) return
+        val wait = (pillDueAt - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        pill.postDelayed(pillSweep, wait)
     }
 
-    private val hideActionRunnable = Runnable {
-        actionPill.animate().cancel()
-        actionPill.animate().alpha(0f).setDuration(220L).withEndAction {
-            actionPill.visibility = View.GONE
-            actionPill.alpha = 1f
-        }.start()
+    /**
+     * 到点检查：真的到点了才淡出。
+     *
+     * ⚠️ 必须**再核一次**时间，不能直接 fade：`postDelayed` 可能因为主线程
+     *   忙（页面正在加载）而延后，也可能反过来被提前调度。以时间戳为准。
+     */
+    private val pillSweep = object : Runnable {
+        override fun run() {
+            val pill = actionPill
+            if (pill.visibility != View.VISIBLE) return
+            if (!pillOpDone) return
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now < pillDueAt) {
+                pill.postDelayed(this, pillDueAt - now)
+                return
+            }
+            pill.animate().cancel()
+            pill.animate()
+                .alpha(0f)
+                .scaleX(0.96f)
+                .scaleY(0.96f)
+                .setDuration(PILL_FADE_MS)
+                .withEndAction {
+                    pill.visibility = View.GONE
+                    pill.scaleX = 1f
+                    pill.scaleY = 1f
+                }
+                .start()
+        }
     }
+
+    /** 胶囊底：圆角胶囊 + 一圈极淡描边，深浅主题都能立住。 */
+    private fun pillBackground(): Drawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(22).toFloat()
+            setColor(palette.pill)
+            setStroke(dp(1), if (dark) 0x1FFFFFFF else 0x14000000)
+        }
 
     // ── 标签管理 ────────────────────────────────────────────────────────
 
@@ -498,8 +671,8 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 ellipsize = TextUtils.TruncateAt.END
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(9), 0, dp(9), 0)
-                setTextColor(if (i == activeIndex) 0xFFDCE6F5.toInt() else 0xFF7C8798.toInt())
-                background = rounded(if (i == activeIndex) 0xFF2B3444.toInt() else 0x00000000, 7)
+                setTextColor(if (i == activeIndex) palette.text else palette.textDim)
+                background = rounded(if (i == activeIndex) palette.fieldActive else 0x00000000, 7)
                 isClickable = true
                 setOnClickListener { selectTab(i) }
                 setOnLongClickListener { closeTabAt(i); true }
@@ -543,7 +716,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView(wv: WebView) {
-        wv.setBackgroundColor(0xFF0F1115.toInt())
+        wv.setBackgroundColor(palette.root)
         wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -748,9 +921,9 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         val input = android.widget.EditText(context).apply {
             setText(currentWebView()?.url ?: HOME_URL)
             setSelectAllOnFocus(true)
-            setTextColor(0xFFDCE6F5.toInt())
-            setHintTextColor(0xFF7C8798.toInt())
-            setBackgroundColor(0xFF232936.toInt())
+            setTextColor(palette.text)
+            setHintTextColor(palette.textDim)
+            setBackgroundColor(palette.field)
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         android.app.AlertDialog.Builder(context)
@@ -807,7 +980,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         forwardBtn.alpha = if (canForward) 1f else 0.3f
         statusChip.text = if (control == Control.AI) "AI 操作中" else "你"
         statusChip.setTextColor(
-            if (control == Control.AI) 0xFFE0A33A.toInt() else 0xFF7EC8A0.toInt(),
+            if (control == Control.AI) palette.aiAccent else palette.accent,
         )
         wv?.url?.let { if (it != addressBar.text) addressBar.text = it }
     }
@@ -967,6 +1140,45 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     // ResizeObserver 负责。
 
     /**
+     * 套用 DSH 当前主题的配色。
+     *
+     * 由 `MainActivity.aiBrowserLayout()` 在每次面板上报矩形时调用（面板插件
+     * 顺路带上了 `dark` / `bg`）。主题没变时**直接返回** —— 这个方法是逐帧
+     * 可能被调的，没必要每帧重设一遍所有子视图的背景。
+     *
+     * @param isDark DSH 是否深色主题。
+     * @param bgHint DSH 报上来的背景色，形如 `rgb(67, 69, 74)` / `#43454A`。可空。
+     */
+    fun applyTheme(isDark: Boolean, bgHint: String) {
+        // `bgHint` 目前只做兜底校验、不参与配色：DSH 的深浅两套色值都是
+        // 固定的，直接各写一套比从背景色反推色阶准确得多（反推出来是灰阶
+        // 偏移，观感差一截）。留着参数是为了将来 DSH 若支持自定义主题色，
+        // 这里可以直接接上，不用再改一遍签名。
+        @Suppress("UNUSED_EXPRESSION") bgHint
+        if (isDark == dark) return
+        dark = isDark
+        palette = if (isDark) DARK_PALETTE else LIGHT_PALETTE
+        applyPalette()
+    }
+
+    /** 把 [palette] 刷到所有已建好的子视图上。 */
+    private fun applyPalette() {
+        setBackgroundColor(palette.root)
+        chromeBar?.setBackgroundColor(palette.bar)
+        tabBar.setBackgroundColor(palette.barAlt)
+        addressBar.setTextColor(palette.text)
+        addressBar.background = rounded(palette.field, 8)
+        statusChip.background = rounded(palette.field, 8)
+        actionPill.setTextColor(palette.pillText)
+        actionPill.background = pillBackground()
+        for (btn in listOf(backBtn, forwardBtn)) btn.setTextColor(palette.text)
+        for (tab in tabs) tab.webView.setBackgroundColor(palette.root)
+        for (tab in tabs) tab.label?.setTextColor(if (tabs.indexOf(tab) == activeIndex) palette.text else palette.textDim)
+        rebuildTabStrip()
+        updateChrome()
+    }
+
+    /**
      * 摆到指定矩形（相对**宿主根布局**的像素）。
      *
      * @param left 左边缘（px，相对根布局）
@@ -1053,7 +1265,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     private fun toolButton(label: String, widthDp: Int = 34, onClick: () -> Unit): TextView =
         TextView(context).apply {
             text = label
-            setTextColor(0xFFDCE6F5.toInt())
+            setTextColor(palette.text)
             textSize = 15f
             gravity = Gravity.CENTER
             isClickable = true

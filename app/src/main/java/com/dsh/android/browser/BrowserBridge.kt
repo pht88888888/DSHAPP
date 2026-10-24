@@ -350,7 +350,7 @@ object BrowserBridge {
                     finish(r)
                 }
             } catch (t: Throwable) {
-                lastView?.hideActionNow()
+                lastView?.hideActionSoon()
                 finish(err("原生异常: ${t.javaClass.simpleName}: ${t.message}"))
             }
         }
@@ -359,7 +359,7 @@ object BrowserBridge {
         if (box[0] == null) {
             // 超时：op 的回调永远不来了，胶囊得由这里收走，
             // 否则它会一直挂在页面上，看起来像 AI 卡死。
-            mainHandler.post { lastView?.hideActionNow() }
+            mainHandler.post { lastView?.hideActionSoon() }
             return err("等待页面响应超时（${OP_TIMEOUT_MS}ms），页面可能正在加载或已崩溃")
         }
         return box[0]!!

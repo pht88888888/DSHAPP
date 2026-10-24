@@ -168,6 +168,37 @@ window.__ModuleLoader__.load({
 				let disposed = false;
 
 				/**
+				 * 读出 DSH 当前主题的配色，交给原生去画浏览器外框。
+				 *
+				 * 为什么从**这里**取而不是原生自己判断：原生那个 WebView 是独立的，
+				 * 它既不知道 DSH 现在是深色还是浅色，也拿不到 DSH 的配色变量。
+				 * 而面板插件正跑在 DSH 页面里，`getComputedStyle` 一问就有。
+				 *
+				 * 取的是 `document.body` 的**计算后**背景色：DSH 的主题就是靠
+				 * `body[data-ds-dark-theme]` 切换的，计算值天然跟着变，不用维护
+				 * 一份色表。深色下实测是 `rgb(67, 69, 74)`，浅色是 `rgb(248, 249, 250)`。
+				 *
+				 * @returns {object} `{ dark, bg, fg, muted }`，取不到的字段不出现。
+				 */
+				const themePayload = () => {
+					try {
+						const dark = !!document.body && document.body.hasAttribute("data-ds-dark-theme");
+						const style = document.body ? getComputedStyle(document.body) : null;
+						const bg = style ? style.backgroundColor : "";
+						const fg = style ? style.color : "";
+						// `rgba(0, 0, 0, 0)` 这种透明背景没有参考价值，丢掉。
+						const solid = (c) => (c && !/rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(c) ? c : "");
+						return {
+							dark,
+							bg: solid(bg),
+							fg: solid(fg),
+						};
+					} catch (error) {
+						return { dark: false };
+					}
+				};
+
+				/**
 				 * 量出占位区域的当前矩形（CSS 视口坐标）。
 				 *
 				 * @returns {string|null} JSON 串；尺寸无效时 null。
@@ -189,6 +220,7 @@ window.__ModuleLoader__.load({
 						h: Math.round(rect.height),
 						vw: Math.round(window.innerWidth),
 						vh: Math.round(window.innerHeight),
+						...themePayload(),
 					});
 				};
 				rectPayloadRef.current = rectPayload;
