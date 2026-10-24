@@ -343,6 +343,10 @@ object BrowserBridge {
                 view.showAction(pill)
                 op(view) { r ->
                     view.hideActionSoon()
+                    // 登录成功后 Cookie 刚写进内存，这时候落盘最稳妥：
+                    // AI 的 click/type 很可能就是提交登录表单，操作一结束
+                    // 就把 Cookie 刷到磁盘，别等 App 被系统杀掉。
+                    runCatching { android.webkit.CookieManager.getInstance().flush() }
                     finish(r)
                 }
             } catch (t: Throwable) {

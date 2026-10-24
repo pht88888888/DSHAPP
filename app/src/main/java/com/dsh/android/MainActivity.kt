@@ -3956,6 +3956,10 @@ class MainActivity : AppCompatActivity() {
             it.destroy()
         }
         aiBrowser = null
+        // destroy() 之后 WebView 就关了，内存里没落盘的 Cookie 会直接丢。
+        // 必须在销毁**之后**再 flush 一次（此时内核已经把最后的 Cookie 写进
+        // CookieManager，正是 flush 的时机）。
+        runCatching { android.webkit.CookieManager.getInstance().flush() }
         // ⚠️ **正常退出标记**：这是区分「崩溃」与「被系统杀掉」的唯一依据。
         //
         // 本 App 的 `targetSdk = 28`，用不了 API 30 的 `ApplicationExitInfo`
@@ -3995,6 +3999,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        // ⚠️ **登录态丢失的关键一处**：WebView 的 Cookie 默认只活在内存里，
+        //    只有 `CookieManager.flush()` 才落盘。而 AJAX 式登录（DeepSeek、
+        //    GitHub 都是）是在 `onPageFinished` **之后**才写 Cookie 的 ——
+        //    那个回调里的 flush 早就跑完了。App 一被系统杀掉，这份 Cookie
+        //    就没了，用户看到的现象正是「刚才明明登录了，重启后又要登录」。
+        //    退到后台是最后一个可靠时机，必须再 flush 一次。
+        //    （放在 isChangingConfigurations 判断之前：转屏也要落盘。）
+        runCatching { android.webkit.CookieManager.getInstance().flush() }
         if (isChangingConfigurations) return
         FloatingBubble.onAppBackground(this)
     }
