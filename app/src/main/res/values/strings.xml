@@ -3,19 +3,19 @@
     <!-- 桌面显示名：只写 DSH。仓库名与宣传文案用 dsh-app —— 「App」是描述词，
          放在仓库/宣传里说明「这是 DSH 的安卓客户端」，不适合当应用名。 -->
     <string name="app_name">DSH</string>
-    <string name="notification_channel_name">引擎运行中</string>
-    <string name="notification_channel_desc">保持本地 AI 引擎在后台运行，并实时显示它当前在做什么</string>
-    <string name="notification_engine_running">DSH 引擎正在运行</string>
+    <string name="notification_channel_name">Engine running</string>
+    <string name="notification_channel_desc">Keeps the local AI engine running in the background and shows its current activity</string>
+    <string name="notification_engine_running">DSH engine is running</string>
     <!-- 页面还没上报状态时（引擎刚起、WebView 未加载完）的兜底文案 -->
-    <string name="notification_idle">空闲</string>
-    <string name="notification_thinking">正在思考</string>
-    <string name="notification_no_content">暂无内容</string>
+    <string name="notification_idle">Idle</string>
+    <string name="notification_thinking">Thinking</string>
+    <string name="notification_no_content">No content yet</string>
 
     <!-- 无线调试配对（Android 11+）。流程与文案参考 Shizuku 的 AdbPairingService。 -->
-    <string name="pairing_channel_name">无线调试配对</string>
-    <string name="pairing_channel_desc">用配对码把本应用的密钥授权给系统 adbd，之后就能免电脑使用特权身份</string>
-    <string name="pairing_title">配对无线调试</string>
-    <string name="pairing_failed_title">配对失败</string>
+    <string name="pairing_channel_name">Wireless debugging pairing</string>
+    <string name="pairing_channel_desc">Authorizes this app\'s key with system adbd so you can use privileged access without a computer</string>
+    <string name="pairing_title">Pair wireless debugging</string>
+    <string name="pairing_failed_title">Pairing failed</string>
     <!--
       点了配对、但还没发现配对端口时的提示。
 
@@ -23,14 +23,14 @@
       翻找那个界面，给一个失败结论只会让人以为要回 App 重按一次 —— 而重按一次
       还是同样的结果，因为端口本来就还没出现。真机反馈过这个来回。
     -->
-    <string name="pairing_waiting_open">请打开「开发者选项 → 无线调试 → 使用配对码配对设备」，并让该界面保持显示。打开后这里会自动出现配对码输入框，不用回来重按。</string>
-    <string name="pairing_waiting">在下面回复系统显示的 6 位配对码</string>
-    <string name="pairing_input_label">配对码</string>
-    <string name="pairing_reply">输入配对码</string>
-    <string name="pairing_working">正在配对…</string>
-    <string name="pairing_ok">配对成功，特权身份已可用</string>
-    <string name="pairing_empty_code">没有收到配对码，请重新输入</string>
-    <string name="pairing_stop">取消</string>
+    <string name="pairing_waiting_open">Open Developer options → Wireless debugging → Pair device with pairing code and keep that screen open. The pairing code field will appear here automatically; you don\'t need to return to the app.</string>
+    <string name="pairing_waiting">Reply below with the 6-digit code shown by the system</string>
+    <string name="pairing_input_label">Pairing code</string>
+    <string name="pairing_reply">Enter pairing code</string>
+    <string name="pairing_working">Pairing…</string>
+    <string name="pairing_ok">Paired. Privileged access is ready</string>
+    <string name="pairing_empty_code">No pairing code received. Please enter it again</string>
+    <string name="pairing_stop">Cancel</string>
     <!--
       配对超时（真机反馈修掉的缺陷）。
 
@@ -38,21 +38,21 @@
       直到系统弹「DSH 没有响应」，永远拿不到结论。这条文案就是那个终态结论，
       必须同时说清「为什么没成」和「下一步做什么」，不能只说「失败」。
     -->
-    <string name="pairing_timeout">配对超过 %1$d 秒仍未完成，已放弃等待。请确认「使用配对码配对设备」界面还开着、配对码没过期，然后再发一次。</string>
+    <string name="pairing_timeout">Pairing did not finish within %1$d seconds. Check that the Pair device with pairing code screen is still open and the code has not expired, then send it again.</string>
     <!--
       配对过程抛出异常时的兜底文案（没有任何可用 message 时用这句）。
 
       ⚠️ 必须有这一条：原实现失败分支直接读 `result.message`，而异常路径里
       `result` 根本不存在 —— 那种写法在真机上会崩，表现正是「通知永远停在正在配对」。
     -->
-    <string name="pairing_failed_generic">配对过程中出错了，没有拿到结果。请重新打开系统里的「使用配对码配对设备」界面，再发一次配对码。</string>
+    <string name="pairing_failed_generic">An error occurred during pairing and no result was received. Reopen Pair device with pairing code in system settings, then send the code again.</string>
     <!--
       进程重启后清理残留配对状态时的提示（真机反馈：App 被 ANR 杀掉重开后，
       通知栏还挂着「正在配对」，而权限其实已经开了）。
     -->
-    <string name="pairing_stale_cleared">上一次配对没有正常结束（多半是配对过程中应用被系统结束），已清理残留状态。请重发一次配对码。</string>
+    <string name="pairing_stale_cleared">The previous pairing did not finish, likely because the system stopped the app. The leftover state has been cleared. Please send a new pairing code.</string>
     <!-- 悬浮气泡收起态的头像（与 App 图标同一个角色）。纯装饰，无障碍描述写清用途即可。 -->
-    <string name="bubble_avatar_desc">DSH 助手头像</string>
+    <string name="bubble_avatar_desc">DSH assistant avatar</string>
 
     <!--
       失败浮层上的「安全模式」按钮。
@@ -60,7 +60,7 @@
       ⚠️ 文案刻意写清「不丢会话」：这一步会推开用户的插件配置（改名备份，不删），
       代价必须让用户看得见才敢点。
     -->
-    <string name="safe_mode_entry">进入安全模式（不改动会话与凭据）</string>
+    <string name="safe_mode_entry">Enter safe mode (keeps sessions and credentials)</string>
 
     <!--
       降级态常驻横幅上的两个按钮（方案 §4.4.5，不变量 I4）。
@@ -68,8 +68,8 @@
       「退出」做的是把层级复位成 NORMAL 并重启（不是删数据）；「详情」把
       state.json 里的原因摆出来给用户看。两个都刻意短 —— 横幅上横向放得下。
     -->
-    <string name="rescue_banner_exit">退出并重试</string>
-    <string name="rescue_banner_detail">上次为什么失败</string>
+    <string name="rescue_banner_exit">Exit and retry</string>
+    <string name="rescue_banner_detail">Why it failed</string>
 
     <!--
       启动层上的「导出数据」「导入数据」按钮。
@@ -83,23 +83,23 @@
       与「查看日志」同一套理由（见 overlayLogs 的注释），但更重要：
       日志只是诊断，数据是用户真正在乎的东西。
     -->
-    <string name="overlay_export_entry">导出数据</string>
+    <string name="overlay_export_entry">Export data</string>
     <!-- AI 浏览器（临时测试入口；跑通后移到侧栏） -->
-    <string name="overlay_browser_entry">AI 浏览器</string>
-    <string name="overlay_import_entry">导入数据</string>
+    <string name="overlay_browser_entry">AI browser</string>
+    <string name="overlay_import_entry">Import data</string>
 
     <!-- 导出/导入对话框 -->
-    <string name="backup_export_title">导出数据</string>
-    <string name="backup_export_hint">勾选要导出的内容。不含引擎本身（重装时会自动解包）。</string>
-    <string name="backup_import_title">导入数据</string>
-    <string name="backup_import_hint">选择一份备份，勾选要恢复的内容。恢复前会自动备份现有数据。</string>
-    <string name="backup_import_pick">选择备份文件…</string>
-    <string name="backup_import_empty">没有找到备份。请先把 dsh-backup-*.zip 放到手机的「下载」目录。</string>
-    <string name="backup_do_export">导出到手机</string>
-    <string name="backup_do_import">开始恢复</string>
-    <string name="backup_cancel">取消</string>
-    <string name="backup_working">处理中…</string>
-    <string name="backup_risky_hint">含明文密钥，导出后任何 App 都能读取</string>
+    <string name="backup_export_title">Export data</string>
+    <string name="backup_export_hint">Select what to export. The engine is excluded; it will be unpacked again on reinstall.</string>
+    <string name="backup_import_title">Import data</string>
+    <string name="backup_import_hint">Choose a backup and select what to restore. Existing data will be backed up first.</string>
+    <string name="backup_import_pick">Choose backup file…</string>
+    <string name="backup_import_empty">No backups found. Place a dsh-backup-*.zip file in your phone\'s Downloads folder first.</string>
+    <string name="backup_do_export">Export to phone</string>
+    <string name="backup_do_import">Restore</string>
+    <string name="backup_cancel">Cancel</string>
+    <string name="backup_working">Working…</string>
+    <string name="backup_risky_hint">Contains unencrypted keys that any app can read after export</string>
 
     <!--
       Shizuku 相关文案（设置页「特权权限」分节）。
@@ -109,7 +109,7 @@
       及以下（没有无线调试，且每次重启都要电脑再跑一次 `adb tcpip 5555`）的用户，
       这往往是唯一可行的路。
     -->
-    <string name="shizuku_need_service">Shizuku 服务没有运行，无法弹出授权界面。请先打开 Shizuku 应用并启动服务，再回来点「授权」。</string>
+    <string name="shizuku_need_service">Shizuku is not running, so authorization cannot open. Start the service in the Shizuku app, then return and tap Authorize.</string>
 
     <!--
       键盘哨兵（无障碍服务）。
@@ -119,6 +119,6 @@
       所以两段文案都必须讲清「为什么需要」和「不会看什么」，不能只写一句
       「提升体验」。这是权限申请，不是文案装饰。
     -->
-    <string name="bubble_a11y_label">DSH 键盘哨兵</string>
-    <string name="bubble_a11y_desc">让后台运行的悬浮球知道输入法是否弹出、弹多高，从而自动避让键盘。只读取窗口位置与尺寸，不读取任何窗口内容、不记录按键或输入的文字。</string>
+    <string name="bubble_a11y_label">DSH keyboard monitor</string>
+    <string name="bubble_a11y_desc">Lets the background floating bubble detect when the keyboard appears and how tall it is, so it can move out of the way. Only reads window positions and sizes. Does not read window content or record keystrokes or typed text.</string>
 </resources>

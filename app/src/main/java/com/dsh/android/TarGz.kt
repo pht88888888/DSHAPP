@@ -44,7 +44,7 @@ internal object TarGz {
                 if (!target.canonicalPath.startsWith(destDir.canonicalPath + java.io.File.separator) &&
                     target.canonicalPath != destDir.canonicalPath
                 ) {
-                    throw java.io.IOException("tar 条目越界: $fullName")
+                    throw java.io.IOException(DshApplication.instance.getString(R.string.archive_entry_outside, fullName))
                 }
 
                 when (typeFlag) {
@@ -59,7 +59,7 @@ internal object TarGz {
                             while (remaining > 0) {
                                 val want = minOf(remaining, buf.size.toLong()).toInt()
                                 val read = stream.read(buf, 0, want)
-                                if (read <= 0) throw java.io.IOException("tar 数据截断: $fullName")
+                                if (read <= 0) throw java.io.IOException(DshApplication.instance.getString(R.string.archive_data_truncated, fullName))
                                 out.write(buf, 0, read)
                                 remaining -= read
                                 written += read
@@ -90,7 +90,7 @@ internal object TarGz {
             off += n
         }
         if (off == 0) return false
-        if (off < buf.size) throw java.io.IOException("tar 头部被截断：只读到 $off/${buf.size} 字节")
+        if (off < buf.size) throw java.io.IOException(DshApplication.instance.getString(R.string.archive_header_truncated, off, buf.size))
         return true
     }
 

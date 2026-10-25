@@ -1,5 +1,6 @@
 package com.dsh.android.backup
 
+import com.dsh.android.R
 import android.content.Context
 import android.util.Log
 import com.dsh.android.DshApplication
@@ -74,15 +75,15 @@ object UserDataExporter {
 
     /** 全部可导出项。**顺序即界面顺序**。 */
     val ITEMS: List<Item> = listOf(
-        Item("sessions", "对话记录", DshApplication.DSH_HOME_REL + "/sessions"),
-        Item("profiles", "配置与插件", DshApplication.DSH_HOME_REL + "/profiles"),
-        Item("storages", "引擎数据", DshApplication.DSH_HOME_REL + "/storages"),
-        Item("skills", "技能", DshApplication.DSH_HOME_REL + "/skills"),
-        Item("deskpet", "桌面宠物", DshApplication.DSH_HOME_REL + "/deskpet"),
-        Item("workspace", "工作区文件", "workspace"),
+        Item("sessions", DshApplication.instance.getString(R.string.backup_sessions), DshApplication.DSH_HOME_REL + "/sessions"),
+        Item("profiles", DshApplication.instance.getString(R.string.backup_profiles), DshApplication.DSH_HOME_REL + "/profiles"),
+        Item("storages", DshApplication.instance.getString(R.string.backup_storages), DshApplication.DSH_HOME_REL + "/storages"),
+        Item("skills", DshApplication.instance.getString(R.string.backup_skills), DshApplication.DSH_HOME_REL + "/skills"),
+        Item("deskpet", DshApplication.instance.getString(R.string.backup_desktop_pet), DshApplication.DSH_HOME_REL + "/deskpet"),
+        Item("workspace", DshApplication.instance.getString(R.string.backup_workspace), "workspace"),
         // ⚠️ 凭据是明文 API key，落到 /sdcard/Download 后任何 App 都能读。
         //   默认**不勾**，由用户自己决定（见 ExportOptions）。
-        Item("credentials", "API 密钥", DshApplication.DSH_HOME_REL + "/.credentials.yaml", risky = true),
+        Item("credentials", DshApplication.instance.getString(R.string.backup_api_keys), DshApplication.DSH_HOME_REL + "/.credentials.yaml", risky = true),
     )
 
     /** 用户勾了哪些。 */

@@ -1,5 +1,6 @@
 package com.dsh.android.web
 
+import com.dsh.android.R
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
@@ -114,7 +115,7 @@ class GeckoWebHost(
      */
     override val engineMajor: Int = GECKO_MAJOR
 
-    override val engineLabel: String = "GeckoView $GECKO_VERSION（内置）"
+    override val engineLabel: String = context.getString(R.string.web_engine_builtin, GECKO_VERSION)
 
     init {
         geckoView.setBackgroundColor(Color.parseColor("#0F1115"))

@@ -6,6 +6,10 @@
 
 ---
 
+## Language
+
+English is the default. Chinese is shown on devices using a Chinese (`zh*`) locale.
+
 ## What is this
 
 DSH for Android brings the [DSH](https://github.com/deepseek-ai) (DeepSeek Harness)

@@ -14,6 +14,8 @@ package com.dsh.android.log
 //
 //   `DshLog` 的方法签名与 `android.util.Log` 逐一对应，所以调用点一个字符都不用改。
 import com.dsh.android.log.DshLog as Log
+import android.content.Context
+import com.dsh.android.R
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -131,6 +133,17 @@ object RescueBoot {
         /** L3 安全模式：推开一切 + 重解包。 */
         SAFE_MODE("safemode", "安全模式"),
         ;
+
+        /** Localized UI label; keep label unchanged for diagnostics and tool replies. */
+        fun displayLabel(context: Context): String = context.getString(
+            when (this) {
+                NORMAL -> R.string.rescue_tier_normal
+                ISOLATED -> R.string.rescue_tier_isolated
+                QUARANTINED -> R.string.rescue_tier_quarantined
+                RESCUE -> R.string.rescue_tier_rescue
+                SAFE_MODE -> R.string.rescue_tier_safe_mode
+            }
+        )
 
         companion object {
             /** 从持久化的 id 还原；不认识的值退回 [NORMAL]（**不抛异常**）。 */

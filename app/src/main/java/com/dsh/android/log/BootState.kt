@@ -1,8 +1,10 @@
 package com.dsh.android.log
 
+import android.content.Context
 import android.os.Build
 import android.util.Log as AndroidLog
 import com.dsh.android.BuildConfig
+import com.dsh.android.R
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -373,6 +375,14 @@ object BootState {
 
         /** 连续非正常结束已达阈值 —— 界面该明确提示。 */
         val unstable: Boolean get() = unclean && consecutiveUncleanCount >= UNSTABLE_THRESHOLD
+
+        /** Localized UI summary; describe() retains the diagnostic wording. */
+        fun describe(context: Context): String = when {
+            !known -> context.getString(R.string.boot_history_first)
+            clean -> context.getString(R.string.boot_history_clean, fmt.format(Date(startedAt)))
+            unstable -> context.getString(R.string.boot_history_unstable, consecutiveUncleanCount)
+            else -> context.getString(R.string.boot_history_unclean, fmt.format(Date(startedAt)))
+        }
 
         /** 给界面的一句话（中文）。 */
         fun describe(): String = when {

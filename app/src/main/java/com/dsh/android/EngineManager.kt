@@ -327,13 +327,13 @@ class EngineManager private constructor(private val context: Context) {
 
             engineDir.deleteRecursively()
             if (!staging.renameTo(engineDir)) {
-                throw java.io.IOException("无法将解包目录重命名为 $engineDir")
+                throw java.io.IOException(context.getString(R.string.engine_unpack_rename_failed, engineDir))
             }
             _state.value = State.Extracting(100)
             Log.i(TAG, "引擎资产解包完成：${engineDir.absolutePath}")
         } catch (t: Throwable) {
             staging.deleteRecursively()
-            _state.value = State.Failed("引擎解包失败: ${t.message}")
+            _state.value = State.Failed(context.getString(R.string.engine_unpack_failed, t.message))
             throw t
         }
     }
@@ -6935,7 +6935,7 @@ class EngineManager private constructor(private val context: Context) {
         // 真机实测：正常态体检耗时 0.7~0.8 秒，对 7~10 秒的启动时间可忽略。
         if (!bootstrap.installNodeRuntime()) {
             _state.value = State.Failed(
-                "Termux 环境未就绪，无法启动引擎。\n" +
+                context.getString(R.string.engine_termux_not_ready) +
                     "prefix=${bootstrap.prefixDir.absolutePath}\n" +
                     "node=${bootstrap.nodeBinary.absolutePath}"
             )
@@ -6944,7 +6944,7 @@ class EngineManager private constructor(private val context: Context) {
 
         val nodeBin = bootstrap.nodeBinary
         if (!nodeBin.isFile) {
-            _state.value = State.Failed("找不到 Node 可执行文件: ${nodeBin.absolutePath}")
+            _state.value = State.Failed(context.getString(R.string.engine_node_missing, nodeBin.absolutePath))
             return@withContext
         }
 
@@ -7253,7 +7253,7 @@ class EngineManager private constructor(private val context: Context) {
 
         val binJs = File(engineDir, "node_modules/@deepseek-ai/dsh/lib/bin.js")
         if (!binJs.isFile) {
-            _state.value = State.Failed("找不到引擎入口: ${binJs.absolutePath}")
+            _state.value = State.Failed(context.getString(R.string.engine_entry_missing, binJs.absolutePath))
             return@withContext
         }
 
@@ -7462,7 +7462,7 @@ class EngineManager private constructor(private val context: Context) {
         val proc = try {
             pb.start()
         } catch (t: Throwable) {
-            _state.value = State.Failed("引擎进程启动失败: ${t.message}")
+            _state.value = State.Failed(context.getString(R.string.engine_process_start_failed, t.message))
             return@withContext
         }
         process = proc
@@ -7797,7 +7797,12 @@ class EngineManager private constructor(private val context: Context) {
                 exitCode = runCatching { proc.exitValue() }.getOrNull(),
                 tailLines = tailList,
             )
-            _state.value = State.Failed("引擎启动失败（$reason）。最后输出:\n$tail")
+            val displayReason = if (waited >= READY_TIMEOUT_MS) {
+                context.getString(R.string.engine_wait_timed_out, waited / 1000)
+            } else {
+                context.getString(R.string.engine_exited_before_url, waited)
+            }
+            _state.value = State.Failed(context.getString(R.string.engine_start_failed_detail, displayReason, tail))
             // ⚠️ **P0：把「真实启动失败」变成可读的状态**（见 RescueBoot 的类注释）。
             //
             // 这里传的是**真实启动**的 stdout 尾部 —— 这一点是整个修复的要害：
@@ -7980,7 +7985,10 @@ class EngineManager private constructor(private val context: Context) {
         //   `expected = false`：不是我们主动停的。
         CrashRecorder.recordEngineExit(code, expected = false, detail = detail)
         EventLog.record("engine.exit", mapOf("code" to (code?.toString() ?: "?"), "wasReady" to "true"))
-        _state.value = State.Dead(detail)
+        _state.value = State.Dead(
+            if (code != null) context.getString(R.string.engine_exit_code, code)
+            else context.getString(R.string.engine_exited)
+        )
     }
 
     fun isRunning(): Boolean = process?.isAlive == true
@@ -8000,7 +8008,7 @@ class EngineManager private constructor(private val context: Context) {
         if (!adbHome.isDirectory) {
             return WirelessDebugging.Result(
                 false,
-                "内置 adb 工具链未就绪（$ADB_WIRELESS_DIR 不存在），无线调试不可用。",
+                context.getString(R.string.adb_toolchain_missing, ADB_WIRELESS_DIR),
             )
         }
         val result = WirelessDebugging.pair(
@@ -8046,7 +8054,7 @@ class EngineManager private constructor(private val context: Context) {
                 //   这里用新端口补切成功，那句话此刻已经不成立。不改的话通知栏会告诉
                 //   用户「请去设置页点『切到固定端口』重试」—— 而实际上什么都不用做，
                 //   用户白跑一趟还会以为修复没生效。
-                return result.copy(message = "配对成功，并已切到固定端口 5555 —— 现在关掉无线调试、关掉 Wi-Fi 都不影响特权通道。")
+                return result.copy(message = context.getString(R.string.adb_paired_fixed_port))
             }
             Log.w(TAG, "配对成功但补切固定端口失败: ${switched.message}")
         }
@@ -8068,7 +8076,7 @@ class EngineManager private constructor(private val context: Context) {
         if (!adbHome.isDirectory) {
             return WirelessDebugging.Result(
                 false,
-                "内置 adb 工具链未就绪（$ADB_WIRELESS_DIR 不存在），无线调试不可用。",
+                context.getString(R.string.adb_toolchain_missing, ADB_WIRELESS_DIR),
             )
         }
         return WirelessDebugging.switchToTcp(

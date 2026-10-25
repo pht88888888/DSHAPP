@@ -46,7 +46,7 @@ internal object ShellPrivilege {
         val via: String?,
     ) {
         companion object {
-            val NONE = Status(false, "未接入特殊权限", null)
+            val NONE = Status(false, DshApplication.instance.getString(R.string.privilege_not_connected), null)
         }
     }
 
@@ -68,9 +68,9 @@ internal object ShellPrivilege {
                 if (granted) {
                     return Status(true, null, "shizuku")
                 }
-                return Status(false, "Shizuku 已启动但未授权，去「设置 → 特权权限」点授权", null)
+                return Status(false, context.getString(R.string.privilege_shizuku_authorize), null)
             }
-            return Status(false, "Shizuku 装了但服务没启动，去「设置 → 特权权限」启动它", null)
+            return Status(false, context.getString(R.string.privilege_shizuku_start), null)
         }
 
         // ── root 兜底 ──────────────────────────────────────────────────
@@ -84,7 +84,7 @@ internal object ShellPrivilege {
 
         return Status(
             false,
-            "需要 Shizuku 或 root 才能读取键盘状态（普通应用拿不到 DUMP 权限）",
+            context.getString(R.string.privilege_keyboard_unavailable),
             null,
         )
     }
