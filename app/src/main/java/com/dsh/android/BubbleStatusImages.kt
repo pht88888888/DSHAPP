@@ -64,6 +64,18 @@ object BubbleStatusImages {
     const val MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
     /**
+     * 允许入库的最大像素数（宽×高）。
+     *
+     * ⚠️ 与 [MAX_IMAGE_BYTES] 是**两个不同的闸**：前者限压缩后字节数（传输体积），
+     *   这里限解码后像素数（内存）。两者缺一不可 ——
+     *   一个 3 MB 的高压缩 PNG 可以轻易超过 6000×6000。
+     *
+     * 取 16 MP ≈ 4096×4096：状态图显示尺寸通常不到 200 dp，16 MP 已经远超需要；
+     * 而 ARGB_8888 下 16 MP 占 64 MB，是「还能解、但再大就该拒」的边界。
+     */
+    private const val MAX_DECODE_PIXELS = 16_000_000L
+
+    /**
      * 磁盘上保留的图片数量上限。
      *
      * ⚠️ 这个上限**不是**「配置里能配几张」，而是"垃圾桶别长满"：AI 反复试错会
@@ -107,8 +119,31 @@ object BubbleStatusImages {
             Log.w(TAG, "状态图过大（${bytes.size} > $MAX_IMAGE_BYTES），已放弃")
             return null
         }
-        if (BitmapFactory.decodeByteArray(bytes, 0, bytes.size) == null) {
-            Log.w(TAG, "状态图不是有效图片，已忽略")
+        // ⚠️ **只解边界，不解像素。**
+        //
+        //   原来这里用 `decodeByteArray(bytes, …)` 全尺寸解码，只为判断「是不是
+        //   有效图片」。而 MAX_IMAGE_BYTES = 3 MB 限的是**压缩后**大小 ——
+        //   一张 3 MB 的 PNG 完全可能是 8000×8000，解成 ARGB_8888 就是
+        //   8000 × 8000 × 4 = **256 MB**，低内存机必然 OOM。
+        //
+        //   而这次解码的唯一目的是校验，像素一个都用不到。`inJustDecodeBounds`
+        //   只读文件头填 outWidth/outHeight，**不分配像素内存**，
+        //   判断「是不是图片 / 能不能解出来」的效果完全一样，
+        //   代价从几百 MB 降到零。这与本文件 [load] 的实现保持一致。
+        val probe = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, probe)
+        if (probe.outWidth <= 0 || probe.outHeight <= 0) {
+            Log.w(TAG, "状态图不是有效图片（解不出尺寸），已忽略")
+            return null
+        }
+        // 顺带挡住「能解出尺寸但大到离谱」的图 —— 显示时也必然 OOM。
+        // 与 [load] 里 inSampleSize 的判据同源，但这里直接拒绝入库。
+        if (probe.outWidth.toLong() * probe.outHeight > MAX_DECODE_PIXELS) {
+            Log.w(
+                TAG,
+                "状态图尺寸过大（${probe.outWidth}x${probe.outHeight} > " +
+                    "$MAX_DECODE_PIXELS 像素），已放弃",
+            )
             return null
         }
         val ext = extensionOf(bytes)
