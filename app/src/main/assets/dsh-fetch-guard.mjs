@@ -17,10 +17,13 @@
  *
  * ## 为什么它必须在这一层修
  *
- * 全链路只有两处会把 header 交给 undici：
- *   ① 引擎自己 `new Headers(...)`（`dsh-llm-pi-ai` 的 `discoverModels`）；
- *   ② 各家 SDK 内部的 `fetch`（pi-ai 走 `new OpenAI({ defaultHeaders })`）。
- * 两处最终都落在**同一个全局对象**上。在这里兜一层，等于覆盖了所有未来新增的
+ * header 交给 undici 的入口有**三个**，全部要在这一层堵上：
+ *   ① `new Headers(...)` —— 引擎自己显式构造（如 `dsh-llm-pi-ai` 的 `discoverModels`）；
+ *   ② `new Request(url, { headers })` —— **构造时就校验**，早于任何 `fetch`，
+ *      只包 fetch 根本拦不住（SDK 里 `new Request` → `fetch(request)` 很常见）；
+ *   ③ `fetch(url, { headers })` —— SDK 直接传普通对象
+ *      （pi-ai 走 `new OpenAI({ defaultHeaders })` 就是这条）。
+ * 三者最终都落在**同一个全局对象**上。在这里兜一层，等于覆盖了所有未来新增的
  * 调用方 —— 比逐个 patch 上游包更稳，也不会被引擎升级冲掉。
  *
  * ## 为什么不「直接抛个更友好的错」
@@ -175,6 +178,32 @@ export function install() {
   GuardedHeaders.__dshGuarded = true
   globalThis.Headers = GuardedHeaders
 
+  // ── Request 兜底 ──
+  //
+  // ⚠️ **这一层不能省**（2026-10-26 实测发现的缺口）：
+  // `new Request(url, { headers: { 'x-foo': '中文' } })` 在**构造时**就把 headers
+  // 交给 undici 校验，抛错发生在 `fetch` 之前 —— 只包装 `Headers` 和 `fetch`
+  // 根本拦不住它。而 SDK 里 `new Request(...)` 再 `fetch(request)` 是常见写法。
+  //
+  // 实测（未装本层时）：`new Request('http://x/', { headers: { 'x-test': 'a'*21+'樱' } })`
+  // 直接抛与用户截图完全相同的 `Cannot convert argument to a ByteString ...`。
+  const NativeRequest = globalThis.Request
+  if (typeof NativeRequest === 'function' && NativeRequest.__dshGuarded !== true) {
+    const GuardedRequest = class Request extends NativeRequest {
+      constructor(input, init) {
+        // 只碰 `init.headers`；`input` 是 URL 字符串或另一个 Request，
+        // 后者内部已是合法 Headers（非法的话它自己构造时就抛了）。
+        if (init !== undefined && init !== null && init.headers !== undefined) {
+          init = { ...init, headers: guardInit(init.headers, 'Request 构造') }
+        }
+        super(input, init)
+      }
+    }
+    Object.defineProperty(GuardedRequest, 'name', { value: 'Request', configurable: true })
+    GuardedRequest.__dshGuarded = true
+    globalThis.Request = GuardedRequest
+  }
+
   // ── fetch 兜底 ──
   //
   // 包装 `Headers` 能覆盖「用 new Headers 构造」的路径，但 SDK 里还有直接
@@ -186,9 +215,8 @@ export function install() {
       if (init !== undefined && init !== null && init.headers !== undefined) {
         init = { ...init, headers: guardInit(init.headers, 'fetch') }
       }
-      // `fetch(request)` 形式：Request 内部持有的是原生 Headers，
-      // 构造 Request 时若值非法早就抛了；能走到这里说明它已经合法，
-      // 故不再拆包重建（重建会丢掉 signal / body 等状态）。
+      // `fetch(request)` 形式：Request 在本层装好后已被 GuardedRequest 净化过，
+      // 能走到这里说明 headers 已合法。不拆包重建 —— 重建会丢掉 body 流状态。
       return nativeFetch.call(this, input, init)
     }
     guardedFetch.__dshGuarded = true

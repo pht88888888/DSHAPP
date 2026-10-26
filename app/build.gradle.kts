@@ -90,7 +90,13 @@ android {
         //   并把「哪个 header、第几位、原值、净化后」写进 engine.log。
         //   合法输入走原生快速路径，零开销、零改写。
         //   见 `EngineManager.ensureFetchGuard` 与 `nodeOptions`。
-        versionCode = 67
+        //   v68：补上一个**漏网入口** —— `new Request(url, { headers })` 在
+        //        **构造时**就把 headers 交给 undici 校验，抛错发生在 `fetch`
+        //        之前，只包 `Headers` + `fetch` 根本拦不住它（实测确认：垫片
+        //        装好后 `new Request` 仍抛与用户截图一模一样的错）。
+        //        SDK 里 `new Request(...)` → `fetch(request)` 是常见写法。
+        //        现在三个入口（Headers / Request / fetch）全部覆盖。
+        versionCode = 68
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
