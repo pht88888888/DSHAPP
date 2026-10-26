@@ -104,6 +104,22 @@ object ShizukuChannel {
      */
     private const val MAX_FRAME = 32 * 1024 * 1024
 
+    /**
+     * 单次命令最多捕获多少字节的 stdout / stderr。
+     *
+     * ⚠️ 取值要考虑**下游的内存放大**，不只是「看起来够大」：
+     *   捕获的字节 → Base64（×1.33）→ 拼进 JSON 字符串（再×1~2）→ 跨桥传给页面。
+     *   所以 1 MB 的原始输出在下游大约占 3~5 MB。
+     *
+     * 取 1 MB：`ps -A`、`df`、`ls -R` 这类日常命令的输出通常只有几十 KB，
+     * 1 MB 对它们绰绰有余；而真要读大文件，正确做法是让命令自己截断
+     * （`head`/`tail`）或用 paging —— 不是让这条通道无限吃内存。
+     *
+     * ⚠️ 必须小于 [MAX_FRAME]：否则输出还没到对端就被帧长校验拒掉，
+     *   用户会看到「帧过大」这种与真实原因无关的报错。
+     */
+    private const val MAX_CAPTURE_BYTES = 1024 * 1024
+
     @Volatile private var server: LocalServerSocket? = null
     private val running = AtomicBoolean(false)
 
@@ -355,11 +371,23 @@ object ShizukuChannel {
             // ⚠️ 再包一层 `runCatching`：`thread {}` 里抛出的异常**没有 catch 出口**，
             //    会走线程默认处理器把整个进程带走。上面那个数组长度写错就是活例。
             //    这里多兜一层，代价是零，换来的是「读输出出岔子最多让这条命令失败」。
+            // ⚠️ 输出**必须限长**（见 drain 的 KDoc）：这条通道执行的是任意命令，
+            //   `cat` 大文件 / `logcat -d` 的输出能把堆撑爆，而这里在子线程上，
+            //   OOM 没有 catch 出口，会直接把整个进程带走。
+            val truncBox = java.util.concurrent.atomic.AtomicBoolean(false)
             val t1 = thread(isDaemon = true) {
-                runCatching { outBox[0] = drain(proc.inputStream) }
+                runCatching {
+                    val (bytes, cut) = drain(proc.inputStream)
+                    outBox[0] = bytes
+                    if (cut) truncBox.set(true)
+                }
             }
             val t2 = thread(isDaemon = true) {
-                runCatching { errBox[0] = drain(proc.errorStream) }
+                runCatching {
+                    val (bytes, cut) = drain(proc.errorStream)
+                    errBox[0] = bytes
+                    if (cut) truncBox.set(true)
+                }
             }
             val code = try {
                 proc.waitFor()
@@ -374,6 +402,10 @@ object ShizukuChannel {
                 .put("exitCode", code)
                 .put("stdout", b64(outBox[0] ?: ByteArray(0)))
                 .put("stderr", b64(errBox[0] ?: ByteArray(0)))
+                // ⚠️ **必须把截断事实告诉调用方。** 不然模型会拿着半截输出
+                //   当成完整结果去下结论，那比直接报错更难查。
+                .put("truncated", truncBox.get())
+                .put("captureLimitBytes", MAX_CAPTURE_BYTES)
                 .toString()
         } catch (t: Throwable) {
             runCatching { proc.destroy() }
@@ -381,13 +413,54 @@ object ShizukuChannel {
         }
     }
 
-    /** 读干一个 [ParcelFileDescriptor]，并关掉它（不关会泄漏 fd）。 */
-    private fun drain(pfd: ParcelFileDescriptor?): ByteArray {
-        if (pfd == null) return ByteArray(0)
+    /**
+     * 读干一个 [ParcelFileDescriptor]，并关掉它（不关会泄漏 fd）。
+     *
+     * ⚠️ **必须限长读取，不能用 `readBytes()`。**
+     *
+     * 这条通道跑的是**用户/AI 给的任意 shell 命令**，输出体量完全不受控：
+     * `cat` 一个大文件、`logcat -d`、`find /`、`dumpsys` 都是几 MB 到几十 MB。
+     * 而 `readBytes()` 是「一直读到一个字节都没有为止」，全塞进堆里；
+     * 之后还要 Base64（+33%）再拼进 JSON 字符串（再翻一倍）——
+     * 一个 20 MB 的输出能让峰值内存冲到 50 MB 以上，低内存机上直接 OOM。
+     *
+     * 更糟的是它跑在 `thread {}` 里：子线程的 OOM 没有 catch 出口，
+     * 会把**整个进程**带走（本文件上面那段 ArrayIndexOutOfBounds 的注释
+     * 就是同一个机制的真机教训）。
+     *
+     * 所以改成限长读取：最多 [MAX_CAPTURE_BYTES]，超了就截断并**明确标记**。
+     * 调用方（工具层）需要知道「这不是全部输出」，否则会拿着半截输出
+     * 得出错误结论 —— 那比报错更难查。
+     *
+     * @return (已读字节, 是否被截断)
+     */
+    private fun drain(pfd: ParcelFileDescriptor?): Pair<ByteArray, Boolean> {
+        if (pfd == null) return ByteArray(0) to false
         return try {
-            FileInputStream(pfd.fileDescriptor).use { it.readBytes() }
+            FileInputStream(pfd.fileDescriptor).use { it ->
+                val buf = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                var truncated = false
+                while (true) {
+                    // 多读 1 字节用于判断「是否还有剩余」，避免多截一段再猜
+                    val room = MAX_CAPTURE_BYTES - buf.size()
+                    if (room <= 0) {
+                        truncated = it.read() >= 0
+                        break
+                    }
+                    val n = it.read(chunk, 0, minOf(chunk.size, room + 1))
+                    if (n <= 0) break
+                    if (n > room) {
+                        buf.write(chunk, 0, room)
+                        truncated = true
+                        break
+                    }
+                    buf.write(chunk, 0, n)
+                }
+                buf.toByteArray() to truncated
+            }
         } catch (t: Throwable) {
-            ByteArray(0)
+            ByteArray(0) to false
         } finally {
             runCatching { pfd.close() }
         }

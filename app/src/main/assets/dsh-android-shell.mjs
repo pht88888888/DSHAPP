@@ -1322,9 +1322,13 @@ const SHIZUKU_MAX_FRAME = 32 * 1024 * 1024;
  *
  * @param {string} command 要执行的命令（已含 `withCwd` 的包装）。
  * @param {string|undefined} workdir 工作目录，`newProcess` 的第三个参数。
- * @returns {Promise<{stdout: string, stderr: string, code: number}|null>}
+ * @returns {Promise<{stdout: string, stderr: string, code: number, truncated: boolean}|null>}
  *   成功给结果；**任何失败都给 `null`**，由调用方继续往下回落 ——
  *   这条通道的失败不该让整条链断掉（与 legacy 通道的写法一致）。
+ *
+ *   ⚠️ `truncated` 为 true 表示原生侧因超出 `MAX_CAPTURE_BYTES` 截断了输出。
+ *   调用方**必须**把它透给模型（同时已写一行 stderr 提示），
+ *   否则模型会拿半截输出当完整结果下结论。
  */
 function runViaShizuku(command, workdir) {
   return new Promise((resolve) => {
@@ -1384,10 +1388,23 @@ function runViaShizuku(command, workdir) {
         );
         return done(null);
       }
+      // ⚠️ 截断标记必须往下传，不能在这里丢掉。
+      //   原生侧对输出做了限长（见 ShizukuChannel.MAX_CAPTURE_BYTES），
+      //   超限时 `truncated: true`。若这里悄悄丢弃，模型会拿半截输出当完整结果
+      //   去下结论（"文件里只有这些行"），比直接报错难查得多。
+      const truncated = res.truncated === true;
+      const limit = typeof res.captureLimitBytes === 'number' ? res.captureLimitBytes : 0;
+      if (truncated) {
+        process.stderr.write(
+          `${TAG} 命令输出超过 ${limit} 字节上限，已截断；` +
+            '需要完整内容请用 head/tail/分页读取\n'
+        );
+      }
       done({
         stdout: Buffer.from(res.stdout ?? '', 'base64').toString('utf8'),
         stderr: Buffer.from(res.stderr ?? '', 'base64').toString('utf8'),
         code: typeof res.exitCode === 'number' ? res.exitCode : 0,
+        truncated,
       });
     });
 
