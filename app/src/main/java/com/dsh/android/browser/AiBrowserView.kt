@@ -1640,12 +1640,32 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
 
     /** 兜底：拿不到窗口像素时，至少把 View 内容画出来。 */
     private fun fallbackDraw(wv: WebView, onBitmap: (Bitmap?) -> Unit) {
+        /*
+         * ⚠️ `bmp` 提到 try 外面，异常路径必须回收它。
+         *
+         * 这张图是**按 WebView 尺寸全尺寸分配**的（1080×2400 × 4B = 10.4 MB）。
+         * 原来的写法把 `createBitmap` 和 `wv.draw()` 放在同一个 try 里，
+         * 而 `wv.draw()` 是可能抛的 —— WebView 已销毁、尺寸为 0、
+         * 渲染层正在重建，都会走到 catch。
+         *
+         * 那一刻 `bmp` 已经分配好了，但 catch 只调 `onBitmap(null)`，
+         * **这 10.4 MB 就漏掉了**。而截图（尤其"标注"入口）是会被反复触发的操作，
+         * 连点几次就是把堆顶穿。
+         *
+         * 对比同文件里 PixelCopy 主路径：它在失败分支明确写了 `bmp.recycle()`，
+         * 说明这个规矩本来是清楚的，只是兜底路径漏了。
+         */
+        var bmp: Bitmap? = null
         try {
-            val bmp = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
-            wv.draw(Canvas(bmp))
-            onBitmap(bmp)
+            val created = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
+            bmp = created
+            wv.draw(Canvas(created))
+            // 成功路径：所有权交给调用方，这里不能回收。
+            bmp = null
+            onBitmap(created)
         } catch (t: Throwable) {
             Log.w(TAG, "截图失败: ${t.message}")
+            bmp?.recycle()
             onBitmap(null)
         }
     }

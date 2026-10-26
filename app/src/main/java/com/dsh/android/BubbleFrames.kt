@@ -343,8 +343,28 @@ object BubbleFrames {
                     null
                 } else {
                     val cut = slice(full, index, sprite.first, sprite.second)
-                    // slice 在越界/非法时原样返回 src，此时不能回收它。
-                    if (cut != null && cut !== full) full.recycle()
+                    /*
+                     * ⚠️ **`cut == null` 时也必须回收 `full`。**
+                     *
+                     * 原来的写法是 `if (cut != null && cut !== full) full.recycle()`，
+                     * 只覆盖了「切成功」和「返回原图」两种情况。而 `slice` 内部
+                     * 还有一条 `catch (t: Throwable) → return null` 的路径
+                     * （切片失败，典型原因正是 OOM —— `createBitmap` 要再分配一块
+                     * 单格位图）：
+                     *
+                     *   · cut == null  → 条件为假 → **整张精灵图不会被回收**；
+                     *   · 而精灵图是整张图，1024² = 4 MB、2048² = 16 MB；
+                     *   · `loadFrame` 是**逐帧调用**的，动画一播每帧漏一次。
+                     *
+                     * 也就是说最该省内存的那一刻（已经 OOM 了）反而漏掉最大的一块，
+                     * 接下来必然连续 OOM —— 表现为「精灵图动画播几下就崩」。
+                     *
+                     * 改成 `if (cut !== full)`：它同时覆盖了两种要回收的情况 ——
+                     *   · cut == null（切片失败，full 是唯一持有者）；
+                     *   · cut 是新位图（切成功，full 已经没人要了）。
+                     * 唯一不回收的是 `cut === full`（原图原样返回，回收它就是毁掉底图）。
+                     */
+                    if (cut !== full) full.recycle()
                     cut
                 }
             }
