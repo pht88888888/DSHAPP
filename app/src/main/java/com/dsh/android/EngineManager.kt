@@ -243,6 +243,15 @@ class EngineManager private constructor(private val context: Context) {
     /** 引擎解包目录：filesDir/engine */
     private val engineDir get() = File(context.filesDir, "engine")
 
+    /**
+     * 已落盘的 HTTP header 净化垫片路径（见 [ensureFetchGuard]）。
+     *
+     * `null` = 还没解出来 / 解失败。两个 [ProcessBuilder] 的 env 都要读它，
+     * 所以缓存在字段里，避免重复读盘。
+     */
+    @Volatile
+    private var fetchGuardPath: File? = null
+
     /** 引擎运行所需的可写 HOME（DSH 在此存放配置、凭据、会话）。 */
     private val homeDir get() = File(context.filesDir, "home")
 
@@ -438,6 +447,74 @@ class EngineManager private constructor(private val context: Context) {
             // 补丁失败不阻断启动：新版 WebView 本来就不需要它
             Log.w(TAG, "注入 WebView 兼容补丁失败: ${t.message}")
         }
+    }
+
+    /**
+     * 落盘引擎侧的 HTTP header 净化垫片，返回它的绝对路径（失败返回 null）。
+     *
+     * ## 为什么必须有这一层
+     *
+     * 用户的真实报错（2026-10-25 真机截图）：
+     *
+     * ```
+     * 本轮运行失败
+     * Cannot convert argument to a ByteString because the character at index 21
+     * has a value of 27185 which is greater than 255.
+     * ```
+     *
+     * 这是 **undici 的 `Headers` 构造器**抛的：HTTP header 值必须是 ByteString
+     * （每字符 ≤ 0xFF），而某个值里混进了中文（27185 = U+6A31）。用户看到的是
+     * 一串英文 + 一个数字，**完全不知道该改哪里**，而且消息直接发不出去。
+     *
+     * 排查结论：**全链路只有两处**会把 header 交给 undici —— 引擎自己的
+     * `new Headers(...)`，以及各家 SDK 内部的 `fetch`。两处最终都落在同一个
+     * 全局对象上，所以在引擎进程里兜一层，等于覆盖了**所有**调用方，
+     * 包括未来引擎升级后新增的那些。
+     *
+     * ## 为什么用 `--import` 而不是改引擎源码
+     *
+     * 本类里已有 `patchLlmPiAiToolCallId` 那种**直接改引擎文件**的先例，但那种
+     * 做法依赖源码锚点：引擎一升级、结构一变，补丁就静默跳过（那里确实会打日志
+     * 然后 return）。`--import` 是 Node 的**官方预加载机制**，只依赖
+     * 「进程启动时要加载这个模块」，不依赖任何引擎内部结构，抗升级。
+     *
+     * 每次都覆盖写：模块本身只有几 KB，跟着 APK 升级自动生效，不需要版本戳
+     * （与 [ensureWebCompat] 对 polyfill 的处理同理）。
+     */
+    private fun ensureFetchGuard(): File? {
+        return try {
+            val target = File(context.filesDir, FETCH_GUARD_FILE)
+            context.assets.open(FETCH_GUARD_ASSET).use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            target.setReadable(true, false)
+            fetchGuardPath = target
+            Log.i(TAG, "已解出 HTTP header 净化垫片 ${target.name} (${target.length()} 字节)")
+            target
+        } catch (t: Throwable) {
+            // 垫片缺失不阻断启动：它只影响「配置里混进中文」这一种异常场景
+            fetchGuardPath = null
+            Log.w(TAG, "解出 HTTP header 净化垫片失败: ${t.message}")
+            null
+        }
+    }
+
+    /**
+     * 拼引擎进程的 `NODE_OPTIONS`：堆上限 + （可选）预加载净化垫片。
+     *
+     * ⚠️ 垫片**没落盘就绝不能出现在这里**：`--import` 指向不存在的文件时
+     * Node 会直接拒绝启动（`ERR_MODULE_NOT_FOUND`），整台 App 打不开 ——
+     * 那比「配置里混了中文发不出消息」严重得多。所以按 [fetchGuardPath] 决定。
+     *
+     * 路径含空格也不加引号：`NODE_OPTIONS` 由 Node 自己按空白切分，加了引号
+     * 反而会把引号当成路径的一部分。`filesDir` 是
+     * `/data/user/0/<包名>/files`，包名恒为 `com.dsh.android`，不含空格。
+     */
+    private fun nodeOptions(): String {
+        val base = "--max-old-space-size=1024"
+        val guard = fetchGuardPath ?: return base
+        if (!guard.isFile) return base
+        return "$base --import ${guard.absolutePath}"
     }
 
     /**
@@ -6734,7 +6811,8 @@ class EngineManager private constructor(private val context: Context) {
                 put("PATH", "$prefix/bin:$prefix/bin/applets:/system/bin:/system/xbin")
                 put("SSL_CERT_FILE", "$prefix/etc/tls/cert.pem")
                 put("CURL_CA_BUNDLE", "$prefix/etc/tls/cert.pem")
-                put("NODE_OPTIONS", "--max-old-space-size=1024")
+                // 堆上限 + 预加载 HTTP header 净化垫片（见 ensureFetchGuard）
+                put("NODE_OPTIONS", nodeOptions())
             }
             val proc = pb.start()
             // ⚠️ 必须**并发**读走两个流：dump 的输出有 1500+ 行（真机实测），
@@ -7010,6 +7088,10 @@ class EngineManager private constructor(private val context: Context) {
 
         // 前端补丁要在 WebView 首次加载前落盘，所以放在启动引擎这一步里
         ensureWebCompat()
+        // HTTP header 净化垫片：配置里混进中文时，undici 会抛一句只带字符下标的
+        // 英文错误、消息直接发不出去。必须在引擎进程启动前落盘，否则
+        // `NODE_OPTIONS=--import` 拿不到文件（见 ensureFetchGuard）。
+        ensureFetchGuard()
         // 原生插件是引擎启动的前提（DSH 的 profile 解析依赖它），必须早于进程启动
         ensureNativeAddon()
         // system 插件（会话写入锁）：缺了它每轮回复都会以「本轮运行失败」告终
@@ -7325,7 +7407,8 @@ class EngineManager private constructor(private val context: Context) {
             // CA 证书在 Termux 私有 prefix 里，否则 HTTPS 请求会因证书链失败
             put("SSL_CERT_FILE", "$prefix/etc/tls/cert.pem")
             put("CURL_CA_BUNDLE", "$prefix/etc/tls/cert.pem")
-            put("NODE_OPTIONS", "--max-old-space-size=1024")
+            // 堆上限 + 预加载 HTTP header 净化垫片（见 ensureFetchGuard）
+            put("NODE_OPTIONS", nodeOptions())
             // 镜像环境变量必须注入**引擎进程**，不能只靠 shell 工具那条路。
             //
             // ⚠️ 实测漏掉它的后果（2026-10-10，同一台设备）：
@@ -8183,6 +8266,18 @@ class EngineManager private constructor(private val context: Context) {
         /** WebView 兼容补丁：资产名与注入到 index.html 里的标签。 */
         private const val POLYFILL_FILE = "webview-polyfill.js"
         private const val POLYFILL_TAG = """<script src="./$POLYFILL_FILE"></script>"""
+
+        /**
+         * 引擎侧 HTTP header 净化垫片（见 [ensureFetchGuard]）。
+         *
+         * 解到 `filesDir` 根下（与 `dsh-android-shell.mjs` 同一层），通过
+         * `NODE_OPTIONS=--import <绝对路径>` 预加载进**引擎进程**。
+         *
+         * ⚠️ 必须用**绝对路径**：`--import` 的裸标识符会走 Node 的模块解析，
+         * 而引擎进程的 cwd 是 `engine/`，相对路径会解析到那里去。
+         */
+        private const val FETCH_GUARD_ASSET = "dsh-fetch-guard.mjs"
+        private const val FETCH_GUARD_FILE = "dsh-fetch-guard.mjs"
 
         /**
          * 按旧内核降级编译的前端 bundle（见 [ensureWebViewCompat]）。

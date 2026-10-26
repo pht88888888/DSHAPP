@@ -70,7 +70,27 @@ android {
         //        改成最后兜底走**原生 HttpURLConnection**（不经内核网络栈），
         //        与「下载会话导出」同一套，后者在同设备长期可用。
         //        见 `NativeUploader` 与 polyfill 的 `viaNative`。
-        versionCode = 66
+        // ⚠️ 67（本次）**修「配置里混进中文 ⇒ 整轮运行失败」**。
+        //   症状（真机截图 2026-10-25 22:45，模型 agnes-3.0-flash，4 轮 4 步）：
+        //   ```
+        //   本轮运行失败
+        //   Cannot convert argument to a ByteString because the character at
+        //   index 21 has a value of 27185 which is greater than 255.
+        //   ```
+        //   这是 undici 的 `Headers` 构造器抛的：header 值必须是 ByteString
+        //   （每字符 ≤ 0xFF），而某个值里混进了 27185 = U+6A31「樱」。
+        //   报错只说「第几个字符」、**不说哪个 header**，用户完全无法自查，
+        //   而且消息直接发不出去。
+        //   全链路只有两处把 header 交给 undici（引擎自己的 `new Headers`、
+        //   各家 SDK 内部的 `fetch`），两者最终落在同一个全局对象上。
+        //   改动：新增 `assets/dsh-fetch-guard.mjs`，由
+        //   `NODE_OPTIONS=--import` 预加载进引擎进程，在 `Headers` 构造 /
+        //   `set` / `append` 与 `fetch` 入口把非法字符**剔除后继续**
+        //   （不是拦截——中文出现在 header 里一律是误粘贴，删掉就能发出去），
+        //   并把「哪个 header、第几位、原值、净化后」写进 engine.log。
+        //   合法输入走原生快速路径，零开销、零改写。
+        //   见 `EngineManager.ensureFetchGuard` 与 `nodeOptions`。
+        versionCode = 67
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
