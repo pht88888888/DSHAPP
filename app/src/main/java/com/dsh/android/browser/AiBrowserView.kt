@@ -979,6 +979,34 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             // 保存表单（用户名等会记住）
             saveFormData = true
             userAgentString = userAgentString.replace("; wv)", ")")
+
+            /*
+             * ⚠️ **文件访问必须关掉，这是本 WebView 最重要的一条安全设置。**
+             *
+             * 主 WebView（`SystemWebHost`）只加载 `http://127.0.0.1` 的自家界面，
+             * 所以那边关掉文件访问是「顺手加固」。**这里不一样**：本 WebView 加载的是
+             * **任意外部网站**（AI 打开的网页、用户点的链接、登录跳转页），
+             * 而这些页面完全不受我们控制。
+             *
+             * Android 的默认值是 `allowFileAccess = true`。也就是说在补上下面这几行之前，
+             * 一个恶意/被入侵的页面可以：
+             *   · `fetch('file:///data/data/com.dsh.android/shared_prefs/…')`
+             *     读走应用的私有配置（token、登录态、设置）；
+             *   · 用 `new Image().src = 'file:///…'` 之类的手法**探测**任意路径是否存在，
+             *     把设备上的文件布局摸清楚；
+             *   · `file://` 页面还能绕过同源策略读到本地内容
+             *     （`allowUniversalAccessFromFileURLs` / `allowFileAccessFromFileURLs`
+             *     默认在旧内核上是开的，显式关掉才稳妥）。
+             *
+             * 本模块没有 `addJavascriptInterface`，所以不涉及「原生对象被页面拿到」
+             * 那类更严重的后果；但读文件这一条本身就已经足够严重了。
+             *
+             * 关掉不影响正常使用：网页加载都是 http(s)，没有任何一处需要 `file://`。
+             */
+            allowFileAccess = false
+            allowContentAccess = false
+            allowFileAccessFromFileURLs = false
+            allowUniversalAccessFromFileURLs = false
         }
 
         // Cookie 持久化：这是「登录状态重启后仍保持」的关键
