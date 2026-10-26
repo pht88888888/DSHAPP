@@ -2246,8 +2246,12 @@ class MainActivity : AppCompatActivity() {
         override fun aiAnnotateResult(): String {
             Log.i(DshApplication.TAG, "前端索取标注结果，待发送=${pendingAnnotate != null}")
             val pending = pendingAnnotate ?: return ""
-            pendingAnnotate = null
-            return runCatching {
+            // ⚠️ **先读成功、再清空**（原来是先清空后读）。
+            //   旧顺序下只要 `readBytes()` 抛错（文件被清掉 / 空间不足 / 权限），
+            //   这一份标注就**永久丢失**：用户圈完画点「发送」，结果什么都没发生，
+            //   而且界面上没有任何提示 —— 又一处静默失败。
+            //   现在读失败会保留 pending，并且**必须报给用户**（见下面的 Toast）。
+            val encoded = runCatching {
                 // 主 WebView 的 allowFileAccess=false，前端读不到 file://，
                 // 所以这里直接把字节 base64 化递过去。
                 val bytes = pending.first.readBytes()
@@ -2258,8 +2262,21 @@ class MainActivity : AppCompatActivity() {
                 }.toString()
             }.getOrElse {
                 Log.w(DshApplication.TAG, "编码标注图失败: ${it.message}")
-                ""
+                // 手机上只看日志等于没提示，用户会以为「点了没反应」。
+                // 这条必须上屏：他刚花了功夫圈画，丢了要马上知道。
+                runOnUiThread {
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "标注图读取失败：${it.message ?: "未知原因"}，请重新圈画",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+                null
             }
+            // 只有真拿到了结果才清空 —— 失败时保留，给前端重试一次的机会
+            // （前端下次调 this 时还能读到同一份）。
+            if (encoded != null) pendingAnnotate = null
+            return encoded ?: ""
         }
 
         override fun aiBrowserDetach() {
