@@ -82,6 +82,19 @@ const snapshot = {
   //     （用户在 Shizuku 自己的确认界面上点「允许」），设置页轮询时读的就是
   //     这个缓存 —— 不推的话用户授权完，界面永远停在「未授权」。
   shizuku: '{}',
+  // AI 浏览器状态（JSON 文本）。页面侧 `aiBrowserState()` / `aiAnnotateResult()`
+  //   是**同步**返回字符串的，只能经快照缓存 —— 与 root/bubble 同一套语义。
+  aiBrowser: '{}',
+  // 余额徽章配置（JSON 文本）。页面侧 `bubbleBadgeConfig()` 同步读。
+  badgeConfig: '{}',
+  // 悬浮球点按刷新序号。页面侧 `bubbleTapRefreshSeq()` 同步读 Int。
+  tapRefreshSeq: 0,
+  // 键盘避让状态（JSON 文本）。原生一直在推（GeckoWebHost.pushSnapshot 有
+  // `keyboardAvoid` 字段），但**页面世界这一层以前没有对应方法** ——
+  // 于是 `window.DSHAndroid.keyboardAvoidState` 是 undefined，
+  // 设置页走进 noBridge 分支把开关置灰，原生日志却一切正常。
+  // 这正是本项目在 PR #3 上踩过的同一个坑（见 PageBridge.openAiBrowser 的注释）。
+  keyboardAvoid: '{}',
 };
 
 /** 是否已经装过（同一次 document 生命周期内只装一次）。 */
@@ -177,6 +190,10 @@ function onNativeMessage(msg) {
     if (typeof msg.pairingEnabled === 'boolean') snapshot.pairingEnabled = msg.pairingEnabled;
     if (typeof msg.logSummary === 'string') snapshot.logSummary = msg.logSummary;
     if (typeof msg.shizuku === 'string') snapshot.shizuku = msg.shizuku;
+    if (typeof msg.aiBrowser === 'string') snapshot.aiBrowser = msg.aiBrowser;
+    if (typeof msg.badgeConfig === 'string') snapshot.badgeConfig = msg.badgeConfig;
+    if (typeof msg.tapRefreshSeq === 'number') snapshot.tapRefreshSeq = msg.tapRefreshSeq;
+    if (typeof msg.keyboardAvoid === 'string') snapshot.keyboardAvoid = msg.keyboardAvoid;
     return;
   }
 
@@ -366,7 +383,7 @@ const PAGE_SHIM_SOURCE = `(function (post) {
  * 而它要调用的那几个原生侧函数以参数形式传进去（它们是 exportFunction 的
  * 返回值，跨边界是合法的）。
  */
-const BRIDGE_INSTALLER_SOURCE = `(function (post, getRoot, getBubble, getPairingEnabled, getAppearance, getLogSummary, getShizuku) {
+const BRIDGE_INSTALLER_SOURCE = `(function (post, getRoot, getBubble, getPairingEnabled, getAppearance, getLogSummary, getShizuku, getAiBrowser, getBadgeConfig, getTapRefreshSeq, getKeyboardAvoid) {
   // ⚠️ **无条件覆盖**，不能写成「已有就跳过」。content script 重跑时传进来的
   //   post 是**新的**函数对象（闭包着新的原生端口），而旧 DSHAndroid 里的方法
   //   还指着**旧的** post → 旧端口（可能已断）。保留旧对象的结果是页面调了方法
@@ -441,6 +458,63 @@ const BRIDGE_INSTALLER_SOURCE = `(function (post, getRoot, getBubble, getPairing
       post('uploadNativeAbort', [String(taskId)]);
       return true;
     },
+
+    // ══ 补齐：以下 16 个方法原先**只在 system 版的白名单里**，gecko 版漏了 ══
+    //
+    // 症状（真实缺口，不是推测）：gecko flavor（包名 com.dsh.webview）上
+    // `window.DSHAndroid.openAiBrowser` 等是 **undefined**，页面侧调用直接抛
+    // TypeError，表现为「点了没反应」，而原生日志一切正常 ——
+    // 与 0.3.3 漏掉 keyboardAvoid 时是同一种形态。
+    //
+    // 根因：PageBridge 的注释只写了「往这里加方法必须同步加进两份白名单
+    // （SystemWebHost 的 @JavascriptInterface 与 GeckoWebHost.dispatchInvoke）」，
+    // 而 gecko 其实有**第三处** —— 就是本文件构造的 window.DSHAndroid 对象。
+    // 原生分发（GeckoWebHost.dispatchInvoke）早就齐了，缺的只是页面世界这一层。
+    //
+    // ⚠️ 本段是模板字符串内容，注释里用「」包住标识符，不要写反引号
+    //    （那会提前终止模板，整个 content script 不执行，见文件头注释陷阱）。
+    // ⚠️ 返回值语义与 system 版**逐条对齐**：
+    //    · 返回 String / Boolean / Int 的，必须**同步**返回 —— 而 native messaging
+    //      只能异步，所以这几个走「快照缓存 + 原生主动推送」（见下方 get*）。
+    //      这里用 `post(...)` 顺带请求一次重推，页面侧延迟二次读拿到新值。
+    //    · 纯动作类（void）的乐观返回 undefined，与 system 版一致。
+    openAiBrowser: function () { post('openAiBrowser', []); },
+    aiBrowserLayout: function (json) { post('aiBrowserLayout', [String(json || '')]); },
+    aiBrowserDetach: function () { post('aiBrowserDetach', []); },
+    aiAnnotateResult: function () { return getAiBrowser(); },
+    aiAnnotateReport: function (message) { post('aiAnnotateReport', [String(message || '')]); },
+    // ⚠️ aiBrowserState 是**同步**返回 JSON 文本的读操作，与 aiAnnotateResult 同类。
+    aiBrowserState: function () { return getAiBrowser(); },
+
+    bubbleSetThrow: function (enabled) { post('bubbleSetThrow', [!!enabled]); },
+    bubbleSetShake: function (enabled) { post('bubbleSetShake', [!!enabled]); },
+    bubbleSetImeFling: function (enabled) { post('bubbleSetImeFling', [!!enabled]); },
+    // 余额快照：页面侧**推**给原生（不是读），所以是纯动作。
+    bubbleReportBalance: function (json) { post('bubbleReportBalance', [String(json || '')]); },
+    // 徽章配置与点按序号是**同步读**，走快照缓存。
+    // ⚠️ 这里**不能**自己 post 一个「刷新」消息 —— 原生侧没有那样的分发分支，
+    //   发过去会被静默丢弃（GeckoWebHost.dispatchInvoke 的 when 里没有对应项）。
+    //   快照由原生在状态变化时主动推（pushSnapshot），页面读的就是那份缓存。
+    bubbleBadgeConfig: function () { return getBadgeConfig(); },
+    bubbleTapRefreshSeq: function () { return getTapRefreshSeq(); },
+
+    keyboardAvoidSetEnabled: function (enabled) {
+      post('keyboardAvoidSetEnabled', [!!enabled]);
+      return true;   // 乐观返回 true：返回值语义是「接受了吗」，与 bubbleApply 一致
+    },
+    keyboardAvoidRequestPermission: function () { post('keyboardAvoidRequestPermission', []); },
+    // ⚠️ 同步返回 JSON 文本（与 system 版逐字对齐）—— 走快照缓存。
+    keyboardAvoidState: function () { return getKeyboardAvoid(); },
+
+    // 剪贴板：**必须同步返回 Boolean**（页面侧据此判断成功/失败）。
+    // 而 native messaging 只能异步 —— 所以这里返回「已投递」而不是「已写入」，
+    // 与 bubbleApply 采用同一种妥协，并在文档里写明语义差异。
+    writeClipboard: function (text) {
+      post('writeClipboard', [String(text == null ? '' : text)]);
+      return true;
+    },
+    // 页面诊断：纯上报，无返回值。
+    pageDiag: function (text) { post('pageDiag', [String(text == null ? '' : text)]); },
   };
 })`;
 
@@ -520,12 +594,22 @@ function installBridge() {
   const getLogSummary = exportFunction(function () { return String(snapshot.logSummary); }, pageWindow);
   // Shizuku 状态同构：原生推快照、页面同步读缓存。
   const getShizuku = exportFunction(function () { return String(snapshot.shizuku); }, pageWindow);
+  // AI 浏览器状态同构：原生推快照、页面同步读缓存。
+  const getAiBrowser = exportFunction(function () { return String(snapshot.aiBrowser); }, pageWindow);
+  // 余额徽章配置同构。
+  const getBadgeConfig = exportFunction(function () { return String(snapshot.badgeConfig); }, pageWindow);
+  // 点按刷新序号：注意返回**数字**（Int），不是字符串 —— 页面侧拿它做比较。
+  const getTapRefreshSeq = exportFunction(function () { return Number(snapshot.tapRefreshSeq) || 0; }, pageWindow);
+  // 键盘避让状态同构。⚠️ 必须进快照：无障碍授权是在**另一个 Activity** 里给的，
+  //   用户授权完回到设置页，读到的若还是旧缓存就会一直显示「还差一步：去开权限」。
+  const getKeyboardAvoid = exportFunction(function () { return String(snapshot.keyboardAvoid); }, pageWindow);
 
   try {
     // 在页面世界现造安装器，再把导出函数喂进去 —— 对象因此在页面世界出生，
     // 不需要（也不能）克隆。见 BRIDGE_INSTALLER_SOURCE 的说明。
     pageWindow.eval(BRIDGE_INSTALLER_SOURCE)(
-      post, getRoot, getBubble, getPairingEnabled, getAppearance, getLogSummary, getShizuku);
+      post, getRoot, getBubble, getPairingEnabled, getAppearance, getLogSummary, getShizuku,
+      getAiBrowser, getBadgeConfig, getTapRefreshSeq, getKeyboardAvoid);
     log('[dsh-bridge] 桥已装入页面世界: ' + typeof pageWindow.DSHAndroid);
   } catch (e) {
     // 桥装不上 ⇒ 设置页的气泡开关 / root 状态 / 无线调试配对三块静默失效。

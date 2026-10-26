@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "DSH Android Bridge",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "把 window.DSHAndroid 桥接给 DSH 的 Web GUI。GeckoView 没有 addJavascriptInterface，只能用扩展。",
   "browser_specific_settings": {
     "gecko": {

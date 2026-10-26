@@ -823,6 +823,16 @@ class GeckoWebHost(
             // ⚠️ 必须进快照：无障碍授权是在**另一个 Activity** 里给的，用户授权完
             //   回到设置页，页面拿到的若还是旧缓存，就会一直显示「还差一步：去开权限」。
             .put("keyboardAvoid", callbacks.bridge.keyboardAvoidState())
+            // AI 浏览器状态（JSON 文本）。页面侧 `aiBrowserState()` /
+            // `aiAnnotateResult()` 都是**同步**返回字符串的（见 content.js 的
+            // getAiBrowser），而 native messaging 只能异步 ⇒ 必须经快照缓存。
+            // ⚠️ 不推的话这两个方法在 gecko 版上永远返回 `{}`，侧栏浏览器的
+            //   标注画布读不到状态，表现为「点了没反应」。
+            .put("aiBrowser", callbacks.bridge.aiBrowserState())
+            // 余额徽章配置（JSON 文本）。页面侧 `bubbleBadgeConfig()` 同步读。
+            .put("badgeConfig", callbacks.bridge.bubbleBadgeConfig())
+            // 悬浮球点按刷新序号。页面侧 `bubbleTapRefreshSeq()` 同步读 Int。
+            .put("tapRefreshSeq", callbacks.bridge.bubbleTapRefreshSeq())
         postToExtension(msg)
     }
 
