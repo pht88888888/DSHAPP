@@ -48,15 +48,58 @@ internal object ShizukuShell {
      *   抛异常会让轮询线程每次都走异常路径，日志刷屏还难读。
      */
     /**
-     * 把 [ParcelFileDescriptor] 读干净。
+     * 单次命令最多捕获多少字节。
+     *
+     * ⚠️ 与 [ShizukuChannel.MAX_CAPTURE_BYTES] 同一个理由，取同一个数量级。
+     *
+     * 本通道唯一的调用方是 [ImeProbe]，它跑的是 `dumpsys input_method`，
+     * 正常输出几十 KB。**但"当前只跑这一条命令"不构成不设上限的理由**：
+     * 上限防的是"意外"，而不是"当前的固定用法" ——
+     *   · 不同 ROM 的 `dumpsys` 输出差别很大（有的会把整个输入法服务的
+     *     历史记录也倒出来）；
+     *   · 将来任何人在 [ShizukuShell.exec] 上加一条新命令（`logcat`、`dumpsys meminfo`、
+     *     `cat`），无上限的 `readBytes()` 就会把 App 直接吃爆 ——
+     *     而 shizuku 的 uid 2000 能读的东西远比 app uid 多，这一层没有任何保护。
+     *
+     * 取 1 MB 与 Channel 一致：`dumpsys input_method` 远小于它，
+     * 超了就说明撞上了畸形输出，截断并把前 1 MB 交出去比 OOM 好。
+     */
+    private const val MAX_CAPTURE_BYTES = 1024 * 1024
+
+    /**
+     * 把 [ParcelFileDescriptor] 读干净（**带上限**）。
      *
      * ⚠️ `IRemoteProcess.inputStream` 返回的是 **ParcelFileDescriptor** 而不是
      *   Java 的 InputStream —— Shizuku 跨进程传文件描述符，不能直接 `readBytes()`。
+     *
+     * ⚠️ **不能直接 `it.readBytes()`**：那个实现会按 8 KB 递增扩容直到 EOF，
+     *   对端吐多少它就吃多少，没有任何上界。改成自己按块读、累计到
+     *   [MAX_CAPTURE_BYTES] 就停 —— 并且**必须继续把管道读空**再关，
+     *   否则对端写满了管道会阻塞在 write 上（`dumpsys` 这类命令尤其容易撞上）。
      */
     private fun drain(pfd: ParcelFileDescriptor?): ByteArray {
         if (pfd == null) return ByteArray(0)
         return try {
-            FileInputStream(pfd.fileDescriptor).use { it.readBytes() }
+            FileInputStream(pfd.fileDescriptor).use { ins ->
+                val out = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(8 * 1024)
+                var captured = 0
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n <= 0) break
+                    if (captured >= MAX_CAPTURE_BYTES) {
+                        // 到上限了：不再累积，但继续把管道读空，避免对端阻塞。
+                        continue
+                    }
+                    val take = minOf(n, MAX_CAPTURE_BYTES - captured)
+                    out.write(buf, 0, take)
+                    captured += take
+                }
+                if (captured >= MAX_CAPTURE_BYTES) {
+                    Log.w(TAG, "ShizukuShell 输出超过 ${MAX_CAPTURE_BYTES / 1024} KB，已截断")
+                }
+                out.toByteArray()
+            }
         } catch (t: Throwable) {
             ByteArray(0)
         } finally {

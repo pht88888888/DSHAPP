@@ -68,6 +68,25 @@ object BubbleFrames {
 
     private const val TAG = DshApplication.TAG
 
+    /**
+     * 单个帧文件的大小上限（压缩后字节数）。
+     *
+     * ⚠️ **本模块原来完全没有这个上限**，而 [loadFrame] 里是直接
+     *   `file.readBytes()` —— 先把整个文件读进内存，再交给 `BitmapFactory` 解。
+     *   用户/插件往 `filesDir/bubble-frames/` 里丢一个几十 MB 的 PNG，
+     *   这一步就先把几十 MB 吃进堆，紧接着解码再要一份（位图比压缩包大得多）。
+     *
+     *   对照同类的两个模块，它们都是有上限的：
+     *   · `BubbleStatusImages.MAX_IMAGE_BYTES` = 3 MB
+     *   · `BubbleVideos.MAX_VIDEO_BYTES` = 6 MB
+     *   唯独帧素材（桌宠动画，用得最频繁的那个）没有。
+     *
+     * 取 8 MB：精灵图是一张图上排 `rows × cols` 格，同分辨率下天然比单张状态图大，
+     * 所以给得比 3 MB 宽；但再大就说明用户放的是一张没切过的原始大图，
+     * 那种情况本来就该自己先切好 —— 与其 OOM，不如明确拒绝并留下日志。
+     */
+    private const val MAX_FRAME_BYTES = 8 * 1024 * 1024
+
     /** 默认动作的目录名（在 `filesDir` 下）。 */
     const val DIR = "bubble-frames"
 
@@ -333,6 +352,10 @@ object BubbleFrames {
         val fileIndex = if (sprite != null) 0 else index
         val file = File(d, frameName(fileIndex))
         if (!file.isFile) return null
+        if (file.length() > MAX_FRAME_BYTES) {
+            Log.w(TAG, "帧文件过大（${file.length()} > $MAX_FRAME_BYTES），跳过: ${file.name}")
+            return null
+        }
         return try {
             val bytes = file.readBytes()
             if (sprite == null) {
@@ -390,6 +413,10 @@ object BubbleFrames {
         // 精灵图模式下第 0 个文件就是整张图，单格尺寸要从网格切出来。
         val file = File(dir(context, action), frameName(0))
         if (!file.isFile) return null
+        if (file.length() > MAX_FRAME_BYTES) {
+            Log.w(TAG, "帧文件过大（${file.length()} > $MAX_FRAME_BYTES），跳过测量: ${file.name}")
+            return null
+        }
         return try {
             val bytes = file.readBytes()
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
