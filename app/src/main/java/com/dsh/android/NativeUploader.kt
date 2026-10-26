@@ -58,11 +58,30 @@ internal class NativeUploader(
         /**
          * 单个上传允许累积的最大字节数。
          *
-         * 不是协议限制，纯粹是防 OOM：`ByteArrayOutputStream` 会翻倍扩容，
-         * 256 MB 的数据实际可能占 512 MB 堆，已经是低端机的极限。
-         * 正常附件远小于这个线（真机样本 1.3–1.9 MB）。
+         * ## ⚠️ 原来写的是 256 MB —— 那个值等于没有保护
+         *
+         * 本 App **没有开 `largeHeap`**（`AndroidManifest.xml` 里没有这个属性），
+         * 用的是默认堆。而同项目 `GeckoWebHost` 的注释里已经写明真机情况：
+         * **「低内存机（堆 192–256 MB）」**。
+         *
+         * 也就是说：上限设成 256 MB 时，一台 192 MB 堆的机器可以在**通过检查之后**
+         * 才开始 OOM —— 检查本身形同虚设。而且 `ByteArrayOutputStream` 是
+         * **翻倍扩容**的，攒到 256 MB 的瞬间它可能已经向系统要过 512 MB。
+         *
+         * 更糟的是失败发生的位置：[finish] 里 `task.buffer.toByteArray()` 会
+         * **再复制一份**（256 MB + 256 MB）才交给 HttpURLConnection。所以真正
+         * 的峰值是「buffer + 副本」，远超这条线。
+         *
+         * ## 现在取 24 MB
+         *
+         * 依据是两条事实：
+         * · 真机样本里正常附件是 **1.3–1.9 MB**（见原注释），24 MB 是它的十几倍；
+         * · 峰值翻倍（buffer + toByteArray 副本）= 48 MB，在 192 MB 堆上留足余量。
+         *
+         * 超过 24 MB 的文件不是"不该传"，而是**不该走这条全内存通道**——
+         * 它会明确告诉用户超限，而不是先卡住再闪退。
          */
-        const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
+        const val MAX_TOTAL_BYTES = 24L * 1024 * 1024
 
         /** 只允许打本机回环 —— 见 [begin] 的注释。 */
         val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost", "::1", "[::1]")
