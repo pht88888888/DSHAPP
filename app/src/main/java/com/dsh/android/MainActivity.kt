@@ -1616,15 +1616,34 @@ class MainActivity : AppCompatActivity() {
      *   在主线程上读会把 UI 卡住（大文件尤其明显）。
      */
     private fun handleDownloadStream(stream: DownloadStream) {
-        val filename = stream.filename.ifBlank { "dsh-download" }
+        // ⚠️ 必须清洗：文件名来自页面的 anchor.download，可含 ../ → 路径穿越
+        val filename = sanitizeDownloadName(stream.filename)
         val target = downloadTargetDir()
         Toast.makeText(this, "开始下载 $filename", Toast.LENGTH_SHORT).show()
 
         lifecycleScope.launch(Dispatchers.IO) {
             val result = runCatching {
                 val file = File(target, filename)
-                stream.body.use { input -> file.outputStream().use { input.copyTo(it) } }
-                file
+                // ⚠️ **先写 .part 再改名**：直接写目标文件的话，中途失败（存储写满、
+                //   用户杀进程、引擎断流）会在下载目录里留下一个**看起来正常、
+                //   实际残缺**的文件 —— 用户拿到手才发现解压失败/打不开，
+                //   而且没有任何提示。用临时名 + 原子改名，失败时删掉临时文件即可，
+                //   下载目录永远只会出现完整文件。
+                val part = File(target, "$filename.part")
+                try {
+                    stream.body.use { input -> part.outputStream().use { input.copyTo(it) } }
+                    if (!part.renameTo(file)) {
+                        // 目标已存在等情况：先删再改名，仍失败就把旧的一起覆盖掉
+                        file.delete()
+                        if (!part.renameTo(file)) {
+                            error("无法写入 ${file.absolutePath}")
+                        }
+                    }
+                    file
+                } catch (t: Throwable) {
+                    runCatching { part.delete() }
+                    throw t
+                }
             }
             withContext(Dispatchers.Main) {
                 result
@@ -1650,7 +1669,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 优先用 Content-Disposition 里的文件名（引擎给的是 dsh-session-<id>.zip）。
-        val filename = URLUtil.guessFileName(url, req.contentDisposition, req.mimeType)
+        // ⚠️ 必须清洗：Content-Disposition 是服务端可控的，可含 ../ → 路径穿越
+        val filename = sanitizeDownloadName(
+            URLUtil.guessFileName(url, req.contentDisposition, req.mimeType),
+        )
         val cookie = cookieForDownload(url)
         val target = downloadTargetDir()
         Toast.makeText(this, "开始下载 $filename", Toast.LENGTH_SHORT).show()
@@ -1671,8 +1693,23 @@ class MainActivity : AppCompatActivity() {
                         error("HTTP $code")
                     }
                     val file = File(target, filename)
-                    conn.inputStream.use { input -> file.outputStream().use { input.copyTo(it) } }
-                    file
+                    // ⚠️ 同 gecko 侧：先写 .part 再原子改名，避免留下残缺文件。
+                    val part = File(target, "$filename.part")
+                    try {
+                        conn.inputStream.use { input ->
+                            part.outputStream().use { input.copyTo(it) }
+                        }
+                        if (!part.renameTo(file)) {
+                            file.delete()
+                            if (!part.renameTo(file)) {
+                                error("无法写入 ${file.absolutePath}")
+                            }
+                        }
+                        file
+                    } catch (t: Throwable) {
+                        runCatching { part.delete() }
+                        throw t
+                    }
                 } finally {
                     conn.disconnect()
                 }
@@ -1722,6 +1759,41 @@ class MainActivity : AppCompatActivity() {
             Log.w(DshApplication.TAG, "公共下载目录不可用，改用 app 外部目录")
         }
         return getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+    }
+
+    /**
+     * 把内核/页面给的文件名洗成「只能用在本目录里的一个名字」。
+     *
+     * ⚠️ **这不是防御性编程，是一条真实的路径穿越通道。**
+     *
+     * gecko 版的下载文件名来自页面的 `anchor.download` 属性
+     * （见 `content.js` 的 `handleDownload(url, filename)`），
+     * 页面拿到什么就原样 `p('downloadChunk', [.., url, name])` 发过来，
+     * 原生侧一路没改，最后落到：
+     *
+     *     File(target, filename)     // filename = "../../../data/data/com.dsh.android/x"
+     *
+     * `File(parent, child)` 对含 `..` 的 child **不做任何限制**，
+     * 于是可以写到下载目录之外 —— 沙箱内任意可写路径。
+     * Content-Disposition 那条路（system 版）同理，头是服务端/页面控制的。
+     *
+     * 清洗规则（够用且不破坏正常文件名）：
+     *   · 只取最后一段（去掉任何目录成分）；
+     *   · 去掉 `..`、`/`、`\\`、NUL 这些危险字符；
+     *   · 空名字 / 只剩点的名字 → 用兜底名；
+     *   · 长度截断，避免超长文件名在部分文件系统上创建失败。
+     */
+    private fun sanitizeDownloadName(raw: String, fallback: String = "dsh-download"): String {
+        // 统一分隔符后取末段：同时挡掉 "/" 与 "\" 两种分隔符
+        val lastSegment = raw.replace('\\', '/').substringAfterLast('/')
+        val cleaned = lastSegment
+            .replace("\u0000", "")
+            .filter { it != '/' && it != '\\' }
+            .trim()
+            .trimStart('.')          // 去掉前导点：挡 "." ".." 以及隐藏文件
+        if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") return fallback
+        // 200 字符上限：主流文件系统 255 字节，留出扩展名与 .part 后缀的余量
+        return if (cleaned.length > 200) cleaned.take(200) else cleaned
     }
 
     /**
