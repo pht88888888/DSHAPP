@@ -676,9 +676,15 @@ class AnnotateView(context: Context) : FrameLayout(context) {
      */
     private fun exportBitmap(): File? {
         val bmp = base ?: return null
+        // ⚠️ **`out` 提到 try 外面**：原来它建在 try 里，只有正常路径末尾那句
+        //   `out.recycle()` 会回收。而这张图是**按底图原始分辨率**全尺寸分配的
+        //   （ARGB_8888，1080×2400 的截图就是 10.4 MB），一旦 `drawStrokes`
+        //   或 `compress` 抛异常（尤其是 OOM 本身），这张大图就漏掉了 ——
+        //   而漏的正是最不该漏的那一块。放到 finally 里保证回收。
+        var out: Bitmap? = null
         return try {
-            val out = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(out)
+            out = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out!!)
             canvas.drawBitmap(bmp, 0f, 0f, null)
             // 基准是 imageBox（== 图片显示矩形 == 笔迹层尺寸），不是 canvasHost：
             // canvasHost 含四周留白，拿它当基准会让笔迹整体偏移。
@@ -693,12 +699,14 @@ class AnnotateView(context: Context) : FrameLayout(context) {
             ShotStore.prune(dir)
             val f = File(dir, "mark-${System.currentTimeMillis()}.png")
             FileOutputStream(f).use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            out.recycle()
             Log.i(TAG, "标注图已保存: ${f.absolutePath} (${bmp.width}x${bmp.height})")
             f
         } catch (t: Throwable) {
             Log.w(TAG, "导出失败: ${t.message}")
             null
+        } finally {
+            // 全尺寸输出图必须无条件回收，异常路径也不例外（见函数开头的说明）。
+            out?.recycle()
         }
     }
 
@@ -817,10 +825,37 @@ class AnnotateView(context: Context) : FrameLayout(context) {
             val sr = (px * sx + cell * sx / 2f).toInt().coerceIn(sl + 1, bmp.width)
             val sb = (py * sy + cell * sy / 2f).toInt().coerceIn(st + 1, bmp.height)
             // 取该区域平均色：1x1 缩放采样，比逐像素平均快得多
-            val one = Bitmap.createScaledBitmap(
-                Bitmap.createBitmap(bmp, sl, st, sr - sl, sb - st),
-                1, 1, true,
-            )
+            //
+            // ⚠️ **内层那个 `createBitmap` 也是新建的位图，必须 recycle。**
+            //
+            //   `Bitmap.createBitmap(src, x, y, w, h)` 返回的是**一块新的像素拷贝**
+            //   （它可能是 src 的视图，但 GC 会把它算作独立的一次分配），
+            //   而这里原来只回收了 `one`，内层那块直接漏掉。
+            //
+            //   更要紧的是**本函数在 `onDraw` 里被调用** —— 每重绘一帧就为每个
+            //   采样点漏一块 `cell×cell×4` 字节的位图。以 480dpi 上 cell≈40px 计
+            //   单块 6.2 KB：
+            //     · 一笔 300 点的涂鸦 → 每帧漏 1.8 MB
+            //     · 一笔 1000 点     → 每帧漏 6.1 MB
+            //   用户画几笔、界面刷几帧，内存立刻顶到堆上限 —— 而且这个 OOM
+            //   发生在**绘制回调里**，栈信息会把锅甩给 Canvas，离真正原因很远。
+            //
+            //   改成先拿切片、用完 recycle 再缩放，两块都保证回收。
+            //   `getPixel` 在 recycle 之前取，顺序不能反。
+            val cellBmp = Bitmap.createBitmap(bmp, sl, st, sr - sl, sb - st)
+            // ⚠️ `createBitmap(src, 0, 0, src.width, src.height)` 会**直接返回 src
+            //   本身**（Android 内部短路，不新建）。那种情况下下面 recycle 掉的
+            //   就是用户的底图 —— 整张截图当场变黑，而调用栈会指向绘制代码。
+            //
+            //   正常截图不可达：要 `sl==0 && st==0 && sr==bmp.width && sb==bmp.height`
+            //   同时成立，等价于 `cell >= imageBox.width`（cell≈40px，
+            //   imageBox.width≈屏宽 1080px，恒不成立）。但底图极小（损坏截图、
+            //   1x1 占位图）时会命中 —— 判等一行就够，不为此留隐患。
+            val one = try {
+                Bitmap.createScaledBitmap(cellBmp, 1, 1, true)
+            } finally {
+                if (cellBmp !== bmp) cellBmp.recycle()
+            }
             val avg = one.getPixel(0, 0)
             one.recycle()
             paint.color = avg
