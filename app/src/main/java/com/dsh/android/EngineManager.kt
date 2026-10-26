@@ -297,6 +297,35 @@ class EngineManager private constructor(private val context: Context) {
         // 先解到临时目录，成功后再原子替换，避免中途失败留下半成品
         val staging = File(context.filesDir, "engine.staging")
         staging.deleteRecursively()
+
+        /*
+         * 空间预检：不够就**立刻**报一句人话，不要先花十几秒解到一半再抛 IOException。
+         *
+         * ⚠️ 真机上这条路径很容易被走到：引擎解压后约 **262 MB**，而用户把手机
+         *   装满是常态。不做预检时的症状是「正在解包引擎 47%」卡住 → 抛
+         *   `IOException: No space left on device` → 界面显示
+         *   「引擎解包失败: ...」，用户完全不知道是自己空间不够、也不知道要清多少。
+         *
+         * 余量给 1.25 倍：解压过程需要的峰值略高于最终大小（tar 条目 + 块对齐）。
+         * ⚠️ getUsableSpace() 是**建议值**，会随系统压力变化，所以它只能用来
+         *   「提前劝退明显不够的情况」，**不能**代替写失败的处理 —— 下面的 catch
+         *   依然要保留（写一半空间被别的进程吃掉照样会发生）。
+         */
+        run {
+            val need = estimateExtractBytes()
+            if (need > 0L) {
+                val free = staging.parentFile?.usableSpace ?: 0L
+                val required = (need * 5L) / 4L
+                if (free in 1 until required) {
+                    val msg = "存储空间不足：解包引擎需要约 " +
+                        "${required / (1024 * 1024)} MB，当前可用仅 ${free / (1024 * 1024)} MB"
+                    Log.e(TAG, msg)
+                    _state.value = State.Failed(msg)
+                    return@withContext
+                }
+            }
+        }
+
         staging.mkdirs()
 
         try {
@@ -372,6 +401,31 @@ class EngineManager private constructor(private val context: Context) {
     } catch (t: Throwable) {
         Log.w(TAG, "读归档长度失败: ${t.message}")
         null
+    }
+
+    /**
+     * 估算解包引擎**需要多少磁盘空间**（字节）。估不出来时返回 0（调用方跳过预检）。
+     *
+     * ## 为什么不用 `archiveLength()`
+     *
+     * 那个返回的是 **APK 里 engine.bin 这个 zip 条目的压缩后大小**（约 55 MB），
+     * 而 tar.gz 解出来的内容约 **262 MB** —— 差了近 5 倍。拿它做空间判断会
+     * 让「明明装得下」的用户被误拒，属于比不做预检更糟的行为。
+     *
+     * ## 这里怎么估
+     *
+     * 要拿到准确值只有两条路，都不合适：
+     *   · 读完 gzip 尾部的 ISIZE 字段 —— 需要完整 inflate 一遍 262 MB（首次启动多花几秒）；
+     *   · 逐条遍历 tar 头累加 size —— 也要把整个压缩流解一遍。
+     *
+     * 所以用**压缩比的保守上界**推：tar.gz 里绝大多数是 JS 文本，实测压缩比约 4.7:1。
+     * 取 4 倍作为估计（比实测小）→ 给出 220 MB 左右的下界，再乘 1.25 的峰值余量。
+     * 宁可估小一点：估大了会把本来装得下的用户挡在门外，那不可接受；
+     * 估小了只是这次预检没拦住，后面写失败的 catch 仍然兜着。
+     */
+    private fun estimateExtractBytes(): Long {
+        val archived = archiveLength() ?: return 0L
+        return archived * 4L
     }
 
     /**
