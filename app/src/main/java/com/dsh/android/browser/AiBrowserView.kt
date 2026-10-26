@@ -23,6 +23,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -1016,6 +1017,58 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         }
 
         wv.webViewClient = object : WebViewClient() {
+            /**
+             * 渲染进程死了。**必须返回 true，否则整个应用进程会被系统杀掉。**
+             *
+             * 官方文档写得很明确：`onRenderProcessGone` 的默认实现返回 `false`，
+             * 而返回 `false` 时 **系统会杀掉整个应用进程**。也就是说用户看到的
+             * 「App 突然自己退了」根本不是 App 的 bug，而是这个回调没被覆写。
+             *
+             * ⚠️ **这个 WebView 的风险比主 WebView 高得多**：它加载的是任意外部
+             *   网站（AI 打开的网页、用户点的链接）。外部页面把渲染进程搞崩是
+             *   完全可能的 —— 一个畸形的 CSS、一段死循环脚本、一个超大 DOM 都够。
+             *   而主 WebView 只加载我们自己的 `127.0.0.1` 界面，崩的概率低得多。
+             *
+             *   原本本模块**根本没有覆写这个方法** —— 那些外部页面一崩，
+             *   用户的整个 App 会跟着消失，正在进行的对话和引擎进程全部丢失，
+             *   而他只是"点开了一个网页"。
+             *
+             * 处理策略与主 WebView 不同（那边是重载界面）：这里是**辅助面板**，
+             * 正确的做法是**关掉出问题的标签**，而不是把整个 App 拉下水。
+             * 标签关掉后用户可以重开，其他标签与主界面完全不受影响。
+             */
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?,
+            ): Boolean {
+                val didCrash = detail?.didCrash() ?: false
+                Log.w(
+                    TAG,
+                    "AI 浏览器的渲染进程${if (didCrash) "崩溃" else "被系统回收"}，" +
+                        "关闭该标签（不影响主界面）",
+                )
+                // 当前这个 WebView 已经不可用，必须从标签列表里摘掉 ——
+                // 否则后续任何 currentWebView() 操作都会命中一个死对象。
+                val tab = tabs.firstOrNull { it.webView === view }
+                if (tab != null) {
+                    tabs.remove(tab)
+                    // releaseTab 会再 destroy 一次。对已被系统回收的 WebView
+                    // 调 destroy 是幂等且安全的（内部只做资源清理）。
+                    runCatching { releaseTab(tab) }
+                    if (tabs.isEmpty()) {
+                        // 一个标签都不剩：留一个空白标签，别让面板变成无内容的黑洞
+                        runCatching { openNewTab(null) }
+                    } else {
+                        activeIndex = activeIndex.coerceIn(0, tabs.size - 1)
+                        runCatching { showActiveTab() }
+                    }
+                    runCatching { rebuildTabStrip() }
+                    runCatching { updateChrome() }
+                }
+                // ⚠️ 必须 true：返回 false 会让系统终止整个应用进程。
+                return true
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 if (sameWebView(view)) {
                     progress.visibility = View.VISIBLE
