@@ -4181,11 +4181,28 @@ class FloatingBubble(private val context: Context) {
         val dm = context.resources.displayMetrics
         val v = root ?: return
         val w = v.width.takeIf { it > 0 } ?: boxW()
-        val targetX = if (curX + w / 2 < dm.widthPixels / 2) dp(EDGE_MARGIN_DP)
+        val desiredX = if (curX + w / 2 < dm.widthPixels / 2) dp(EDGE_MARGIN_DP)
         else dm.widthPixels - w - dp(EDGE_MARGIN_DP)
-        val (_, ty) = clampInto(targetX, curY)
-        animateTo(targetX, ty)
-        prefs.edit().putInt(KEY_X, targetX).putInt(KEY_Y, ty).apply()
+        /*
+         * ⚠️ **必须用 clampInto 返回的 x，不能把 desiredX 直接拿去用。**
+         *
+         * 右边缘吸附算的是 `屏幕宽 - 球宽 - 边距`，当球接近/超过屏宽时这个值会变成
+         * **负数**（展开面板宽 900dp、1080px 屏、边距 12px → 168；但面板更宽时，
+         * 比如 1069、1100，结果分别是 -1 和 -32）。
+         *
+         * 原来的写法是 `val (_, ty) = clampInto(targetX, curY)` —— **把夹取后的 x
+         * 丢掉了**，然后拿未夹取的 targetX 去 **animateTo** 和 **写入 prefs**。
+         * 后果：
+         *   · 动画过程中球会被推到屏幕左边界之外（看不见，但还在响应点击）；
+         *   · 一个非法坐标被持久化进 prefs，下次启动要靠 clampInto 兜回来。
+         *
+         * 虽然这一帧的位置最终会被后续的布局/夹取修正，但「写进持久化的坐标"
+         * 必须是合法的」这条应当直接在这里保证 —— 负坐标一旦落盘，
+         * 排查起来会离根因很远。
+         */
+        val (tx, ty) = clampInto(desiredX, curY)
+        animateTo(tx, ty)
+        prefs.edit().putInt(KEY_X, tx).putInt(KEY_Y, ty).apply()
     }
 
     private fun animateTo(toX: Int, toY: Int) {
