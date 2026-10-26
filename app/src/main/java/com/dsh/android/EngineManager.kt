@@ -1594,15 +1594,39 @@ class EngineManager private constructor(private val context: Context) {
 
         try {
             val source = entry.readText()
-            if (source.contains(IMG_TYPE_ANCHOR)) {
+            // 已打过补丁：补丁体里那句 startsWith 就是标记（原版没有它）。
+            if (source.contains("return value.startsWith(\"image/\")")) {
                 return
             }
-            if (!source.contains(IMG_TYPE_GUARD)) {
-                Log.w(TAG, "发图格式判断结构与预期不符，跳过补丁")
+            /*
+             * ⚠️ **按行处理，不按固定缩进匹配**（2026-10-27 真机取证）。
+             *
+             * 原来这里是 `source.contains(IMG_TYPE_GUARD)` 再 `replace`，
+             * 而 GUARD 里写死了 3 个制表符 —— 真机上该行是 **6 个空格**缩进，
+             * 于是恒不匹配、补丁从未生效（每次启动都记一条"结构与预期不符"）。
+             *
+             * 现在只找**包含语句主体**的那一行，把它的行首空白取出来，
+             * 用同一份空白去缩进多行替换体。这样缩进换了也不影响。
+             */
+            val lines = source.split("\n").toMutableList()
+            val idx = lines.indexOfFirst { it.trimEnd().endsWith(IMG_TYPE_GUARD.trimEnd()) }
+            if (idx < 0) {
+                Log.w(
+                    TAG,
+                    "发图格式判断结构与预期不符，跳过补丁（找不到以 " +
+                        "`${IMG_TYPE_GUARD.take(40)}…` 结尾的行）",
+                )
                 return
             }
-            entry.writeText(source.replace(IMG_TYPE_GUARD, IMG_TYPE_ANCHOR))
-            Log.i(TAG, "已放宽发图格式白名单: dsh-client-ui-conversation")
+            // 取那一行的行首空白（可能为空）。
+            val indent = lines[idx].takeWhile { it == ' ' || it == '\t' }
+            val replacement = IMG_TYPE_ANCHOR.split("\n").joinToString("\n") { indent + it }
+            lines[idx] = replacement
+            entry.writeText(lines.joinToString("\n"))
+            Log.i(
+                TAG,
+                "已放宽发图格式白名单: dsh-client-ui-conversation（行 ${idx + 1}，缩进 ${indent.length} 字符）",
+            )
         } catch (t: Throwable) {
             Log.w(TAG, "放宽发图格式白名单失败: ${t.message}")
         }
@@ -8800,8 +8824,28 @@ class EngineManager private constructor(private val context: Context) {
          * ⚠️ 缩进是**三个制表符**，与官方发布件逐字一致；引擎升级后若不再匹配，
          * 补丁会跳过并在日志里提示，不会让启动失败。见 [patchImageMediaType]。
          */
+        /*
+         * ⚠️ **锚点里不能带缩进**（2026-10-27 真机取证）。
+         *
+         * 原来这里是 `"\t\t\treturn value === \"image/png\" || …"` —— 写死 3 个
+         * 制表符。而真机（HUAWEI CDY-TN90 / vc 29）上该文件的实际内容是
+         * **6 个空格**缩进：
+         *
+         *     4861:      return value === "image/png" || … ;
+         *     实测 `cat -A` → "      return value === … ;$"     ← 6 空格
+         *     源码常量        → "^I^I^Ireturn value === … ;"     ← 3 制表符
+         *
+         * 于是 `source.contains(IMG_TYPE_GUARD)` 恒为 false，补丁**从未生效过**，
+         * 每次启动都在 app.log 里留下一条「发图格式判断结构与预期不符，跳过补丁」。
+         * 用户侧的表现就是那张表格里的问题原样存在：`.jpg`（`image/jpg`）、
+         * iPhone 的 HEIC、部分相册的 BMP/AVIF、剪贴板粘贴的空 type
+         * 全被拒，提示「仅支持 PNG、JPG、WebP、GIF」。
+         *
+         * 压缩产物里缩进本来就不可靠（不同版本的 minifier / 格式化配置都会改），
+         * 所以锚点只锚**语句内容**，由 [patchImageMediaType] 用行级方式替换。
+         */
         private const val IMG_TYPE_GUARD =
-            "\t\t\treturn value === \"image/png\" || value === \"image/jpeg\" || " +
+            "return value === \"image/png\" || value === \"image/jpeg\" || " +
                 "value === \"image/webp\" || value === \"image/gif\";"
 
         /**
@@ -8810,13 +8854,20 @@ class EngineManager private constructor(private val context: Context) {
          * 解码能力交给下游 sharp 判断 —— 它会给明确错误，
          * 比在入口处一刀切拦住友好（见 [patchImageMediaType] 的表格）。
          */
+        /**
+         * 补丁要写入的**语句主体**（不含行首缩进）。
+         *
+         * ⚠️ 缩进由 [patchImageMediaType] 从被替换那一行的真实前缀里取，
+         *   不写死 —— 原因见 [IMG_TYPE_GUARD] 的注释（真机上是 6 空格，
+         *   而这里原来写的是 3 个制表符）。
+         */
         private const val IMG_TYPE_ANCHOR =
-            "\t\t\tif (typeof value !== \"string\") return false;\n" +
-                "\t\t\t/* DSH Android: 放宽到任何 image/ 前缀。原版只认 4 个精确值，\n" +
-                "\t\t\t   而 image/jpg、image/heic、image/avif、image/bmp 以及剪贴板粘贴\n" +
-                "\t\t\t   的空 type 都会被误拒，用户看到的是「仅支持 PNG、JPG、WebP、GIF」。\n" +
-                "\t\t\t   真正的解码能力由下游 sharp 判断，那里报错更准确。 */\n" +
-                "\t\t\treturn value.startsWith(\"image/\");"
+            "if (typeof value !== \"string\") return false;\n" +
+                "/* DSH Android: 放宽到任何 image/ 前缀。原版只认 4 个精确值，\n" +
+                "   而 image/jpg、image/heic、image/avif、image/bmp 以及剪贴板粘贴\n" +
+                "   的空 type 都会被误拒，用户看到的是「仅支持 PNG、JPG、WebP、GIF」。\n" +
+                "   真正的解码能力由下游 sharp 判断，那里报错更准确。 */\n" +
+                "return value.startsWith(\"image/\");"
 
         /**
          * 凭据文件名（`dsh-credentials-local` 的 `CREDENTIALS_FILENAME`，写死，
