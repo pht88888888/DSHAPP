@@ -68,7 +68,8 @@ const TARGET = argOf('target', 'chrome74');
 // v36：v80 三条 UI 缺陷（过程行标题抽搐 / 统计条字号 / 安全刷新）。
 //      降级产物里必须带上 mpReloadUi + reloadWebUi + 新的统计条选择器，
 //      否则老内核上「刷新」仍会走 location.reload() 丢 token。
-const COMPAT_VERSION = argOf('compat-version', '36');
+// v37：哈希类名体检（启动后扫 7 个关键锚点，未命中经 pageDiag 上原生日志）。
+const COMPAT_VERSION = argOf('compat-version', '37');
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const ENGINE_BIN = resolve(ROOT, argOf('engine-bin', 'app/src/main/assets/engine.bin'));

@@ -9851,6 +9851,57 @@ window.__ModuleLoader__.load({
 			 * 这两件事成立就说明本插件的移动端适配已经挂好，界面可以交付了。 */
 			mpSignalUiReady();
 
+			/* ── 哈希类名体检（只上报，不改变任何界面）────────────────────
+			 *
+			 * 本文件有 37 处规则挂在**官方构建期哈希类名**上（wSkVaW_、uV2eYG_、
+			 * O_Ebla_、_1rdzk_ 这类）。它们是官方打包时按内容生成的，官方每次
+			 * 升级都可能变；一旦变了，对应规则就**静默失效** ——
+			 * 界面不会白屏、不会报错，只是「某个修复悄悄不见了」。
+			 *
+			 * 本项目已经为此吃过几次亏（修复 67/78/79 都留过「官方升级可能失效」
+			 * 的警告，但**没人知道到底哪天失效了**）。所以这里在启动后扫一遍
+			 * 关键选择器，把「命中 0 个」的打进 app.log（经 pageDiag 上原生日志，
+			 * 手机上可读）。判据只有一条：**能不能查到元素**，不判断样式是否
+			 * 真的生效（那需要 getComputedStyle 逐条比对，代价太大且易误报）。
+			 *
+			 * ⚠️ 延迟到界面稳定后再扫（mpSignalUiReady 之后仍有约 1.5s 的挂载
+			 *    过程），否则会把「还没渲染」误报成「选择器失效」。
+			 * ⚠️ 只扫**语义稳定**的几个锚点；不扫 `_1rdzk_*` 这种纯哈希类，
+			 *    因为它们在多个组件间复用、命中数不代表任何单一结论。
+			 * ⚠️ 全程 try/catch：体检本身绝不能影响插件激活。
+			 */
+			try {
+				window.setTimeout(() => {
+					try {
+						const probes = [
+							['wSkVaW_root', '会话根容器'],
+							['wSkVaW_viewArea', '消息区'],
+							['uV2eYG_dock', '底栏'],
+							['uV2eYG_card', '输入卡片'],
+							['O_Ebla_title', '过程组标题'],
+							['bOPqQW_pill', '遥测药丸'],
+							['YDXeBa_sessionRow', '会话列表行'],
+						];
+						const missing = [];
+						for (const [cls, label] of probes) {
+							let n = 0;
+							try {
+								n = document.querySelectorAll('.' + cls).length;
+							} catch (e) {
+								n = -1;
+							}
+							if (n === 0) missing.push(label + '(' + cls + ')');
+						}
+						diag(missing.length === 0
+							? '选择器体检: 7 个关键锚点全部命中'
+							: '选择器体检: ' + missing.length + ' 个未命中 → ' +
+								missing.join('、') + ' ｜官方可能已改类名，相关 CSS 规则已静默失效');
+					} catch (e) {
+						diag('选择器体检失败: ' + (e && e.message));
+					}
+				}, 4000);
+			} catch (e) { /* 体检绝不能影响激活 */ }
+
 			return () => {
 				mo.disconnect();
 				document.removeEventListener("click", onNewSessionClick, true);
