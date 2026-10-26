@@ -85,15 +85,25 @@ object BackupDialog {
             }
         }
 
+        // ⚠️ 各项目体积的缓存。**必须缓存**，不能每次勾选都重算：
+        //   `sizeOf()` 会遍历整棵目录树（用栈不用递归，但仍要 stat 每个文件），
+        //   而 `attachments/` 这种目录动辄几千个文件。`refreshTotal()` 在界面
+        //   线程上跑，每次勾选/取消都全量重算 ⇒ 用户点一下复选框要卡好几秒。
+        //   下面那个后台线程本来就会算一遍，把结果存这里给 `refreshTotal()` 用。
+        val sizeCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+        // 体积是否已统计完。没统计完时显示「统计中…」而不是「0 B」——
+        // 后者会让用户以为备份是空的。
+        val sizeReady = AtomicBoolean(false)
+
         fun refreshTotal() {
             val ids = boxes.filterValues { it.isChecked }.keys
-            val bytes = UserDataExporter.ITEMS
-                .filter { it.id in ids }
-                .sumOf { UserDataExporter.sizeOf(context, it).bytes }
-            total.text = if (ids.isEmpty()) {
-                "未选中任何内容"
-            } else {
-                "合计约 ${UserDataExporter.humanSize(bytes)}"
+            val bytes = ids.sumOf { sizeCache[it] ?: 0L }
+            total.text = when {
+                ids.isEmpty() -> "未选中任何内容"
+                // 还没算完的项按 0 计，先告诉用户「在算」，算完会再刷一次
+                !sizeReady.get() && ids.any { sizeCache[it] == null } -> "合计约 … 统计中"
+                else -> "合计约 ${UserDataExporter.humanSize(bytes)}"
             }
             action.isEnabled = ids.isNotEmpty()
             action.alpha = if (ids.isEmpty()) 0.4f else 1f
@@ -105,6 +115,8 @@ object BackupDialog {
         // 异步把每项的实际大小补到标签上（大目录统计可能要一两秒）
         Thread({
             val sizes = UserDataExporter.ITEMS.associate { it.id to UserDataExporter.sizeOf(context, it) }
+            for ((id, sz) in sizes) sizeCache[id] = sz.bytes
+            sizeReady.set(true)
             view.post {
                 for ((id, sz) in sizes) {
                     val cb = boxes[id] ?: continue

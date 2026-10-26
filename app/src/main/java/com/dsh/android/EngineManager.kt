@@ -9455,8 +9455,20 @@ class EngineManager private constructor(private val context: Context) {
           *      本版是**纯 JS 改动**（只有 client.js），未动 CSS 之外的产物，
           *      但 `mobileui/lib/client.js` 是降级编译输入，字节变了，
           *      所以本常量必须 bump（否则设备上继续跑旧 client.js，两条修复都收不到）。
+          * 1.0.0-104：修复 78 的实现修正（103 那版有缺陷，未发布到设备即被本版取代）。
+          *      ① 原实现用 `e.target` 当编辑区容器做 contains 判据 —— 点文字时
+          *         target 是 Lexical 渲染的行内 span、点空白处是 root、点 <br> 又是
+          *         另一个，判据会漏掉一大半情形。改成先 closest 找 composer 根，
+          *         再在根里找 contenteditable 本体。
+          *      ② 原实现在 click 里**同步**改 selection，而 Lexical 自己也监听
+          *         click 并会把 selection 写回内部 model，随后覆盖我们设的位置 ——
+          *         用户看到「光标闪一下又跳回行尾」。改成 setTimeout(0) 延后到
+          *         本次事件处理完之后，让浏览器自然派发 selectionchange，
+          *         Lexical 跟着同步。不碰它的内部 API。
+          *      ③ 同时把修复 79 的根因注释改成诚实表述：原注释把推断写成了
+          *         「实测」，而这一条**没有真机逐帧验证过**，会误导后来人。
           */
-        private const val MOBILE_UI_VERSION = "1.0.0-103"
+        private const val MOBILE_UI_VERSION = "1.0.0-104"
         private const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────

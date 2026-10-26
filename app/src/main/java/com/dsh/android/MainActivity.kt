@@ -3486,9 +3486,15 @@ class MainActivity : AppCompatActivity() {
             line.contains("sharp") ||
             line.contains("EACCES")
         if (!interesting) return
-        // ① 去重：同一行只弹一次。
-        if (line == lastWebErrorToast) return
+        // ① 去重：**带时间窗**，不是永久去重。
+        //    前端一次失败会连着打印多行同一原因，必须压住（否则一次失败弹
+        //    七八个 Toast）；但如果永久记住，用户**第二次**遇到同一个错误就
+        //    再也看不到提示了 —— 那是比不去重更坏的 bug（提示彻底失效，
+        //    而且没有任何迹象）。所以只压 3 秒内的重复。
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (line == lastWebErrorToast && now - lastWebErrorAt < 3000L) return
         lastWebErrorToast = line
+        lastWebErrorAt = now
         // ② 截断：Toast 太长会直接不显示，保留前 200 字足够定位。
         val text = line.substringAfter("原因:").trim().take(200)
         runOnUiThread {
@@ -3499,6 +3505,9 @@ class MainActivity : AppCompatActivity() {
 
     /** 上一条已弹过的错误真因（[surfaceWebErrorReason] 的去重状态）。 */
     private var lastWebErrorToast: String? = null
+
+    /** 上次弹该原因的单调时钟（毫秒）。与 [lastWebErrorToast] 一起做时间窗去重。 */
+    private var lastWebErrorAt: Long = 0L
 
     /**
      * 浏览器侧插件加载失败 ⇒ 自动降级到救援模式（不加载任何第三方插件）。
