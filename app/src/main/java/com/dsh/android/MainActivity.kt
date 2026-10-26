@@ -2294,21 +2294,22 @@ class MainActivity : AppCompatActivity() {
             // 布局还没稳定（面板高度 0 / 视口宽度未知）时不上报：这时候摆过去
             // 只会得到一条 1px 的缝，等下一次 ResizeObserver 更靠谱。
             if (x.isNaN() || y.isNaN() || w < 8 || h < 8 || vw < 8) return
-            if (!::web.isInitialized) return
-            val webView = web.view
-            if (webView.width <= 0 || webView.height <= 0) return
 
-            val scale = webView.width / vw
-            val webLoc = IntArray(2)
-            webView.getLocationOnScreen(webLoc)
-            val rootLoc = IntArray(2)
-            binding.root.getLocationOnScreen(rootLoc)
-
-            val left = (webLoc[0] + x * scale).toInt() - rootLoc[0]
-            val top = (webLoc[1] + y * scale).toInt() - rootLoc[1]
-            val widthPx = (w * scale).toInt()
-            val heightPx = (h * scale).toInt()
-
+            // ⚠️ **整段排版计算都必须在主线程里做。**
+            //
+            //   原来只有最后的 applyEmbedRect 包在 runOnUiThread 里，而前面这些
+            //   —— `web.view.width`、`webView.getLocationOnScreen()`、
+            //   `binding.root.getLocationOnScreen()` —— 全都是 **View 的方法**，
+            //   却直接跑在 JS 线程上（本方法是 @JavascriptInterface）。
+            //
+            //   Android 规定 View 只能在主线程访问。这里读的是尺寸和坐标，
+            //   在多数 ROM 上"碰巧"能跑（读的是字段），但：
+            //     · 读到的是**撕裂的中间状态** —— 布局正在变化时 width 与
+            //       getLocationOnScreen 来自不同帧，算出来的矩形会偏移，
+            //       表现为「侧栏面板位置偶尔偏一下」，用户只会觉得"卡了"；
+            //     · 部分 ROM 会直接抛 CalledFromWrongThreadException。
+            //   这类症状极难归因，而代价只是把计算搬进 runOnUiThread 里。
+            //
             // DSH 当前主题（深/浅 + 背景色）。面板插件顺路带上来，见
             // browser-pane 的 themePayload()：原生这个 WebView 是独立实例，
             // 自己判断不了 DSH 的主题，只能靠前端喂。
@@ -2316,11 +2317,27 @@ class MainActivity : AppCompatActivity() {
             val themeBg = rect.optString("bg", "")
 
             runOnUiThread {
+                if (!::web.isInitialized) return@runOnUiThread
+                val webView = web.view
+                if (webView.width <= 0 || webView.height <= 0) return@runOnUiThread
+
+                val scale = webView.width / vw
+                val webLoc = IntArray(2)
+                webView.getLocationOnScreen(webLoc)
+                val rootLoc = IntArray(2)
+                binding.root.getLocationOnScreen(rootLoc)
+
+                val left = (webLoc[0] + x * scale).toInt() - rootLoc[0]
+                val top = (webLoc[1] + y * scale).toInt() - rootLoc[1]
+                val widthPx = (w * scale).toInt()
+                val heightPx = (h * scale).toInt()
+
                 val view = ensureAiBrowser() ?: return@runOnUiThread
                 view.applyTheme(dark, themeBg)
                 view.applyEmbedRect(left, top, widthPx, heightPx)
                 if (view.visibility != View.VISIBLE) {
                     view.visibility = View.VISIBLE
+                    syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
                     view.bringToFront()
                     Log.i(
                         DshApplication.TAG,
