@@ -1272,6 +1272,12 @@ class MainActivity : AppCompatActivity() {
                 fileChooser = { multiple, onResult -> launchFileChooser(multiple, onResult) },
                 onDownload = { req -> handleDownload(req) },
                 onDownloadStream = { stream -> handleDownloadStream(stream) },
+                // 内核侧的功能降级/中止提示。必须弹出来 —— 手机上看不到日志。
+                onNotice = { msg ->
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    }
+                },
                 // ⚠️ 必须接：不接的话 WebView 的默认实现会**直接杀掉本 App 进程**
                 //（见 WebHostCallbacks.onRendererGone 的说明）。
                 onRendererGone = { didCrash -> onRendererGone(didCrash) },

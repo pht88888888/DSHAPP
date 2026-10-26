@@ -281,4 +281,15 @@ class WebHostCallbacks(
      *   用户看到的是「点登录，什么都没发生」。
      */
     val onCreatePopup: (() -> android.webkit.WebView?)? = null,
+    /**
+     * 内核侧要给用户看的**一句话提示**（宿主实现成 Toast）。
+     *
+     * ⚠️ 存在的理由：手机上看不到 `console.log`，而内核在若干「功能降级」的
+     *   路径上无法自己弹 UI（GeckoView 的宿主回调里没有 Activity 引用）。
+     *   只写日志的结果是「用户觉得功能莫名其妙没了，开发者只能靠他复述」。
+     *   这和本项目「错误必须显示在屏幕上」的既定要求一致。
+     *
+     * 默认 `null` = 不提示（不影响既有的 system 侧构造）。
+     */
+    val onNotice: ((String) -> Unit)? = null,
 )

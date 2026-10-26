@@ -487,6 +487,22 @@ class GeckoWebHost(
      */
     private class IncomingDownload(val url: String, val filename: String) : Closeable {
         val sink: OutputStream = ByteArrayOutputStream()
+
+        /**
+         * 已攒字节数。
+         *
+         * ⚠️ 必须自己记：`sink` 的静态类型是 [OutputStream]，没有 `size()`；
+         *   而这里需要在下一次写入**之前**判断是否会超限，不能等写完再看。
+         */
+        var written: Long = 0L
+            private set
+
+        fun append(bytes: ByteArray): Boolean {
+            written += bytes.size
+            sink.write(bytes)
+            return true
+        }
+
         override fun close() {
             (sink as? ByteArrayOutputStream)?.close()
         }
@@ -512,7 +528,36 @@ class GeckoWebHost(
             Log.w(DshApplication.TAG, "下载分块 base64 解码失败", t)
             return
         }
-        dl.sink.write(bytes)
+        // ⚠️ **必须限长，否则大文件必然 OOM。**
+        //
+        // 这里的 sink 是 ByteArrayOutputStream —— 整个下载文件都堆在 Java 堆里，
+        // 而不是边收边落盘（落盘在宿主 `handleDownloadStream` 里，但它拿到的
+        // 已经是一个「完整读进内存」的 ByteArrayInputStream）。
+        // 也就是说下载一个 100 MB 的文件，进程里就真的要占 100 MB 堆；
+        // 收尾时 `toByteArray()` 还会再整份复制一次，**峰值翻倍**。
+        //
+        // 而页面侧（content.js 的 downloadChunk）同样是把整个文件先读进
+        // Uint8Array 再分块发过来，内存里已经是第二份。
+        //
+        // 低内存机（堆 192–256 MB）下，这基本等于「下载大文件必崩」。
+        // 与其崩掉，不如明确拒绝并说清原因 —— 用户至少知道发生了什么。
+        //
+        // 上限 32 MB：session 日志（本功能的主要用途）通常几 MB 以内，
+        // 32 MB 留了足够余量；超过这个量级更该走系统浏览器下载。
+        if (dl.written + bytes.size > MAX_DOWNLOAD_BYTES) {
+            val limitMb = MAX_DOWNLOAD_BYTES / (1024 * 1024)
+            val msg = "下载已中止：${dl.filename} 超过 $limitMb MB。" +
+                "gecko 版下载是全内存的，再大就会把 App 撑崩 —— " +
+                "请用系统浏览器打开该链接下载。"
+            Log.w(DshApplication.TAG, msg)
+            // ⚠️ 必须让用户看到：手机上看不到 logcat，只记日志等于「点了下载什么也没发生」。
+            runCatching { callbacks.onNotice?.invoke(msg) }
+            // 释放已攒的字节，别让它一直占着
+            runCatching { dl.close() }
+            incomingDownload = null
+            return
+        }
+        dl.append(bytes)
     }
 
     /** 从 URL 末段猜文件名（页面没给 `download` 属性时的兜底）。 */
@@ -999,6 +1044,14 @@ class GeckoWebHost(
          *   不设上限就是无界内存增长。
          */
         private const val MAX_PENDING_UNTIL_READY = 256
+
+        /**
+         * 内存中攒下载内容的上限（32 MB）。
+         *
+         * ⚠️ 见 [appendDownloadChunk] 的说明：这条路径是**全内存**的，
+         *   不是流式落盘。上限的作用是「宁可明确失败，也不要 OOM 被杀」。
+         */
+        private const val MAX_DOWNLOAD_BYTES = 32L * 1024 * 1024
 
         /** 注入 token 跟随脚本前的等待（ms）：等桥扩展握手完成。 */
         const val TOKEN_FOLLOW_DELAY_MS = 2500L
