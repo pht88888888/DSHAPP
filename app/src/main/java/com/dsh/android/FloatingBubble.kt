@@ -1135,6 +1135,19 @@ class FloatingBubble(private val context: Context) {
     /** 是否已 addView（避免重复添加 / 重复移除）。 */
     private var attached = false
 
+    /**
+     * 定时器**当初被 post 到的那个 View**。
+     *
+     * ⚠️ 存在的唯一理由：`cancelXxx()` 里的 `root?.removeCallbacks(...)` 在
+     *   `root` 已被置空时会**短路，什么也不做** —— 已排队的 Runnable 就摘不掉了。
+     *   而 `moveRunnable` 是**自我续期**的（`!attached` 分支里也会再
+     *   `scheduleMove()`），摘不掉就等于无限空转。
+     *
+     * 所有 `postDelayed` 都挂在 [root] 上（本文件内已逐一核对），所以在把
+     * `root` 置空**之前**先把它记到这里，cancel 系列就能照常工作。
+     */
+    private var timerHost: android.view.View? = null
+
     /** 当前 window 的左上角坐标（px）。拖动时以它为基准累加位移。 */
     private var curX = 0
     private var curY = 0
@@ -1533,6 +1546,7 @@ class FloatingBubble(private val context: Context) {
 
         val view = LayoutInflater.from(context).inflate(R.layout.bubble_window, null)
         root = view
+        timerHost = view
         circleView = view.findViewById(R.id.bubbleCircle)
         avatarView = view.findViewById(R.id.bubbleAvatar)
         videoHost = view.findViewById(R.id.bubbleVideoHost)
@@ -1610,7 +1624,44 @@ class FloatingBubble(private val context: Context) {
         } catch (t: Throwable) {
             // 最常见的是没权限（BadTokenException）。不致命，只是没气泡。
             Log.w(TAG, "添加气泡失败: ${t.message}")
+            /*
+             * ⚠️ **必须把 attached 也清回 false，并把已经跑起来的定时器/传感器停掉。**
+             *
+             * `wm.addView()` 成功之后还有一长串初始化（`scheduleChain` / `scheduleMove` /
+             * `startShakeDetection` / `startImeWatching` / `renderBalanceBadge` /
+             * `applyImeWindow` …），其中任何一个抛异常都会落到这里。那一刻
+             * `attached` 已经是 **true**，而 `root` 被置成了 null。
+             *
+             * 于是进入「attached == true 但 root == null」的不一致状态，后果是：
+             *   · `show()` 第 1524 行 `if (attached) return` —— 此后**永远直接返回**；
+             *   · `hide()` 第 1618 行 `if (!attached) return` 放行，但紧接着
+             *     `val v = root ?: return` 也返回，`attached` 依然是 true。
+             *
+             * 也就是这个气泡**再也显示不出来，也再关不掉** —— 用户只能重启 App。
+             * 而 catch 里原来只写了 `root = null`，正好制造了这个状态。
+             *
+             * 光置 attached = false 还不够：那些已经起来的定时器/传感器会继续跑，
+             * 回调里碰到 null root 会反复抛异常（`scheduleChain` 的注释已经点明
+             * 「视图都要移除了，继续 postDelayed 只是空转耗电」）。所以这里走一遍
+             * 与 `hide()` 相同的收尾 —— 但**不能再调 hide()**：它开头就是
+             * `val v = root ?: return`，此刻 root 已经是 null，会直接返回什么也不做。
+             */
+            attached = false
+            ImeWindowState.setKeepPolling(false)
+            runCatching { stopFramePlayer() }
+            runCatching { videoLayer?.release() }
+            videoLayer = null
+            runCatching { stopThrow() }
+            runCatching { stopShakeDetection() }
+            runCatching { stopImeWatching() }
+            runCatching { removeBalanceBadge() }
+            runCatching { cancelChain() }
+            runCatching { cancelMove() }
+            runCatching { stopWalk() }
+            runCatching { cancelLongPress() }
             root = null
+            // 兜底：addView 之后若已经挂上，尽量摘掉，别留一个隐形窗口挡住点击。
+            runCatching { wm.removeViewImmediate(view) }
         }
     }
 
@@ -1674,6 +1725,9 @@ class FloatingBubble(private val context: Context) {
         edgeView = null
         expanded = false
         edgeCollapsed = false
+        // 定时器都已经在上面 cancel 掉了，这里再把 host 引用放掉 ——
+        // 否则 FloatingBubble 会一直强引用着那个已销毁的 View。
+        timerHost = null
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1957,7 +2011,11 @@ class FloatingBubble(private val context: Context) {
      * @param holdMs 保持多久（0 = 一直保持，直到调用方显式清掉，拖拽用这个）。
      */
     private fun playManualAction(action: String, holdMs: Long) {
-        manualRunnable?.let { root?.removeCallbacks(it) }
+        // 同 cancelMove：root 为 null 时也要能摘掉，见 timerHost 的说明。
+        manualRunnable?.let { r ->
+            root?.removeCallbacks(r)
+            timerHost?.removeCallbacks(r)
+        }
         manualRunnable = null
         manualAction = action
         manualUntil = if (holdMs > 0) android.os.SystemClock.uptimeMillis() + holdMs else 0L
@@ -1976,7 +2034,13 @@ class FloatingBubble(private val context: Context) {
 
     /** 清掉手动姿势（不重刷视图，调用方自己决定要不要刷）。 */
     private fun clearManualAction() {
-        manualRunnable?.let { root?.removeCallbacks(it) }
+        // 与 cancelMove 同理：root 已为 null 时 `root?.removeCallbacks` 会短路，
+        // 已排的到期回调摘不掉（见 timerHost 的说明）。
+        val r = manualRunnable
+        if (r != null) {
+            root?.removeCallbacks(r)
+            timerHost?.removeCallbacks(r)
+        }
         manualRunnable = null
         manualAction = ""
         manualUntil = 0L
@@ -2430,7 +2494,13 @@ class FloatingBubble(private val context: Context) {
 
     /** 取消随机链的定时器。 */
     private fun cancelChain() {
-        chainRunnable?.let { root?.removeCallbacks(it) }
+        // 与 cancelMove 同理：root 可能已被置空，那时 `root?.removeCallbacks` 短路，
+        // 已排的回调摘不掉。这里一并从 timerHost 摘一次。
+        val r = chainRunnable
+        if (r != null) {
+            root?.removeCallbacks(r)
+            timerHost?.removeCallbacks(r)
+        }
         chainRunnable = null
     }
 
@@ -2458,7 +2528,12 @@ class FloatingBubble(private val context: Context) {
 
     /** 取消长按定时器。 */
     private fun cancelLongPress() {
-        longPressRunnable?.let { root?.removeCallbacks(it) }
+        // 与 cancelMove 同理（见那边的说明）。
+        val r = longPressRunnable
+        if (r != null) {
+            root?.removeCallbacks(r)
+            timerHost?.removeCallbacks(r)
+        }
         longPressRunnable = null
     }
 
@@ -2551,7 +2626,23 @@ class FloatingBubble(private val context: Context) {
      * 要停掉正在走的动画用 [stopWalk]（球隐藏、手指按下时才需要）。
      */
     private fun cancelMove() {
-        moveRunnable?.let { root?.removeCallbacks(it) }
+        /*
+         * ⚠️ **不能只写 `root?.removeCallbacks(it)`。**
+         *
+         * `moveRunnable` 是**自我续期**的：它的 `run()` 里不管 `attached` 真假都会
+         * 再调一次 `scheduleMove()`。所以一旦这个 Runnable 还留在某个 View 的
+         * 消息队列里，而 `root` 已经被置成 null，`removeCallbacks` 就**根本不会执行**
+         * （`?.` 短路），它会在 `!attached` 分支里无限自我续期 —— 空转耗电，
+         * 而且永远停不下来。
+         *
+         * 这正是 `show()` 的 catch 分支会制造的状态（`root = null` 之后才收尾）。
+         * 所以这里双保险：既通过 `root` 摘，也通过它当初被 post 到的那个 View 摘。
+         */
+        val r = moveRunnable
+        if (r != null) {
+            root?.removeCallbacks(r)
+            timerHost?.removeCallbacks(r)
+        }
         moveRunnable = null
     }
 
@@ -2729,7 +2820,17 @@ class FloatingBubble(private val context: Context) {
 
     /** 停掉轮播。幂等。 */
     private fun stopFramePlayer() {
-        frameRunnable?.let { root?.removeCallbacks(it) }
+        /*
+         * ⚠️ 与 cancelMove 同一类问题，而且这里同样会**自我续期**
+         *   （帧播放的 run() 末尾会再 `root?.postDelayed(this, delay)`）。
+         *   root 已被置空时 `root?.removeCallbacks` 短路，已排的帧就摘不掉，
+         *   会在没有 View 的情况下一直往后跳帧。
+         */
+        val r = frameRunnable
+        if (r != null) {
+            root?.removeCallbacks(r)
+            timerHost?.removeCallbacks(r)
+        }
         frameRunnable = null
     }
 
