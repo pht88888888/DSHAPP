@@ -165,7 +165,7 @@ object RescueCommandBridge {
 
     /** 读一次信箱。跑在 `dsh-rescue-cmd` 线程上。 */
     /**
-     * 轮询一次信箱。
+     * 轮询一次救援命令信箱。
      *
      * ⚠️ **整个方法体必须被 try/catch 包住，不能有异常漏出去。**
      *
