@@ -4418,6 +4418,11 @@ class MainActivity : AppCompatActivity() {
             it.destroy()
         }
         aiBrowser = null
+        // ⚠️ 镜像标志必须一起清：`aiBrowserVisible` 是给**任意线程**读的缓存
+        //   （见其 KDoc），而销毁后 aiBrowser 已为 null。留着 true 会让
+        //   之后任何 `isAiBrowserVisible()` 的调用都回错值 —— 若 Activity 因
+        //   配置变更重建、而引擎的快照推送还在跑，页面就会读到 "visible"。
+        aiBrowserVisible = false
         // destroy() 之后 WebView 就关了，内存里没落盘的 Cookie 会直接丢。
         // 必须在销毁**之后**再 flush 一次（此时内核已经把最后的 Cookie 写进
         // CookieManager，正是 flush 的时机）。
