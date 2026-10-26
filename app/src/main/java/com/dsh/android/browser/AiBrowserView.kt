@@ -1776,8 +1776,9 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 return@run
             }
             try {
-                val dir = shotDir ?: File(context.filesDir, "browser-shots")
+                val dir = shotDir ?: ShotStore.dir(context.filesDir)
                 if (!dir.exists()) dir.mkdirs()
+                ShotStore.prune(dir)
                 val f = File(dir, "shot-${System.currentTimeMillis()}.png")
                 FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 bmp.recycle()

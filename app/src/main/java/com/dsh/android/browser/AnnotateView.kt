@@ -682,7 +682,8 @@ class AnnotateView(context: Context) : FrameLayout(context) {
             drawStrokes(canvas, strokes)
             canvas.restore()
 
-            val dir = File(context.filesDir, "browser-shots").apply { if (!exists()) mkdirs() }
+            val dir = ShotStore.dir(context.filesDir)
+            ShotStore.prune(dir)
             val f = File(dir, "mark-${System.currentTimeMillis()}.png")
             FileOutputStream(f).use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
             out.recycle()
