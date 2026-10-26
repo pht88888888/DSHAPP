@@ -268,4 +268,17 @@ class WebHostCallbacks(
     val onRendererGone: (didCrash: Boolean) -> Unit,
     /** 页面要录音时的麦克风授权通道（见 [MicrophoneChannel]）。 */
     val microphone: MicrophoneChannel,
+    /**
+     * 页面用 `window.open("about:blank")` 预开了一个**还没有 URL** 的窗口
+     * （官方登录 `BrowserLogin.begin` 就是这条路径），内核需要宿主给一个
+     * 真实的 `WebView` 当渲染目标。
+     *
+     * 宿主返回一个**已经挂到可见容器里**的 WebView，内核随后会让页面自己
+     * 导航过去（`popup.location.replace(authorizeUrl)`）。
+     *
+     * ⚠️ 返回 `null` = 宿主不管，内核会丢弃这次 `window.open`（`popup` 变
+     *   `null`），页面侧那句 `popup.location.replace(...)` 就静默失败 ——
+     *   用户看到的是「点登录，什么都没发生」。
+     */
+    val onCreatePopup: (() -> android.webkit.WebView?)? = null,
 )

@@ -679,6 +679,8 @@ class GeckoWebHost(
                     "openAiBrowser" -> b.openAiBrowser()
                     // AI 浏览器嵌入定位：前端量出面板矩形后高频上报（ResizeObserver）。
                     "aiBrowserLayout" -> b.aiBrowserLayout(args.optString(0, ""))
+                    "aiAnnotateResult" -> b.aiAnnotateResult()
+                    "aiAnnotateReport" -> b.aiAnnotateReport(args.optString(0, ""))
                     "aiBrowserDetach" -> b.aiBrowserDetach()
                     "aiBrowserState" -> b.aiBrowserState()
                     // 甩动手感三开关（见「悬浮气泡」设置页）。

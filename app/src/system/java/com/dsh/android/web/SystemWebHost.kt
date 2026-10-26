@@ -429,6 +429,29 @@ class SystemWebHost(
                 return false
             }
             return try {
+                // ── 优先交给宿主（= 内置浏览器的一个标签）──────────────────
+                // ⚠️⚠️ **这里原来新建一个裸 `WebView` 却从不 `addView`**，
+                //    所以它根本没有可见的宿主 —— 内核往里渲染、页面也确实在跑，
+                //    但用户屏幕上什么都没有。症状就是「点登录，一片空白」。
+                //    现在改成让宿主给一个**已经挂在可见容器里**的 WebView。
+                val hosted = callbacks.onCreatePopup?.invoke()
+                if (hosted != null) {
+                    transport.webView = hosted
+                    // ⚠️⚠️ **这一行才是内核真正拿到新窗口的时刻。**
+                    //
+                    // `onCreateWindow` 的正确协议是：宿主把 WebView 塞进
+                    // `transport`，**然后 `sendToTarget()` 投递那条消息**，内核在
+                    // 消息到达时才把渲染目标接上去。
+                    //
+                    // 之前只有 `transport.webView = hosted` + `return true`，没有
+                    // `sendToTarget()` —— 于是内核永远不知道窗口在哪：我们这边
+                    // 标签页看得见（那是自己 addView 的），内容却**整片空白**，
+                    // 地址栏停在 `about:blank`。用户截图正是这个症状。
+                    resultMsg.sendToTarget()
+                    Log.i(DshApplication.TAG, "window.open 已交给内置浏览器承载并投递")
+                    return true
+                }
+                // ── 兜底：宿主没接（理论上不会发生）──────────────────────
                 val popup = WebView(parent.context)
                 popup.settings.apply {
                     javaScriptEnabled = true
@@ -456,9 +479,10 @@ class SystemWebHost(
                     }
                 }
                 transport.webView = popup
-                // ⚠️ `transport.webView = popup` **之后**才能回 true：
-                //   内核在收到 true 时立刻读 `transport.webView`，赋值晚一步就是白窗口。
-                Log.i(DshApplication.TAG, "window.open 已建空白窗口（等待页面自行导航）")
+                // ⚠️ 与上面同理：`transport.webView` 赋值**之后**必须投递消息，
+                //   内核收到消息才会去读它。少了这一句就是白窗口。
+                resultMsg.sendToTarget()
+                Log.w(DshApplication.TAG, "window.open 用兜底窗口（不可见！宿主未接 onCreatePopup）")
                 true
             } catch (t: Throwable) {
                 Log.w(DshApplication.TAG, "建 window.open 窗口失败: ${t.message}")
@@ -605,6 +629,12 @@ private class SystemPageBridge(private val impl: PageBridge) {
 
     @android.webkit.JavascriptInterface
     fun aiBrowserLayout(json: String) = impl.aiBrowserLayout(json)
+
+    @android.webkit.JavascriptInterface
+    fun aiAnnotateResult(): String = impl.aiAnnotateResult()
+
+    @android.webkit.JavascriptInterface
+    fun aiAnnotateReport(message: String) = impl.aiAnnotateReport(message)
 
     @android.webkit.JavascriptInterface
     fun aiBrowserDetach() = impl.aiBrowserDetach()

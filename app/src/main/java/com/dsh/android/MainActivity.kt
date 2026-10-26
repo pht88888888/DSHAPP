@@ -1218,9 +1218,23 @@ class MainActivity : AppCompatActivity() {
                     maybeRescueFromWebFailure(line)
                 },
                 onExternalUrl = { url ->
-                    runCatching {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    }.onFailure { Log.w(DshApplication.TAG, "无法打开外部链接: $url", it) }
+                    // ── http/https 一律用**内置**浏览器打开 ────────────────
+                    // 用户明确要求：点 App 内任何链接都别跳出去，用我们自己的
+                    // 浏览器。原生 WebView 能过 `X-Frame-Options` / CSP，而
+                    // 官方侧栏那个 iframe 方案打不开 GitHub、Google。
+                    //
+                    // ⚠️ **只接管 http/https**：`mailto:` / `tel:` / `market:`
+                    //    这类协议塞进 WebView 只会显示「无法加载」，必须留给
+                    //    系统去拉起对应的 App。
+                    val scheme = runCatching { Uri.parse(url).scheme?.lowercase() }.getOrNull()
+                    if (scheme == "http" || scheme == "https") {
+                        Log.i(DshApplication.TAG, "链接转内置浏览器: $url")
+                        openAiBrowser(url)
+                    } else {
+                        runCatching {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        }.onFailure { Log.w(DshApplication.TAG, "无法打开外部链接: $url", it) }
+                    }
                 },
                 fileChooser = { multiple, onResult -> launchFileChooser(multiple, onResult) },
                 onDownload = { req -> handleDownload(req) },
@@ -1231,6 +1245,32 @@ class MainActivity : AppCompatActivity() {
                 // ⚠️ 必须接：不接的话两个内核的默认实现都是**拒绝麦克风**，
                 //   页面的语音输入永远报「权限被拒绝」（见 MicrophoneChannel）。
                 microphone = { onResult -> onMicrophoneRequested(onResult) },
+                // ── window.open 的渲染目标 ────────────────────────────────
+                // 官方登录用 `window.open("about:blank")` 预开窗口，再往里
+                // `location.replace(authorizeUrl)`。内核要一个真实可见的
+                // WebView —— 交给内置浏览器新开一个标签。
+                //
+                // ⚠️ 必须 `runOnUiThread` + 同步等结果：内核在
+                //    `onCreateWindow` 返回 true 的**那一刻**就会读
+                //    `transport.webView`，异步赋值必然拿到 null ⇒ 白窗口。
+                onCreatePopup = {
+                    if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                        ensureAiBrowser()?.let { b ->
+                            // 登录弹窗走同一条路：先把侧栏切过来，让授权页落在
+                            // 面板里，而不是整屏糊上来。
+                            requestBrowserPane()
+                            b.visibility = View.VISIBLE
+                            b.bringToFront()
+                            notifyBrowserPane(visible = true)
+                            b.createPopupTarget()
+                        }
+                    } else {
+                        // onCreateWindow 理论上就在主线程，真走到这里说明内核
+                        // 换了线程模型 —— 记一笔，别静默失败。
+                        Log.w(DshApplication.TAG, "onCreatePopup 不在主线程，拒绝建窗口")
+                        null
+                    }
+                },
             ),
         )
         binding.webContainer.addView(
@@ -1283,12 +1323,23 @@ class MainActivity : AppCompatActivity() {
         // ✕ / 关到最后一个标签 = 用户主动关掉浏览器 ⇒ 连侧栏 tab 一起关。
         // （返回键那条路径仍然只隐藏，见 onBackPressed。）
         v.onClose = { closeAiBrowser(closeTab = true) }
+        // ⌄ = 临时收起：只隐藏，**不动侧栏 tab**，随时能原样调回来。
+        v.onCollapse = { closeAiBrowser(closeTab = false) }
+        // ✎ = 截图定格后进标注画布。
+        v.onAnnotate = { showAnnotate() }
+        // AI 调 screenshot 前，要先把浏览器收进侧栏面板再截 —— 否则截到的是
+        // 全屏视口，和用户所见不是同一个画面。这里复用同一条展开通道。
+        v.onRequestEmbed = { requestBrowserPane() }
         // 截图落在 workspace 下的隐藏目录，模型可以直接 read 那张图。
         v.shotDir = java.io.File(workspaceDir(), ".browser-shots")
         // 文件上传走宿主已有的系统选择器（三条收尾路径由 launchFileChooser 保证）
         v.onPickFile = { cb ->
             launchFileChooser(multiple = false) { uris -> cb.onReceiveValue(uris) }
         }
+        // 顶部安全区：宿主开了 FLAG_LAYOUT_NO_LIMITS，内容铺到状态栏底下。
+        // 不预留的话工具栏上的后退键和 ✕ 会被时间/电量压住 —— 看得见但点不准，
+        // 用户的感受就是「进了浏览器出不来」。
+        v.setSafeTop(if (fullscreenApplied) statusBarHeightPx() else 0)
         aiBrowser = v
         Log.i(DshApplication.TAG, "AI 浏览器实例已创建")
         return v
@@ -1301,6 +1352,15 @@ class MainActivity : AppCompatActivity() {
         view.bringToFront()
         if (url != null) view.loadUrl(url)
         else if (view.currentUrl().isEmpty()) view.loadUrl(com.dsh.android.browser.AiBrowserView.HOME_URL)
+        // ⚠️ **必须请前端把侧栏切过来**，不能只把原生 WebView 显示出来。
+        //
+        // 侧栏这时可能正停在对话页（用户点了对话里的链接），或者已经开过
+        // 浏览器但被切走了。只 `visibility = VISIBLE` 的话，WebView 确实
+        // 盖在最上层，可侧栏的标签 UI 还在对话页 —— 用户看到的是「界面没
+        // 任何变化」，原话：「点击链接它不会自动打开侧边栏，导致用户以为
+        // 没有效果」。`onCreatePopup`（登录弹窗）一直有这一步，普通链接
+        // 路径反而漏了。
+        requestBrowserPane()
         notifyBrowserPane(visible = true)
         Log.i(DshApplication.TAG, "AI 浏览器已打开: ${view.currentUrl()}")
     }
@@ -1340,6 +1400,92 @@ class MainActivity : AppCompatActivity() {
             "{detail:{visible:$visible,userClosed:$userClosed}}))"
         runCatching { web.evaluateJavascript(script, null) }
             .onFailure { Log.w(DshApplication.TAG, "通知侧栏面板失败: ${it.message}") }
+    }
+
+    /** 待前端取走的标注结果：图片文件 + 提问。 */
+    private var pendingAnnotate: Pair<java.io.File, String>? = null
+
+    /** 正在显示的标注画布。 */
+    private var annotateView: com.dsh.android.browser.AnnotateView? = null
+
+    /**
+     * 弹出标注画布：把刚截的图定格，让用户圈画 + 提问。
+     *
+     * ## 层级
+     *
+     * 画布盖在**整个根布局**上，不是盖在浏览器上。因为用户圈完要打字，
+     * 键盘弹起会挤压可用高度 —— 盖在浏览器里会被浏览器自己的工具栏和
+     * 标签条挤成一条缝。
+     */
+    private fun showAnnotate() {
+        val bmp = aiBrowser?.takeAnnotateBitmap()
+        if (bmp == null) {
+            Log.w(DshApplication.TAG, "标注：没有可用的截图")
+            return
+        }
+        annotateView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
+
+        val v = com.dsh.android.browser.AnnotateView(this)
+        v.setBase(bmp)
+        v.onCancel = { dismissAnnotate() }
+        v.onSend = { png, question ->
+            pendingAnnotate = png to question
+            dismissAnnotate()
+            // 告诉前端「有东西可取」。前端收到后调 aiAnnotateResult() 拿数据，
+            // 再填进当前会话的输入框并发送。
+            notifyAnnotateReady()
+        }
+        binding.root.addView(
+            v,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        annotateView = v
+        Log.i(DshApplication.TAG, "标注画布已打开")
+    }
+
+    /** 关掉标注画布并释放底图。 */
+    private fun dismissAnnotate() {
+        val v = annotateView ?: return
+        annotateView = null
+        (v.parent as? android.view.ViewGroup)?.removeView(v)
+        v.release()
+        Log.i(DshApplication.TAG, "标注画布已关闭")
+    }
+
+    /** 通知前端：标注结果可取。 */
+    private fun notifyAnnotateReady() {
+        if (!::web.isInitialized) return
+        val script = "window.dispatchEvent(new CustomEvent('dsh:browser-annotate'))"
+        runCatching { web.evaluateJavascript(script, null) }
+            .onFailure { Log.w(DshApplication.TAG, "通知标注结果失败: ${it.message}") }
+    }
+
+    /**
+     * 请求侧栏把面板切到「AI 浏览器」（原生 → 前端）。
+     *
+     * ## 为什么需要这个
+     *
+     * 浏览器在**侧栏没打开**时被点链接拉起，只能以全屏覆盖层出现。那时屏幕上
+     * 没有任何侧栏 UI —— 用户看不到面板边界，也找不到「把这个东西收起来」的
+     * 入口，只能按 ✕ 彻底关掉，而关掉就丢页面。用户的原话：
+     * 「点击登录或者对话界面的任何一个链接，它都是全屏弹出，顶部没有带我们
+     *  侧边栏的标签页 UI，就会导致我无法临时通过侧边栏关闭按钮来临时移除」。
+     *
+     * 所以打开浏览器**之前**先请前端把侧栏切过去。面板一旦挂载就会自己上报
+     * 矩形，浏览器随之被摆进面板里，UI 也就齐了。
+     *
+     * ⚠️ **异步、尽力而为**：前端可能还没加载完、侧栏可能被用户锁住。打不开
+     *   也绝不能影响浏览器本身 —— 原生那边已经可见了，最差就是全屏形态。
+     *   所以这里不等待、不回读结果。
+     */
+    private fun requestBrowserPane() {
+        if (!::web.isInitialized) return
+        val script = "window.dispatchEvent(new CustomEvent('dsh:browser-reveal'))"
+        runCatching { web.evaluateJavascript(script, null) }
+            .onFailure { Log.w(DshApplication.TAG, "请求展开侧栏失败: ${it.message}") }
     }
 
     /** AI 浏览器是否正在显示。 */
@@ -2073,6 +2219,47 @@ class MainActivity : AppCompatActivity() {
         override fun aiBrowserState(): String =
             if (isAiBrowserVisible()) "visible" else "hidden"
 
+        /**
+         * 前端取走标注结果。取一次清空 —— 否则同一张图会被反复提交。
+         */
+        /**
+         * 前端回报标注发送结果 —— **必须显示在屏幕上**。
+         *
+         * 手机上看不到 console.log，静默失败等于「点了没反应」，用户和
+         * 开发者都只能靠猜，代价是反复下载 148MB 的安装包。这里直接 Toast，
+         * 用户截一张图就能定位问题。
+         */
+        override fun aiAnnotateReport(message: String) {
+            Log.i(DshApplication.TAG, "标注发送结果: $message")
+            runOnUiThread {
+                android.widget.Toast.makeText(
+                    this@MainActivity,
+                    message,
+                    if (message.startsWith("已发送")) android.widget.Toast.LENGTH_SHORT
+                    else android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+
+        override fun aiAnnotateResult(): String {
+            Log.i(DshApplication.TAG, "前端索取标注结果，待发送=${pendingAnnotate != null}")
+            val pending = pendingAnnotate ?: return ""
+            pendingAnnotate = null
+            return runCatching {
+                // 主 WebView 的 allowFileAccess=false，前端读不到 file://，
+                // 所以这里直接把字节 base64 化递过去。
+                val bytes = pending.first.readBytes()
+                val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                org.json.JSONObject().apply {
+                    put("png", b64)
+                    put("text", pending.second)
+                }.toString()
+            }.getOrElse {
+                Log.w(DshApplication.TAG, "编码标注图失败: ${it.message}")
+                ""
+            }
+        }
+
         override fun aiBrowserDetach() {
             // 只隐藏，不销毁：页面状态与登录态保留，下次开 tab 还是原样。
             runOnUiThread {
@@ -2548,6 +2735,9 @@ class MainActivity : AppCompatActivity() {
         window.attributes = lp
         // 页面要让位才知道该留多少 —— 两个方向都推一次（关掉时推 0，页面恢复原样）。
         pushSystemBarInset(config.fullscreen)
+        // 内置浏览器同理：全面屏开着时它的工具栏会被状态栏压住，
+        // 后退键和 ✕ 就在最左边和最右边 —— 正好是时间/电量所在的位置。
+        aiBrowser?.setSafeTop(if (config.fullscreen) statusBarHeightPx() else 0)
     }
 
     /**

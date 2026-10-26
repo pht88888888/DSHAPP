@@ -214,6 +214,39 @@ interface PageBridge {
     fun aiBrowserState(): String
 
     /**
+     * 前端取走「标注发送」的结果（截图 + 提问），取一次就清空。
+     *
+     * 返回 JSON 串，字段：
+     * - `png`   — 合成图的 **base64**（不带 `data:` 前缀）
+     * - `text`  — 用户输入的提问，可能为空串
+     *
+     * ## 为什么用 base64 而不是给文件路径
+     *
+     * 主 WebView 的 `allowFileAccess = false`（`SystemWebHost` 里刻意关掉的，
+     * 为的是不让页面随便读沙盒文件）。所以前端 `fetch("file://…")` 一定失败。
+     *
+     * 要放开这个开关就得把整个页面变成能读 filesDir 的 —— 为了一个功能扩大
+     * 攻击面不值当。改成原生读字节、base64 编码后一次交给前端，前端直接
+     * `atob` 还原成 Blob。代价是字符串大一点（约 1.33 倍），可接受。
+     *
+     * @return JSON；没有待发送内容时返回空串。
+     */
+    fun aiAnnotateResult(): String
+
+    /**
+     * 前端回报「标注发送」的结果，原生用 Toast 显示给用户。
+     *
+     * ## 为什么要有它
+     *
+     * 手机上看不到 `console.log`。发送链路一旦静默失败，用户只能看到
+     * 「点了没反应」，开发者也只能靠猜。把失败原因**显示在屏幕上**，
+     * 用户截一张图就能定位，不必反复下载安装包。
+     *
+     * @param message - 给用户看的一句话（成功或失败原因）。
+     */
+    fun aiAnnotateReport(message: String)
+
+    /**
      * 读「键盘避让」状态。返回 JSON：`{"enabled":bool,"a11y":bool}`。
      *
      * 两个字段是**两件独立的事实**，不要合并：

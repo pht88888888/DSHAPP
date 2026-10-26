@@ -3,6 +3,12 @@ package com.dsh.android.browser
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.Context
+import android.app.Activity
+import android.graphics.Rect
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.view.PixelCopy
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -77,8 +83,21 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     companion object {
         private const val TAG = "AiBrowser"
 
-        /** 首页。选 GitHub 是因为它同时具备「登录表单 + 大量可点元素」两个特征。 */
-        const val HOME_URL = "https://github.com"
+        /** 首页（用户指定）。 */
+        const val HOME_URL = "https://www.navir.icu/"
+
+        /** 截图前等面板把本 View 收进去的上限（毫秒）。 */
+        private const val EMBED_WAIT_MS = 1200L
+
+
+        /** 判断画面静止时，两次截图之间的间隔（毫秒）。 */
+        private const val STATIC_GAP_MS = 150L
+
+        /** 判断画面静止的总时限（毫秒）。超时交最后一张，不卡住工具调用。 */
+        private const val STATIC_TIMEOUT_MS = 3000L
+
+        /** 判断画面静止的最多截图次数。 */
+        private const val STATIC_MAX_TRIES = 12
 
         /** 工具栏高度（dp）。进度条与页面容器都按它对齐，**只能有一个来源**。 */
         private const val BAR_H_DP = 46
@@ -96,6 +115,9 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             pillText = 0xFFF2F4F7.toInt(),
             accent = 0xFF6FA8DC.toInt(),
             aiAccent = 0xFFE0A33A.toInt(),
+            // 描边取比 field 亮一档的灰蓝，在 bar/field 上都拉得开（对比度 > 1.9）。
+            stroke = 0xFF6B7484.toInt(),
+            icon = 0xFFC8CDD4.toInt(),
         )
 
         /** 浅色：贴近 DSH 浅色主题（body 背景实测 rgb(248,249,250)）。 */
@@ -111,6 +133,8 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             pillText = 0xFF1F2328.toInt(),
             accent = 0xFF2C6FB5.toInt(),
             aiAccent = 0xFFB4700C.toInt(),
+            stroke = 0xFF8A939E.toInt(),
+            icon = 0xFF3C434D.toInt(),
         )
     
 
@@ -156,6 +180,16 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         val pillText: Int,
         val accent: Int,
         val aiAccent: Int,
+        /**
+         * 控件描边色。**这是「文字和按钮控件跟背景太像、分辨不出来」的根治项。**
+         *
+         * 实测原有色阶：`field` 与 `bar` 的对比度只有 1.16（深色）/ 1.12（浅色），
+         * `fieldActive` 与 `bar` 也只有 1.45 / 1.29 —— 远低于「能看出这是个控件」
+         * 所需的 3:1。光靠底色区分不行，必须画一条明确的边。
+         */
+        val stroke: Int,
+        /** 图标色。工具栏那几个箭头/圆点原来**完全透明**，等于没有图标。 */
+        val icon: Int,
     )
 
     private var dark: Boolean = true
@@ -259,6 +293,9 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     private val statusChip: TextView
     private val backBtn: TextView
     private val forwardBtn: TextView
+    private val reloadBtn: TextView
+    private val markBtn: TextView
+    private val homeBtn: TextView
 
     /**
      * 「AI 正在做什么」胶囊。
@@ -281,11 +318,39 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     /** 当前控制方。默认用户（AI 没在操作时，用户随时能用）。 */
     private var control: Control = Control.USER
 
+    /**
+     * 当前是否已经摆进右侧栏面板（即 `applyEmbedRect` 生效过）。
+     *
+     * ⚠️ 这个状态直接决定**截图内容**：没嵌进面板时本 View 是
+     * `MATCH_PARENT` 全屏，`wv.width` 就是整屏宽（1080）；嵌进去之后
+     * 才是面板的内容区宽度（约 400）。
+     *
+     * 用户看到的一直是面板里那一小块，所以 AI 截图必须在**嵌入状态**下
+     * 进行，否则截出来的视口和用户所见根本不是一个东西 —— 表现为
+     * 「AI 截的图和我看到的不一样」「AI 说页面很宽/看不到我圈的东西」。
+     */
+    private var embedded = false
+
+    /**
+     * 连续截图（[awaitStaticFrame] 会反复截图比帧）期间不恢复胶囊。
+     *
+     * 每次 [captureVisible] 都会「藏胶囊 → 截 → 恢复」。如果一次工具调用
+     * 连截十几张，胶囊就会一闪一闪，用户看到的是界面在抽搐。所以批量截图
+     * 期间压住恢复动作，只在最后一张交出去时恢复一次。
+     */
+    private var holdPill = false
+
+    /** 批量截图开始时胶囊是否本来就该显示。结束时据此决定要不要放出来。 */
+    private var pillShouldShow = false
+
     /** 状态变化回调（通知外部 UI 刷新）。 */
     var onStateChanged: (() -> Unit)? = null
 
     /** 用户点了 ✕。宿主负责隐藏/销毁。 */
     var onClose: (() -> Unit)? = null
+
+    /** 请求宿主把右侧栏切到浏览器面板（截图前要它把本 View 收进面板）。 */
+    var onRequestEmbed: (() -> Unit)? = null
 
     /**
      * 页面请求选文件。宿主必须走系统的文件选择器，最后回调
@@ -297,6 +362,34 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     var shotDir: File? = null
 
     private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
+
+    /**
+     * 顶部安全区高度（像素）。
+     *
+     * ⚠️ 宿主开了 `FLAG_LAYOUT_NO_LIMITS`（见 `MainActivity.applyFullscreen`），
+     *   内容会铺到状态栏底下 —— 不预留的话，工具栏左侧的后退键和右侧的 ✕
+     *   正好被时间/电量压住，用户**看得见但点不准**，表现就是「进到浏览器里
+     *   出不来」。这是内置浏览器必须自己处理的一件事，宿主帮不上。
+     */
+    private var safeTop = 0
+
+    /**
+     * 「收起」按钮回调。宿主负责把浏览器隐藏但**不关**侧栏 tab。
+     *
+     * 与 [onClose] 的区别见工具栏里 `collapseBtn` 的注释。
+     */
+    var onCollapse: (() -> Unit)? = null
+
+    /**
+     * 「标注」按钮回调。宿主负责截当前视口、弹出画布。
+     *
+     * 传出去的是 Bitmap 而不是让本视图自己弹画布：画布要盖住**整块侧栏区域**
+     * （包括工具栏），由宿主统一管理层级更简单，也免得两个视图互相抢可见性。
+     */
+    var onAnnotate: (() -> Unit)? = null
+
+    /** 待标注的截图。由 [startAnnotate] 放入，宿主用 [takeAnnotateBitmap] 取走。 */
+    private var annotateBitmap: Bitmap? = null
 
     init {
         setBackgroundColor(palette.root)
@@ -315,8 +408,8 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
 
         backBtn = toolButton("←") { if (currentWebView()?.canGoBack() == true) currentWebView()?.goBack() }
         forwardBtn = toolButton("→") { if (currentWebView()?.canGoForward() == true) currentWebView()?.goForward() }
-        val reloadBtn = toolButton("⟳") { currentWebView()?.reload() }
-        val homeBtn = toolButton("⌂") { loadUrl(HOME_URL) }
+        reloadBtn = toolButton("⟳") { currentWebView()?.reload() }
+        homeBtn = toolButton("⌂") { loadUrl(HOME_URL) }
 
         addressBar = TextView(context).apply {
             setTextColor(palette.text)
@@ -324,7 +417,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.MIDDLE
             setPadding(dp(9), dp(7), dp(9), dp(7))
-            background = rounded(palette.field, 8)
+            background = fieldBackground()
             text = HOME_URL
             setOnClickListener { showUrlEditor() }
         }
@@ -334,11 +427,28 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             textSize = 10.5f
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(5), dp(8), dp(5))
-            background = rounded(palette.field, 8)
+            background = fieldBackground()
             text = "你"
             isClickable = true
             setOnClickListener { toggleControl() }
         }
+
+        // 「标注」：截图定格 → 圈画 → 直接问 AI。
+        //
+        // 放在工具栏而不是别处：用户想标注时，眼睛正在看网页，手也在网页上，
+        // 入口必须在最顺手的位置。图标用 ✎（铅笔），语义直白。
+        markBtn = toolButton("✎") { startAnnotate() }
+
+        // 「收起」：只把浏览器从屏幕上挪开，**页面、标签、登录态全部保留**。
+        //
+        // ⚠️ 这和 ✕ 是两件事，不能合并：
+        //   · ✕   = 关掉浏览器（连侧栏 tab 一起关），下次打开是全新页面；
+        //   · ⌄   = 临时收起，随时能原样调回来。
+        //
+        // 用户的原话：「我无法临时通过侧边栏关闭按钮来临时移除浏览器界面，
+        // 想要移除就只能点击关闭」。全屏铺满时尤其明显 —— 没有这个键，
+        // 用户除了彻底关掉就没有别的退路，一关就丢页面。
+        val collapseBtn = toolButton("⌄") { onCollapse?.invoke() }
 
         val closeBtn = toolButton("✕") { onClose?.invoke() }
 
@@ -360,6 +470,8 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply { rightMargin = dp(4) },
         )
+        chrome.addView(markBtn)
+        chrome.addView(collapseBtn)
         chrome.addView(closeBtn)
 
         // ── 标签条（底部）──────────────────────────────────────────────
@@ -759,28 +871,59 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     }
 
     /** 重建底部标签条。只有一个标签时整条隐藏、页面容器不吃边距。 */
+    /**
+     * 重建底部标签条。
+     *
+     * ⚠️ 每个标签**必须自带一个 ✕**。原来只有「长按关闭」——那是隐藏手势，
+     *   用户根本看不出来，多标签时想关掉某一个只能一个个试。现在每个标签右侧
+     *   有独立的关闭按钮，点标题切标签、点 ✕ 关标签，互不干扰。
+     */
     private fun rebuildTabStrip() {
         tabStrip.removeAllViews()
         for ((i, tab) in tabs.withIndex()) {
-            val label = TextView(context).apply {
-                val text = tab.title.ifEmpty { tab.webView.title.orEmpty() }
-                    .ifEmpty { tab.webView.url?.removePrefix("https://")?.removePrefix("http://") ?: "新标签页" }
-                this.text = text.take(14)
-                textSize = 10.5f
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
+            val cell = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(9), 0, dp(9), 0)
-                setTextColor(if (i == activeIndex) palette.text else palette.textDim)
-                background = rounded(if (i == activeIndex) palette.fieldActive else 0x00000000, 7)
+                background = rounded(if (i == activeIndex) palette.fieldActive else palette.field, 7)
                 isClickable = true
                 setOnClickListener { selectTab(i) }
                 setOnLongClickListener { closeTabAt(i); true }
             }
-            tab.label = label
+            val title = TextView(context).apply {
+                val text = tab.title.ifEmpty { tab.webView.title.orEmpty() }
+                    .ifEmpty { tab.webView.url?.removePrefix("https://")?.removePrefix("http://") ?: "新标签页" }
+                this.text = text.take(12)
+                textSize = 10.5f
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER_VERTICAL
+                setTextColor(if (i == activeIndex) palette.text else palette.textDim)
+            }
+            cell.addView(
+                title,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    leftMargin = dp(8)
+                },
+            )
+            // ✕：每个标签自己的关闭按钮。颜色用 textDim 而非 text，
+            // 避免和标题抢视线；点击区域给足 20dp 宽。
+            val x = TextView(context).apply {
+                text = "✕"
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setTextColor(palette.textDim)
+                isClickable = true
+                setPadding(dp(3), 0, dp(3), 0)
+                setOnClickListener { closeTabAt(i) }
+            }
+            cell.addView(
+                x,
+                LinearLayout.LayoutParams(dp(20), LinearLayout.LayoutParams.MATCH_PARENT),
+            )
+            tab.label = title
             tabStrip.addView(
-                label,
-                LinearLayout.LayoutParams(dp(96), dp(26)).apply {
+                cell,
+                LinearLayout.LayoutParams(dp(116), dp(26)).apply {
                     leftMargin = dp(3)
                     rightMargin = dp(3)
                 },
@@ -998,6 +1141,84 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         return raw.take(80)
     }
 
+    /**
+     * 设置顶部安全区（状态栏高度，像素）。宿主在 `applyFullscreen` 之后调。
+     *
+     * 只会**加**不会减：传 0 表示没有安全区（非全面屏），此时工具栏回到顶部。
+     */
+    fun setSafeTop(px: Int) {
+        val v = px.coerceAtLeast(0)
+        if (v == safeTop) return
+        safeTop = v
+        applySafeTop()
+    }
+
+    /** 把 [safeTop] 刷到工具栏的上内边距上。 */
+    private fun applySafeTop() {
+        chromeBar?.setPadding(dp(4), safeTop, dp(4), 0)
+        // 工具栏本身要变高，否则 padding 会挤掉按钮的可用高度。
+        chromeBar?.layoutParams?.let { lp ->
+            lp.height = dp(BAR_H_DP) + safeTop
+            chromeBar?.layoutParams = lp
+        }
+        actionPill?.let { pill ->
+            (pill.layoutParams as? LayoutParams)?.let { lp ->
+                lp.topMargin = dp(BAR_H_DP) + safeTop + dp(12)
+                pill.layoutParams = lp
+            }
+        }
+    }
+
+    // ── window.open 承载 ────────────────────────────────────────────────
+
+    /**
+     * 为页面的 `window.open("about:blank")` 提供一个**可见**的 WebView。
+     *
+     * 官方登录（`dsh-client-ui-settings-account` 的 `BrowserLogin`）是这么走的：
+     *
+     *     this.popup = window.open("about:blank", "_blank");
+     *     … 拿到 authorizeUrl 后 …
+     *     this.popup.location.replace(authorizeUrl);
+     *
+     * 内核需要一个真实的 `WebView` 当渲染目标。**原来这里新建一个裸 WebView
+     * 却从不 `addView`**，于是内核在往里渲染、页面也确实在跑，用户屏幕上却
+     * 什么都没有 —— 「点登录一片空白」就是这么来的。
+     *
+     * ⚠️ 光有可见的 WebView **还不够**：`SystemWebHost.createBlankPopup` 那边
+     *   必须 `resultMsg.sendToTarget()` 投递，内核才会真的接管这个窗口。漏了那
+     *   一句的症状是「标签页建出来了、地址栏停在 about:blank、内容全白」。
+     *
+     * ## 为什么新开一个标签，而不是复用当前标签
+     *
+     * `window.open` 语义上要一个**独立**的渲染目标：页面持有这个对象的引用，
+     * 之后会主动 `location.replace()`、`close()`。复用当前标签的话，授权页会把
+     * 用户正在看的页面冲掉，而 `close()` 又会把那个标签一起关掉。
+     *
+     * 但标签上限是 [MAX_TABS]：满了就先关掉当前标签腾位置（登录比一个旧标签重要）。
+     *
+     * @return 已挂进 `pageHost` 的 WebView；宿主没准备好时返回 `null`。
+     */
+    fun createPopupTarget(): WebView? {
+        if (tabs.size >= MAX_TABS) {
+            Log.w(TAG, "标签已满，为 window.open 关掉当前标签腾位")
+            closeCurrentTab()
+        }
+        val wv = QuietWebView(context)
+        configureWebView(wv)
+        val tab = Tab(wv)
+        tabs.add(tab)
+        activeIndex = tabs.size - 1
+        showActiveTab()
+        rebuildTabStrip()
+        // ⚠️ 与 openNewTab 同理：新 WebView 还没被 applyControl 设过
+        //   OnTouchListener，漏了这句 AI 控制期间用户照样能点。
+        applyControl()
+        // 地址栏交给 updateChrome() 按 `wv.url` 自动刷新 —— 这里不要写死
+        // "about:blank"，那会在内核真正接管、URL 变化后仍留下误导性的文字。
+        Log.i(TAG, "window.open 承载标签已建好（可见）")
+        return wv
+    }
+
     // ── 导航 ────────────────────────────────────────────────────────────
 
     fun loadUrl(url: String) {
@@ -1008,7 +1229,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     }
 
     /**
-     * `github.com` → `https://github.com`；空串 → 首页；非域名 → 搜索引擎。
+     * `example.com` → `https://example.com`；空串 → 首页；非域名 → 搜索引擎。
      *
      * 搜索走 GitHub 而不是 Google/Bing：后者在国内手机上经常连不上，
      * 会让「AI 搜一下」变成一次 10 秒的等待超时。
@@ -1021,7 +1242,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         return if (t.contains('.') && !t.contains(' ')) {
             "https://$t"
         } else {
-            "https://github.com/search?q=${java.net.URLEncoder.encode(t, "UTF-8")}"
+            "https://www.bing.com/search?q=${java.net.URLEncoder.encode(t, "UTF-8")}"
         }
     }
 
@@ -1204,23 +1425,323 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 onBitmap(null)
                 return@post
             }
-            try {
-                val bmp = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
-                wv.draw(Canvas(bmp))
-                onBitmap(bmp)
-            } catch (t: Throwable) {
-                Log.w(TAG, "截图失败: ${t.message}")
-                onBitmap(null)
+            captureVisible(wv, onBitmap)
+        }
+    }
+
+    /**
+     * 截「用户真正看到的这块」。
+     *
+     * ⚠️ 以前用 `wv.draw(Canvas(bmp))`，它画的是 **View 自己的内容**，有
+     *   两个致命偏差：
+     *   1. **不含父容器的裁切**。这个 WebView 是被 `applyEmbedRect` 嵌进右侧
+     *      面板矩形里的，`draw()` 会连面板外本该被裁掉的部分一起画出来；
+     *   2. **不含合成层效果**。fixed 元素、合成滚动、硬件加速层都不经过
+     *      `draw()`，截出来和屏幕上看到的不是一回事。
+     *
+     *   用户的原话：「截图问题还是不能确保与用户看到的一致」，而且连 AI
+     *   自己调的 `screenshot` 也是同一份实现（`captureToFile` 走这里），
+     *   所以两处一起错、必须一起修。
+     *
+     * 正解是 [PixelCopy]：直接从窗口 Surface 复制**已经合成好的、屏幕上的**
+     * 那块像素。它拿到的一定等于用户所见，不存在「模型和人对不上」。
+     * 拿不到时（极少数机型/时机）退回 `draw()`，保证至少有一张图。
+     */
+    private fun captureVisible(wv: WebView, onBitmap: (Bitmap?) -> Unit) {
+        // ⚠️ **截图前必须把胶囊藏掉。**
+        //
+        // `actionPill`（「AI 正在操作页面」那条浮层）是 [AiBrowserView] 的子
+        // View，叠在 WebView 之上。以前用 `wv.draw()` 时它不在 WebView 的
+        // 子树里，天然不会被拍到；换成 [PixelCopy] 之后，抓的是**窗口合成后
+        // 的像素**，浮层就会被一起截进图里 —— 用户看到的现象正是「我自己点
+        // 画笔截图是好的，AI 自己截图就不对」，因为只有 AI 操作时才有胶囊。
+        //
+        // 所以这里临时隐藏、截完立刻恢复。隐藏用 INVISIBLE 而不是 GONE：
+        // GONE 会触发重新布局，WebView 尺寸一变，截出来的页面就跟着变。
+        val pill = if (::actionPill.isInitialized) actionPill else null
+        val pillWasVisible = pill?.visibility == View.VISIBLE
+        if (pillWasVisible) {
+            pill!!.visibility = View.INVISIBLE
+        }
+        // 批量截图期间记下「第一次进来时它本来就该显示」，因为从第二张起
+        // `visibility` 已经是 INVISIBLE，再判断 pillWasVisible 就永远是 false。
+        if (holdPill && pillWasVisible) pillShouldShow = true
+        val restorePill = {
+            if (pill != null && !holdPill && (pillWasVisible || pillShouldShow)) {
+                pill.visibility = View.VISIBLE
+            }
+            if (!holdPill) pillShouldShow = false
+        }
+        val win = runCatching { wv.getWindowToken() }.getOrNull()
+        val activity = context as? Activity
+        val loc = IntArray(2)
+        wv.getLocationInWindow(loc)
+        val x = loc[0]
+        val y = loc[1]
+        val w = wv.width
+        val h = wv.height
+        val bmp = if (w > 0 && h > 0) {
+            runCatching { Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888) }.getOrNull()
+        } else {
+            null
+        }
+        val canPixelCopy = win != null && activity != null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            x >= 0 && y >= 0 && w > 0 && h > 0 && bmp != null
+
+        if (!canPixelCopy) {
+            // 兜底路径：draw() 不含浮层，恢复 pill 后直接画即可。
+            restorePill()
+            fallbackDraw(wv, onBitmap)
+            return
+        }
+
+        val rect = Rect(x, y, x + w, y + h)
+        val handler = Handler(Looper.getMainLooper())
+        val delivered = java.util.concurrent.atomic.AtomicBoolean(false)
+        val deliver = { b: Bitmap? ->
+            restorePill()
+            if (delivered.compareAndSet(false, true)) onBitmap(b)
+        }
+        // ⚠️ 藏完 pill 必须**等一帧**再抓像素：`visibility` 只是改了 View 的
+        //   状态，真正从屏幕上消失要等下一次合成。立刻 PixelCopy 会拿到
+        //   「pill 还在」的那一帧，等于没藏。
+        wv.postOnAnimation {
+            runCatching {
+                PixelCopy.request(activity!!.window, rect, bmp!!, { result ->
+                    if (result == PixelCopy.SUCCESS) {
+                        deliver(bmp)
+                    } else {
+                        Log.w(TAG, "PixelCopy 失败 code=$result，退回 draw()")
+                        bmp.recycle()
+                        fallbackDraw(wv) { b -> deliver(b) }
+                    }
+                }, handler)
+            }.onFailure {
+                Log.w(TAG, "PixelCopy 调用异常: ${it.message}")
+                bmp?.recycle()
+                fallbackDraw(wv) { b -> deliver(b) }
             }
         }
     }
 
-    /** 截图并落盘，回调文件绝对路径。 */
+    /** 兜底：拿不到窗口像素时，至少把 View 内容画出来。 */
+    private fun fallbackDraw(wv: WebView, onBitmap: (Bitmap?) -> Unit) {
+        try {
+            val bmp = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
+            wv.draw(Canvas(bmp))
+            onBitmap(bmp)
+        } catch (t: Throwable) {
+            Log.w(TAG, "截图失败: ${t.message}")
+            onBitmap(null)
+        }
+    }
+
+    /**
+     * 点「标注」：先截当前视口，再交给宿主弹画布。
+     *
+     * ⚠️ **先截图再回调**，顺序不能反：一旦画布盖上来，`WebView.draw()` 拿到的
+     *   就是被遮住的画面（空白或画布本身）。
+     */
+    private fun startAnnotate() {
+        // ⚠️ 必须先收输入法。[PixelCopy] 复制的是**窗口合成后**的像素，
+        //   键盘/弹窗盖在 WebView 上就会被一起截进图里 —— 那种图既不像用户
+        //   所见的页面，也没法用来标注。收起后再截才干净。
+        hideIme()
+        // 收键盘是异步的：立刻截会把还没退干净的键盘一起拍进去。等一帧，
+        // 让窗口重新布局、WebView 高度回到正常值之后再抓像素。
+        postDelayed({
+            // ⚠️ **和 AI 截图走完全相同的稳定等待。**
+            //
+            // 原来这里直接 `capture()`，AI 那条路（[captureToFile]）却额外
+            // 等页面画稳。两条路不等价 ⇒ 同一块画面，用户截得对、AI 截不对，
+            // 用户的原话是「用同一条获取图片的通道不就行了吗」。
+            //
+            // 现在两条路都先 [awaitStaticFrame]（连续两帧像素一致才交图），
+            // 保证截到的是**静止画面**。这样只要用户这边是对的，AI 那边必然也对。
+            awaitStaticFrame { bmp ->
+                if (bmp == null) {
+                    Log.w(TAG, "标注失败：截图为空")
+                    return@awaitStaticFrame
+                }
+                annotateBitmap = bmp
+                onAnnotate?.invoke()
+            }
+        }, 120L)
+    }
+
+    /** 取走待标注的截图（取一次就清空，避免误用上一张）。 */
+    fun takeAnnotateBitmap(): Bitmap? {
+        val b = annotateBitmap
+        annotateBitmap = null
+        return b
+    }
+
+    /**
+     * 截图并落盘，回调文件绝对路径。**AI 的 `screenshot` 工具走这里。**
+     *
+     * ⚠️ 先确保已经嵌进侧栏面板再截。
+     *
+     * 本 View 平时是 `MATCH_PARENT` 全屏挂在根布局上，只有面板上报矩形
+     * （`applyEmbedRect`）之后才缩成面板内容区那么大。AI 用工具打开页面时
+     * 面板往往**还没展开**，这时截出来的是全屏视口（1080 宽），而用户看到
+     * 的永远是面板里那条窄视口 —— 两者根本不是同一个画面，用户的原话是
+     * 「AI 的截图通道好像还是有问题」。
+     *
+     * 所以这里等它嵌进去（最多 [EMBED_WAIT_MS]），等不到就用当前状态截，
+     * 至少不会卡住工具调用。
+     *
+     * 嵌进去之后还要等**画面静止**（[awaitStaticFrame]）：页面从全屏变成
+     * 面板宽度会重排、跑 CSS 过渡，截在中间帧上就会出现「对话/工作」被压成
+     * 一条细线那种图。
+     */
     fun captureToFile(onPath: (String?) -> Unit) {
-        capture { bmp ->
+        awaitEmbedded { awaitStaticFrame { bmp -> saveShot(bmp, onPath) } }
+    }
+
+    /**
+     * 等页面**真正画稳**再交付回调。
+     *
+     * ⚠️ 这是「AI 截到的图和用户看到的不一样」的第二个成因，比嵌没嵌进面板
+     * 更隐蔽。
+     *
+     * AI 用工具打开页面后会**立刻**截图，此时页面还在干三件事：
+     *   1. 资源没下完，还在加载；
+     *   2. 视口刚从全屏变成面板宽度，正在重排；
+     *   3. 重排触发的 CSS 动画/过渡没结束。
+     *
+     * 豆包的「对话 / 工作」胶囊切换器就是第 3 种：它有入场缩放动画，
+     * 截图若落在动画中间帧，那一行就被**垂直压扁**成一条细线 —— 用户的原话
+     * 「这两个标签会被压缩，AI 拿到的图跟原图是不一样的」。而用户自己点
+     * 画笔时页面早稳定了，所以他截出来是对的，只有 AI 截不对。
+     *
+     * 所以要等：加载完成 → 尺寸连续两帧不变 → 再放过几帧让动画收尾。
+     */
+    /**
+     * 等到画面**真正静止**再交图 —— 连续两帧像素完全一致才算数。
+     *
+     * ## 为什么不能靠「等 N 毫秒」
+     *
+     * 之前试过等尺寸稳定、等 `progress==100`、等固定时长，全都不行：
+     * 这些信号和「画面是否还在动」没有必然关系。豆包的「对话 / 工作」
+     * 胶囊切换器有入场缩放动画，动画期间视口尺寸、加载进度都不变，
+     * 截在中间帧上，那一行就被**垂直压成一条 5px 的细线**，根本看不见。
+     *
+     * 用户的原话：「用同一条获取图片的通道不就行了」。他说对了 ——
+     * 他自己点画笔时页面早静止了，所以同一段 [capture] 他截得对。差别
+     * 不在代码，在**截的那一刻画面还在不在动**。
+     *
+     * ## 做法
+     *
+     * 反复截图，把这一张和上一张**逐点比对**：
+     *   · 两帧一致 ⇒ 画面已静止，交这一张；
+     *   · 不一致   ⇒ 还在动，等一会儿再截；
+     *   · 超时/次数上限 ⇒ 交最后一张（不能卡死工具调用）。
+     *
+     * 这样交出去的图**必然是一个完整稳定的画面**，也就必然和用户看到的
+     * 一致 —— 不依赖任何关于动画时长的猜测。
+     */
+    private fun awaitStaticFrame(then: (Bitmap?) -> Unit) {
+        var prev: Bitmap? = null
+        var tries = 0
+        val deadline = android.os.SystemClock.elapsedRealtime() + STATIC_TIMEOUT_MS
+
+        // 比帧期间压住胶囊恢复，避免连截十几张时界面闪烁。
+        holdPill = true
+        fun step() {
+            capture { bmp ->
+                if (bmp == null) {
+                    prev?.recycle()
+                    releasePill()
+                    then(null)
+                    return@capture
+                }
+                val old = prev
+                val same = old != null && sameFrame(old, bmp)
+                old?.recycle()
+                prev = bmp
+                tries++
+                val outOfTime = android.os.SystemClock.elapsedRealtime() >= deadline
+                if (same || outOfTime || tries >= STATIC_MAX_TRIES) {
+                    if (!same) {
+                        Log.w(TAG, "画面未静止就超时交图（tries=$tries），可能仍在动画中")
+                    }
+                    releasePill()
+                    then(bmp)
+                } else {
+                    postDelayed({ step() }, STATIC_GAP_MS)
+                }
+            }
+        }
+        step()
+    }
+
+    /** 结束批量截图，把压住的胶囊放出来。 */
+    private fun releasePill() {
+        holdPill = false
+        // ⚠️ 只在它**本来就该显示**时才放出来。否则（AI 没在操作页面时）
+        //   凭空冒出一条「AI 正在操作」的浮层，比闪烁更糟。
+        if (::actionPill.isInitialized && pillShouldShow) {
+            actionPill.visibility = View.VISIBLE
+        }
+        pillShouldShow = false
+    }
+
+    /**
+     * 两张图是否「基本一致」——用来判断画面有没有还在动。
+     *
+     * 抽样比对（不逐像素扫全图）：24×48 个采样点足够识别出动画/滚动/重排，
+     * 又不受个别像素抗锯齿抖动影响。允许 2% 差异。
+     */
+    private fun sameFrame(a: Bitmap, b: Bitmap): Boolean {
+        if (a.width != b.width || a.height != b.height) return false
+        val stepX = (a.width / 24).coerceAtLeast(1)
+        val stepY = (a.height / 48).coerceAtLeast(1)
+        var diff = 0
+        var total = 0
+        var y = 0
+        while (y < a.height) {
+            var x = 0
+            while (x < a.width) {
+                if (a.getPixel(x, y) != b.getPixel(x, y)) diff++
+                total++
+                x += stepX
+            }
+            y += stepY
+        }
+        return total > 0 && diff * 100 / total <= 2
+    }
+
+    /** 等 [embedded] 变 true，超时后照样继续（不能卡住 AI 的工具调用）。 */
+    private fun awaitEmbedded(then: () -> Unit) {
+        if (embedded) {
+            then()
+            return
+        }
+        // 请宿主把侧栏切到浏览器面板：面板一挂载就会上报矩形。
+        onRequestEmbed?.invoke()
+        val deadline = android.os.SystemClock.elapsedRealtime() + EMBED_WAIT_MS
+        val poll = object : Runnable {
+            override fun run() {
+                if (embedded || android.os.SystemClock.elapsedRealtime() >= deadline) {
+                    if (!embedded) {
+                        Log.w(TAG, "等面板嵌入超时，按当前视口截图（可能与用户所见不同）")
+                    }
+                    then()
+                    return
+                }
+                postDelayed(this, 50L)
+            }
+        }
+        postDelayed(poll, 50L)
+    }
+
+    /** 把已截好的图落盘并回调路径。 */
+    private fun saveShot(bmp: Bitmap?, onPath: (String?) -> Unit) {
+        run {
             if (bmp == null) {
                 onPath(null)
-                return@capture
+                return@run
             }
             try {
                 val dir = shotDir ?: File(context.filesDir, "browser-shots")
@@ -1275,19 +1796,31 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         chromeBar?.setBackgroundColor(palette.bar)
         tabBar.setBackgroundColor(palette.barAlt)
         addressBar.setTextColor(palette.text)
-        addressBar.background = rounded(palette.field, 8)
-        statusChip.background = rounded(palette.field, 8)
+        // ⚠️ 输入框/状态胶囊**必须带描边**。原来只有一层比工具栏亮 1.16 的底色，
+        //   在手机屏上几乎看不出来 —— 用户的原话是「文字和按钮控件跟背景颜色
+        //   太相近了，根本无法分辨」。底色 + 明确的边，两层一起才有控件感。
+        addressBar.background = fieldBackground()
+        statusChip.background = fieldBackground()
         actionText.setTextColor(palette.pillText)
         actionDot.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(palette.aiAccent)
         }
         actionPill.background = pillBackground()
-        for (btn in listOf(backBtn, forwardBtn)) btn.setTextColor(palette.text)
+        // 工具栏图标：原来 `pressable()` 的填充是**全透明**，等于没有图标，
+        // 只剩一片和背景同色的空白。现在用 icon 色（对比度 > 8）。
+        for (btn in listOf(backBtn, forwardBtn, reloadBtn, homeBtn, markBtn)) btn.setTextColor(palette.icon)
         for (tab in tabs) tab.webView.setBackgroundColor(palette.root)
         for (tab in tabs) tab.label?.setTextColor(if (tabs.indexOf(tab) == activeIndex) palette.text else palette.textDim)
         rebuildTabStrip()
         updateChrome()
+    }
+
+    /** 带描边的输入框底色 —— 让控件边界一眼可见。 */
+    private fun fieldBackground(): Drawable = GradientDrawable().apply {
+        setColor(palette.field)
+        cornerRadius = dp(8).toFloat()
+        setStroke(dp(1).coerceAtLeast(1), palette.stroke)
     }
 
     /**
@@ -1321,6 +1854,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         //     offsetTopAndBottom，只平移，不测量、不重建表面；
         //   · 尺寸变了 → 改 layoutParams 的宽高再 requestLayout（这种场景很少：
         //     键盘弹出、旋转、侧栏拖宽，一次性，不会闪）。
+        embedded = true
         val sizeChanged = lp.width != w || lp.height != h
         if (sizeChanged) {
             lp.width = w
@@ -1344,6 +1878,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
 
     /** 退回全屏铺满（面板关掉、或宿主想全屏展示时）。 */
     fun clearEmbedRect() {
+        embedded = false
         val lp = layoutParams as? FrameLayout.LayoutParams ?: return
         if (lp.width == LayoutParams.MATCH_PARENT && lp.leftMargin == 0 && lp.topMargin == 0) {
             return
@@ -1377,7 +1912,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     private fun toolButton(label: String, widthDp: Int = 34, onClick: () -> Unit): TextView =
         TextView(context).apply {
             text = label
-            setTextColor(palette.text)
+            setTextColor(palette.icon)
             textSize = 15f
             gravity = Gravity.CENTER
             isClickable = true

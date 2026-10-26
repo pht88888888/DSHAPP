@@ -65,6 +65,22 @@ window.__ModuleLoader__.load({
 		const STATE_EVENT = "dsh:browser-state";
 
 		/**
+		 * 原生 → 前端的「把侧栏切到 AI 浏览器」请求。
+		 *
+		 * **必须与 `MainActivity.requestBrowserPane` 里 `dispatchEvent` 的事件名
+		 * 逐字一致。**
+		 */
+		const REVEAL_EVENT = "dsh:browser-reveal";
+
+		/**
+		 * 原生 → 前端的「标注结果可取」通知。
+		 *
+		 * 必须与 `MainActivity.notifyAnnotateReady` 里的事件名逐字一致。
+		 * 前端收到后调 `aiAnnotateResult()` 取回图片与提问。
+		 */
+		const ANNOTATE_EVENT = "dsh:browser-annotate";
+
+		/**
 		 * 右侧栏「AI 浏览器」面板的正文。
 		 *
 		 * ## 它其实是个「占位 + 覆盖」
@@ -439,9 +455,273 @@ window.__ModuleLoader__.load({
 		 *
 		 * @param {object} ctx - 客户端插件上下文。
 		 */
+		/**
+		 * 取回原生刚导出的标注图，连同提问一起发到当前会话。
+		 *
+		 * ## 链路
+		 *
+		 * 1. 原生把合成图落到 `filesDir/browser-shots/mark-*.png`，然后派发
+		 *    [ANNOTATE_EVENT]。
+		 * 2. 这里调桥方法 `aiAnnotateResult()` 拿到 `{png, bytes, text}`。
+		 * 3. 原生侧**没有 HTTP 文件服务**，所以不能给个 URL 让页面 fetch。
+		 *    改成 `fetch("file://" + path)` —— WebView 的 file:// 访问与页面
+		 *    同源策略允许读**沙盒自己的** filesDir（`allowFileAccess` 已开）。
+		 *    读不到就退化成纯文本发送，并明确告诉用户图片没带上。
+		 * 4. `conversation.createDrafts()` 把 File 登记成 draft 附件，
+		 *    再 `sendSession()` 带附件发送。
+		 *
+		 * @param {object} scope - 注入后的插件作用域（要 `conversation`）。
+		 */
+		/**
+		 * 把发送结果回报给原生，由原生 Toast 显示在屏幕上。
+		 *
+		 * 手机上看不到 `console.log`，所以**失败原因必须显示出来**，否则
+		 * 用户只能看到「点了没反应」。这一步是为了不再靠反复下载安装包试错。
+		 *
+		 * @param {string} message - 给用户看的一句话。
+		 */
+		function report(message) {
+			try {
+				const bridge = window.DSHAndroid;
+				if (bridge && typeof bridge.aiAnnotateReport === "function") bridge.aiAnnotateReport(message);
+			} catch (error) {
+				// 回报本身失败就算了，不能因此中断发送。
+			}
+		}
+
+		async function sendAnnotate(scope) {
+			console.log("[annotate] 进入 sendAnnotate");
+			const bridge = window.DSHAndroid;
+			if (!bridge) {
+				report("标注失败：没有原生桥");
+				return;
+			}
+			if (typeof bridge.aiAnnotateResult !== "function") {
+				report("标注失败：桥上没有 aiAnnotateResult（版本不匹配）");
+				return;
+			}
+
+			let payload;
+			try {
+				const raw = bridge.aiAnnotateResult();
+				if (!raw) return;
+				payload = JSON.parse(raw);
+			} catch (error) {
+				report(`标注失败：读不到结果 ${error && error.message}`);
+				return;
+			}
+
+			const question = (payload.text || "").trim() || "请看我标注的地方，告诉我这是什么 / 有什么问题。";
+			let conversation;
+			try {
+				conversation = typeof scope.get === "function" ? scope.get("conversation") : void 0;
+			} catch (error) {
+				console.warn("[annotate] scope.get(conversation) 抛错:", error && error.message);
+			}
+			const sessionId = sessionOf(scope);
+			console.log("[annotate] conversation=", conversation !== void 0, "sessionId=", sessionId, "text=", question);
+
+			// ── base64 → File ─────────────────────────────────────────
+			//
+			// 原生给的是 base64 字符串（不是路径）：主 WebView 的
+			// `allowFileAccess=false`，`fetch("file://…")` 必然失败。
+			let file = null;
+			try {
+				const bin = atob(payload.png || "");
+				const bytes = new Uint8Array(bin.length);
+				for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+				if (bytes.length > 0) {
+					file = new File([bytes], `annotate-${Date.now()}.png`, { type: "image/png" });
+				}
+			} catch (error) {
+				console.warn("[dsh-android-browser-pane] 解码标注图失败，将只发文字:", error);
+			}
+
+			// ── 发送 ──────────────────────────────────────────────────
+			try {
+				if (conversation === void 0) throw new Error("拿不到 conversation 服务");
+				if (sessionId === void 0) throw new Error("拿不到当前会话 id");
+				if (file === null) {
+					// 图片没读到：至少把文字发出去，不让用户白画一场。
+					// ⚠️ `conversation.send` 走的是 `scopedSession`，在**根作用域**
+					// 会抛「requires a session scope」，所以这里也用 sendSession
+					// 的空附件形式，保证行为一致。
+					const plain = await conversation.sendSession(session, question, [], "queue");
+					report(
+						plain && plain.kind === "error"
+							? "发送失败：被会话拒绝"
+							: "已发送文字（图片读取失败）",
+					);
+					return;
+				}
+				// ⚠️ `sendSession` 的第一个参数要的是 **Session 对象**，不是
+				// sessionId 字符串。它内部会调 `session.beginSubmission(...)`，
+				// 传字符串必然抛「beginSubmission is not a function」——而这个
+				// 异常又被下面的 catch 吞掉，表现就是「点发送完全没反应」。
+				const session = sessionObjectOf(scope, sessionId);
+				if (session === void 0) throw new Error(`找不到 session 对象: ${sessionId}`);
+				const drafts = conversation.createDrafts(sessionId, [file]);
+				const ids = drafts.map((d) => d.id);
+				// ⚠️ `sendSession` **失败时不抛异常**，而是返回 `{kind:"error"}`。
+				// 只 `await` 不检查返回值 = 静默失败，用户看到的就是「点了没反应」。
+				const outcome = await conversation.sendSession(session, question, ids, "queue");
+				if (outcome && outcome.kind === "error") {
+					report("发送失败：被会话拒绝（可能正在生成回复）");
+					return;
+				}
+				report("已发送标注");
+			} catch (error) {
+				console.warn("[dsh-android-browser-pane] 发送标注失败:", error && (error.stack || error.message || error));
+				report(`标注发送失败：${error && (error.message || error)}`);
+			}
+		}
+
+		/**
+		 * 当前屏上的 Session id。
+		 *
+		 * 侧栏面板知道自己属于哪个会话，但这里拿的是**根作用域**，所以走
+		 * `sidebarRight.mounted` 快照 —— 它给的就是屏上那个 Session。
+		 *
+		 * @param {object} scope - 插件作用域。
+		 * @returns {string|undefined} Session id。
+		 */
+		/**
+		 * 按 id 取到**活的 Session 对象**（`conversation.sendSession` 要的是它）。
+		 *
+		 * 客户端 `sessions` 服务的 `get(id)` 直接返回 session 实例；官方
+		 * `conversation` 内部也是 `sessions.binding(id).session` 这么拿的。
+		 *
+		 * @param {object} scope - 插件作用域。
+		 * @param {string} sessionId - 目标会话 id。
+		 * @returns {object|undefined} Session 对象。
+		 */
+		function sessionObjectOf(scope, sessionId) {
+			if (sessionId === void 0) return void 0;
+			try {
+				const sessions = typeof scope.get === "function" ? scope.get("sessions") : void 0;
+				if (sessions === void 0) {
+					console.warn("[annotate] 取不到 sessions 服务");
+					return void 0;
+				}
+				// ⚠️ 客户端 `sessions` 服务是 **ClientSessions**，它**没有 `get()`**。
+				// `get(sessionId)` 是内部 `SessionManager` 的方法，不可达。
+				// 公开且正确的是 `binding(id)`，返回 `{ sessionId, session, ... }`；
+				// 官方 `conversation` 内部也正好是 `sessions.binding(id).session`。
+				if (typeof sessions.binding === "function") {
+					const bound = sessions.binding(sessionId);
+					if (bound !== void 0 && bound.session !== void 0) return bound.session;
+					console.warn("[annotate] binding 无 session:", sessionId);
+				} else {
+					console.warn("[annotate] sessions 上没有 binding()");
+				}
+			} catch (error) {
+				console.warn("[annotate] 取 session 对象失败:", error && error.message);
+			}
+			return void 0;
+		}
+
+		function sessionOf(scope) {
+			try {
+				const mounted = scope.sidebarRight && scope.sidebarRight.mounted;
+				if (mounted && typeof mounted.getSnapshot === "function") return mounted.getSnapshot();
+			} catch (error) {
+				// 忽略：调用方会走「拿不到会话」的分支。
+			}
+			return void 0;
+		}
+
+		/**
+		 * 找出当前面板里那个「开始」（guide）标签，用来被替换掉。
+		 *
+		 * 侧栏第一次打开时 `defaultSeed()` 会先放一个 guide 标签。直接
+		 * `openTab` 是**在它旁边再加一个**，于是顶部出现「开始」+「AI 浏览器」
+		 * 两个标签，并且激活的是 guide —— 用户看到的是一整页「开始」引导，
+		 * 而不是我们刚打开的网页。
+		 *
+		 * @param {object} scope - 注入后的插件作用域。
+		 * @returns {object} `{ replaceTab }` 或空对象（没有可替换的 guide）。
+		 */
+		/**
+		 * 当前活动标签 id —— **仅当它就是我们这个浏览器标签时**才返回。
+		 *
+		 * 用来让「展开侧栏」保持幂等：用户已经停在浏览器上时，再 `openTab`
+		 * 会重复建实例、把已登录的页面顶掉。
+		 *
+		 * ⚠️ 只用公开 API（`active()` 返回 TabRecord），不去翻 `layout` 的
+		 * 内部字段 —— 那些字段名在不同版本里会变，猜错了就是静默失效。
+		 */
+		function currentTabId(scope) {
+			try {
+				if (typeof scope.sidebarRight.active !== "function") return void 0;
+				const rec = scope.sidebarRight.active();
+				if (rec === void 0 || rec === null) return void 0;
+				return rec.kind === TAB_KIND ? rec.id : void 0;
+			} catch (error) {
+				return void 0;
+			}
+		}
+
+		function guideReplacement(scope) {
+			try {
+				// `screen()` 是**无参**的：它自己从 `mounted` 快照里取当前屏上的
+				// Session，返回 `{ sessionId, surface }`。侧栏还没挂载过时返回
+				// undefined —— 那就没有 guide 可替换。
+				const screen = typeof scope.sidebarRight.screen === "function" ? scope.sidebarRight.screen() : void 0;
+				const tabs = screen && screen.surface && screen.surface.layout && screen.surface.layout.tabs;
+				if (!tabs) return {};
+				for (const id of Object.keys(tabs)) {
+					if (tabs[id] && tabs[id].kind === "guide") return { replaceTab: id };
+				}
+				return {};
+			} catch (error) {
+				// 拿不到布局就退化成「加一个标签」，功能不因此中断。
+				return {};
+			}
+		}
+
+		/**
+		 * 面板挂载后补一次「顶掉 guide」。
+		 *
+		 * 首次展开侧栏时 `screen()` 尚未就绪，`guideReplacement()` 只能返回空，
+		 * 于是侧栏会停在「开始」页上。这里用有限次 rAF 轮询，等布局出现后把
+		 * guide 换成 AI 浏览器。
+		 *
+		 * ⚠️ **次数必须有上限**：用户可能已经手动切到别的标签，无限轮询会把
+		 *   他的选择一直抢回来。只重试 20 帧（约 330ms），够挂载用。
+		 *
+		 * @param {object} scope - 注入后的插件作用域。
+		 */
+		function dropGuideAfterMount(scope) {
+			let tries = 0;
+			const step = () => {
+				tries += 1;
+				try {
+					const guide = guideReplacement(scope);
+					if (guide.replaceTab !== void 0) {
+						scope.sidebarRight.openTab(TAB_KIND, {
+							revealIfOpened: true,
+							replaceTab: guide.replaceTab,
+						});
+						return;
+					}
+					// 已经找不到 guide（= 已被替换，或用户自己切走了）就收手。
+					const screen = typeof scope.sidebarRight.screen === "function" ? scope.sidebarRight.screen() : void 0;
+					const tabs = screen && screen.surface && screen.surface.layout && screen.surface.layout.tabs;
+					if (tabs && Object.keys(tabs).length > 0) {
+						const hasOurs = Object.keys(tabs).some((id) => tabs[id] && tabs[id].kind === TAB_KIND);
+						if (hasOurs) return;
+					}
+				} catch (error) {
+					return;
+				}
+				if (tries < 20) window.requestAnimationFrame(step);
+			};
+			window.requestAnimationFrame(step);
+		}
+
 		function install(ctx) {
 			try {
-				ctx.inject(["slots", "sidebarRightTabs"], (scope) => {
+				ctx.inject(["slots", "sidebarRightTabs", "sidebarRight", "conversation"], (scope) => {
 					scope.effect(() => scope.sidebarRightTabs.register({
 						id: TAB_ID,
 						kind: TAB_KIND,
@@ -463,6 +743,77 @@ window.__ModuleLoader__.load({
 						// ⚠️ key 必须等于 TAB_ID —— 座位按类型 id 找正文。
 						key: TAB_ID,
 					}, BrowserPane)), "dsh-android-browser-pane: tab 正文");
+
+					// ── 原生请求「把侧栏展开到 AI 浏览器」──────────────────
+					//
+					// 用户在**对话界面**里点了一个链接（或点登录），原生要把内置
+					// 浏览器亮出来。但原生自己只会「全屏铺满」—— 那时侧栏没开，
+					// 屏幕上只有一整块网页，**没有任何侧栏 UI**，用户连「这个面板
+					// 在哪、怎么收起来」都看不到，只能点 ✕ 彻底关掉，一关就丢页面。
+					//
+					// 所以点链接时先让这里把侧栏切到 AI 浏览器 tab：面板一挂载，
+					// `BrowserPane` 就会把矩形上报给原生，浏览器自然落进面板里，
+					// 顶部/侧边该有的 UI 也就都在了。
+					//
+					// ⚠️ 用 `revealIfOpened: true`：tab 已经开着就直接切过去，
+					//   不要重复开第二个。
+					scope.effect(() => {
+						const onReveal = () => {
+							try {
+								// ⚠️ **幂等保护**：侧栏可能已经停在浏览器标签上了。
+								// 这时再 `openTab` 会重复建实例、把已登录的页面顶掉。
+								// 只要它当前就在屏幕上，改为「聚焦 + 展开」即可。
+								const shown = currentTabId(scope);
+								if (shown !== void 0) {
+									// 已经停在浏览器上：只需要确保侧栏是展开的，
+									// 并把它聚焦到前台，绝不能再开一个标签。
+									try {
+										if (typeof scope.sidebarRight.isExpanded === "function" && !scope.sidebarRight.isExpanded()) {
+											scope.sidebarRight.toggleExpanded();
+										}
+									} catch (ignored) {}
+									try {
+										scope.sidebarRight.focus(shown);
+									} catch (ignored) {}
+									return;
+								}
+								// ⚠️ **必须顶掉 guide tab**，否则侧栏会变成
+								//    「开始」+「AI 浏览器」两个标签，而且停在 guide 页上。
+								//    官方自己点侧栏项时就是这么做的（`openTabFromTarget`
+								//    里 `tab?.kind === "guide" ? { replaceTab: tab.id } : {}`），
+								//    我们绕过它直接调 openTab，就得自己补这一步。
+								scope.sidebarRight.openTab(TAB_KIND, {
+									revealIfOpened: true,
+									...guideReplacement(scope),
+								});
+								// ⚠️ 侧栏**第一次**打开时，`screen()` 还是空的 —— 上面
+								//    那次替换找不到 guide，于是留下「开始」+「AI 浏览器」
+								//    两个标签，且激活的是「开始」。等面板挂载完成后再补
+								//    一次替换。重试几次就够：面板挂载是同步布局后的下一帧。
+								dropGuideAfterMount(scope);
+							} catch (error) {
+								// 侧栏打不开不能连累浏览器本身：原生那边已经全屏显示了，
+								// 用户至少还能用（只是没有面板 UI）。
+								console.warn(
+									"[dsh-android-browser-pane] 展开侧栏失败:",
+									error && (error.stack || error.message || error),
+								);
+							}
+						};
+						window.addEventListener(REVEAL_EVENT, onReveal);
+						return () => window.removeEventListener(REVEAL_EVENT, onReveal);
+					}, "dsh-android-browser-pane: 展开侧栏");
+
+					// ── 标注发送 ──────────────────────────────────────────
+					// 用户在画布上圈完、打完字点了发送，原生把图导出并通知到这里。
+					scope.effect(() => {
+						const onAnnotate = () => {
+							// 不 await：事件监听里不能阻塞派发方（原生 evaluateJavascript）。
+							sendAnnotate(scope);
+						};
+						window.addEventListener(ANNOTATE_EVENT, onAnnotate);
+						return () => window.removeEventListener(ANNOTATE_EVENT, onAnnotate);
+					}, "dsh-android-browser-pane: 发送标注");
 				});
 			} catch (error) {
 				// 注册失败只损失这一个侧栏项，不能连累别的插件。
