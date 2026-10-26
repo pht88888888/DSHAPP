@@ -295,13 +295,46 @@ object CrashRecorder {
     }
 
     /** 记录**引擎进程退出**。`expected` = 是不是我们主动停的。 */
-    fun recordEngineExit(exitCode: Int?, expected: Boolean, detail: String) {
+    /**
+     * 记录引擎进程退出。
+     *
+     * ## ⚠️ `engineTail` 这个参数是 2026-10-27 真机审查补上的
+     *
+     * 在此之前这个方法**不接收引擎自己的输出**，于是现场文件里只有 App 侧日志
+     * （`--- last 200 log lines ---` 来自 `LogStore.tail()`，那是我们自己的 app.log），
+     * **引擎进程说过的话一个字都没有**。
+     *
+     * 真机证据（HUAWEI CDY-TN90，`20261026-183957-engine-exit.txt`）：
+     * ```
+     * reason: exitCode=null 进程已退出
+     * --- last 200 log lines ---   ← 全是 mdns / 固定端口守护的 App 日志
+     * --- recent events ---        ← engine.exit code=134 …
+     * ```
+     * 只有 `recent events` 里那一行 `engine.exit code=134` 透露了真相 ——
+     * **134 = 128 + 6 = SIGABRT**，在 Node 里几乎总是
+     * `FATAL ERROR: Reached heap limit` / `Assertion failed` / 未捕获异常。
+     * 而 V8 打这行 FATAL 时是往 **stdout/stderr** 写的，正好落在
+     * `EngineManager.logLines` 那个 400 行环形缓冲里 —— 但没人把它写进现场。
+     *
+     * 结果：用户每天撞 2–3 次这个崩溃（真机上连续 6 天都是这个节奏），
+     * 每次自动重启要 27 秒，而**每次的根因证据都随进程消失**。
+     *
+     * @param engineTail 引擎 stdout/stderr 的尾部行；由调用方从
+     *   `EngineManager.logLines` 快照而来。传空列表等价于修复前的行为。
+     */
+    fun recordEngineExit(
+        exitCode: Int?,
+        expected: Boolean,
+        detail: String,
+        engineTail: List<String> = emptyList(),
+    ) {
         writeScene(
             kind = if (expected) "engine-exit-expected" else "engine-exit",
             reason = "exitCode=$exitCode $detail",
             stack = null,
             threadName = "engine-reader",
             level = if (expected) 'I' else 'W',
+            engineTail = engineTail,
         )
     }
 
@@ -490,6 +523,8 @@ object CrashRecorder {
         stack: String?,
         threadName: String,
         level: Char = 'E',
+        /** 引擎进程自己的 stdout/stderr 尾部；空则**不写**这一段（保持旧格式）。 */
+        engineTail: List<String> = emptyList(),
     ) {
         runCatching {
             val dir = crashDir
@@ -548,6 +583,23 @@ object CrashRecorder {
             runCatching {
                 LogStore.tail(LogStore.CRASH_TAIL_LINES).forEach { sb.append(it).append('\n') }
             }.onFailure { sb.append("(内存日志不可读: ${it.message})\n") }
+
+            /*
+             * 引擎自己的输出（stdout/stderr）。
+             *
+             * ⚠️ 这一段与上面的 `--- last 200 log lines ---` **不是一回事**：
+             *   那段是 App 的 app.log，这段是**引擎进程自己说的话**。
+             *   引擎崩溃时唯一的根因证据就在这段里（V8 的 FATAL、Node 的
+             *   uncaught exception、插件 apply() 抛的栈）—— 它们直接写到
+             *   进程的 stdout/stderr，从来不会经过 `LogStore`。
+             *
+             * 只在非空时写：正常停止（`expected = true`）时没有可写的输出，
+             * 凭空多一个空标题段只会让读的人以为"有内容但读不到"。
+             */
+            if (engineTail.isNotEmpty()) {
+                sb.append("\n--- engine output (tail ${engineTail.size} lines) ---\n")
+                engineTail.forEach { sb.append(it).append('\n') }
+            }
 
             // 时间线尾部：回答「崩在哪一步」
             sb.append("\n--- recent events ---\n")

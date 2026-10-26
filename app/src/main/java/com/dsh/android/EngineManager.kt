@@ -1,5 +1,6 @@
 package com.dsh.android
 
+import android.app.ActivityManager
 import android.content.Context
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.EventLog
@@ -600,10 +601,66 @@ class EngineManager private constructor(private val context: Context) {
      * `/data/user/0/<包名>/files`，包名恒为 `com.dsh.android`，不含空格。
      */
     private fun nodeOptions(): String {
-        val base = "--max-old-space-size=1024"
+        val base = "--max-old-space-size=${oldSpaceMb()}"
         val guard = fetchGuardPath ?: return base
         if (!guard.isFile) return base
         return "$base --import ${guard.absolutePath}"
+    }
+
+    /**
+     * 决定 Node 的老生代堆上限（MB）。
+     *
+     * ## ⚠️ 为什么不能写死 1024
+     *
+     * 原来这里是 `--max-old-space-size=1024`，没有任何说明。真机证据
+     * （HUAWEI CDY-TN90，Android 10，**物理内存 7.7 GB**）上的 `engine.log`：
+     *
+     * ```
+     * Mark-Compact 1004.6 (1029.1) -> 1001.7 (1029.4) MB
+     * FATAL ERROR: Ineffective mark-compacts near heap limit
+     * Allocation failed - JavaScript heap out of memory
+     * ```
+     *
+     * 堆一满到 1004 MB 就 SIGABRT（退出码 134），**6 天的崩溃文件里这个 FATAL
+     * 出现了 10 次**，每次自动重启要 27 秒（`engine.ready ms=27534`），
+     * 期间界面完全没有后端。
+     *
+     * 关键点：**这不是设备内存不够**。7.7 GB 的机器上 V8 只被允许用 1 GB，
+     * 撞上限是必然的 —— 长会话累积上下文、检索、日志都会把堆推上去。
+     * 换句话说，原来的 1024 是在一台 7.7 GB 的机器上人为制造瓶颈。
+     *
+     * ## 取值规则
+     *
+     * 按**物理内存**分档，并给 App 自身与系统留足余量（V8 的 old space 只是
+     * 引擎进程的一部分，外面还有 native、code space、以及 App 自己的 Java 堆）：
+     *
+     * | 物理内存 | old space | 说明 |
+     * |---|---|---|
+     * | ≥ 6 GB | 3072 MB | 留 4 GB 以上给系统与本 App，够用且不会把系统逼进 LMK |
+     * | ≥ 4 GB | 2048 MB | 中端机常见档 |
+     * | ≥ 3 GB | 1536 MB | |
+     * | 其它 | 1024 MB | **不低于原值** —— 低端机上贸然加大只会把系统拖进 LMK，比 OOM 更糟 |
+     *
+     * ⚠️ **下限保持 1024**：本修复的目标是"别在内存充裕的机器上人为卡死"，
+     *   不是"所有机器都加大"。内存紧张时 1024 已经会与系统抢，再加只会
+     *   让整个 App 被 LMK 杀掉（那比引擎自己 SIGABRT 更难受，因为连日志都留不下）。
+     *
+     * ⚠️ 拿不到 `totalMem` 时（极罕见）退回 1024，与修复前一致。
+     */
+    private fun oldSpaceMb(): Int {
+        val total = runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val mi = ActivityManager.MemoryInfo()
+            am?.getMemoryInfo(mi)
+            mi.totalMem
+        }.getOrDefault(0L)
+        val gb = total / (1024L * 1024L * 1024L)
+        return when {
+            gb >= 6L -> 3072
+            gb >= 4L -> 2048
+            gb >= 3L -> 1536
+            else -> 1024
+        }
     }
 
     /**
@@ -8301,14 +8358,72 @@ class EngineManager private constructor(private val context: Context) {
         if (userStopped) return
         if (process !== proc) return
         if (!wasReady) return
-        val code = runCatching { proc.exitValue() }.getOrNull()
-        val detail = if (code != null) "退出码 $code" else "进程已退出"
+        /*
+         * ⚠️ `exitValue()` 拿不到时**要短暂重试**，不能直接记 null。
+         *
+         * 这个方法是被 stdout 读线程在 `finally` 里调的（EOF ⇔ 引擎没了），
+         * 而 `Process.exitValue()` 在子进程**还没被 reap** 时会抛
+         * `IllegalThreadStateException` —— EOF 与 reap 之间有一个很短但真实的窗口。
+         *
+         * 真机现场就是这样：`crane ... reason: exitCode=null 进程已退出`。
+         * 于是最有价值的那一个数字（134 = SIGABRT）**在每一份现场里都丢了**，
+         * 只能从 `recent events` 的 `engine.exit code=134` 里间接看出来。
+         *
+         * 最多等 300ms（3 × 100ms）：这已经远超 reap 的实际延迟，
+         * 又不至于拖住这条线程 —— 它后面还有 flush 和状态置位要做。
+         */
+        var code = runCatching { proc.exitValue() }.getOrNull()
+        if (code == null) {
+            for (i in 0 until 3) {
+                if (code != null) break
+                runCatching { Thread.sleep(100L) }
+                code = runCatching { proc.exitValue() }.getOrNull()
+            }
+        }
+        val detail = if (code != null) "退出码 $code" else "进程已退出（未能取到退出码：EOF 后 300ms 内仍未 reap）"
         Log.w(TAG, "引擎在运行期退出（$detail），界面已失去后端")
-        // ⚠️ 「引擎在运行期自己死了」是仅次于「起不来」的严重故障：用户正用着，
-        //   界面突然什么都点不动，且**没有任何报错**。崩溃现场文件是这里唯一的
-        //   证据来源 —— 进程退出本身不留堆栈，只能靠我们自己记。
-        //   `expected = false`：不是我们主动停的。
-        CrashRecorder.recordEngineExit(code, expected = false, detail = detail)
+        /*
+         * ⚠️ **必须把引擎自己的输出一起写进现场**（2026-10-27 真机审查补）。
+         *
+         * 真机上这个崩溃每天来 2–3 次（`20261023` 至 `20261026` 连续 6 天），
+         * `recent events` 里每次都写着同一个 `engine.exit code=134`：
+         *
+         *     134 = 128 + 6 = SIGABRT
+         *
+         * 在 Node 里它几乎总是这几种之一：`FATAL ERROR: Reached heap limit`、
+         * `Assertion failed`、插件 `apply()` 里抛的未捕获异常。**这些消息是
+         * V8/Node 直接写到进程 stdout/stderr 的**，从来不经过 `LogStore` ——
+         * 也就是说，原来那份现场里 App 侧的 `--- last 200 log lines ---`
+         * 完全是 mdns / 固定端口守护之类的无关日志，**引擎说过的话一个字都没有**。
+         *
+         * 而引擎的输出其实一直躺在 [logLines] 这个 400 行环形缓冲里
+         * （stdout 读取线程每读一行就 `addLast`，读线程的 `finally` 在引擎死亡
+         * 时正好执行到这里）。**取一行快照的成本可以忽略，换来的却是唯一根因。**
+         *
+         * 快照必须在这里取（而不是事后）：下一次 `start()` 一进来就会
+         * `logLines.clear()`（见 [start] 开头），过期即失效。
+         */
+        val engineTail = synchronized(logLines) { logLines.toList() }
+        if (code == 134) {
+            /*
+             * 单独提一句 SIGABRT 的含义。
+             *
+             * ⚠️ 只在这个码上打，不要泛化：`Log.w` 里写"可能 OOM"却对
+             *   所有退出码都说，就成了噪音。134 的语义是确定的（abort），
+             *   这么写不算猜。
+             */
+            Log.w(
+                TAG,
+                "引擎退出码 134 = SIGABRT（V8 堆耗尽 / 断言失败 / 未捕获异常的典型信号），" +
+                    "引擎最后输出 ${engineTail.size} 行已并入崩溃现场",
+            )
+        }
+        CrashRecorder.recordEngineExit(
+            code,
+            expected = false,
+            detail = detail,
+            engineTail = engineTail,
+        )
         EventLog.record("engine.exit", mapOf("code" to (code?.toString() ?: "?"), "wasReady" to "true"))
         _state.value = State.Dead(detail)
     }
