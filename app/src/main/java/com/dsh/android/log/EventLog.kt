@@ -94,6 +94,20 @@ object EventLog {
         val detail = if (fields.isEmpty()) "" else " " + fields.entries.joinToString(" ") { "${it.key}=${it.value}" }
         LogStore.app('I', "Event", "$name$detail (t+${elapsed}ms)")
 
+        /*
+         * ⚠️ 这个 `w` 是**锁外**取的，所以进锁后必须再核一次引用有没有变。
+         *
+         * 时序：本线程在锁外取到非空 `w` → 另一线程进 [rotate]（它在
+         * `synchronized(this)` 内被调用，可重入）把这条流 close 掉并置空
+         * → 本线程拿到锁，对着**已关闭的流**写 ⇒ IOException。
+         *
+         * 那个异常会被下面的 catch 静默吞掉（事件写不进去不致命），
+         * 但**这一条事件就悄悄丢了**，而 `events.jsonl` 是崩溃现场
+         * crash 现场文件与诊断包 `timeline.jsonl` 的数据源 ——
+         * 丢的往往是崩溃前最后几条，正是最需要的那几条。
+         *
+         * 与 `LogStore.writeApp` / `writeAsync` 里同样的守卫保持一致。
+         */
         val w = writer ?: return
         try {
             val o = JSONObject().apply {
@@ -131,6 +145,8 @@ object EventLog {
             //   与「没有缺口」是两回事。
             val line = Redactor.redact(o.toString())
             synchronized(this) {
+                // 锁内复核：取到 w 之后、拿到锁之前，流可能已被 rotate 关掉。
+                if (w !== writer) return
                 w.write(line)
                 w.write("\n")
                 w.flush()
