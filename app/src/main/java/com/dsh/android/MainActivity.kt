@@ -1293,6 +1293,7 @@ class MainActivity : AppCompatActivity() {
                             // 面板里，而不是整屏糊上来。
                             requestBrowserPane()
                             b.visibility = View.VISIBLE
+                            syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
                             b.bringToFront()
                             notifyBrowserPane(visible = true)
                             b.createPopupTarget()
@@ -1382,6 +1383,7 @@ class MainActivity : AppCompatActivity() {
     fun openAiBrowser(url: String? = null) {
         val view = ensureAiBrowser() ?: return
         view.visibility = View.VISIBLE
+        syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc：必须同步镜像
         view.bringToFront()
         if (url != null) view.loadUrl(url)
         else if (view.currentUrl().isEmpty()) view.loadUrl(com.dsh.android.browser.AiBrowserView.HOME_URL)
@@ -1412,6 +1414,7 @@ class MainActivity : AppCompatActivity() {
      */
     fun closeAiBrowser(closeTab: Boolean = false) {
         aiBrowser?.visibility = View.GONE
+        syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc：必须同步镜像
         notifyBrowserPane(visible = false, userClosed = closeTab)
         Log.i(
             DshApplication.TAG,
@@ -1531,7 +1534,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** AI 浏览器是否正在显示。 */
-    fun isAiBrowserVisible(): Boolean = aiBrowser?.visibility == View.VISIBLE
+    /**
+     * AI 浏览器是否可见 —— **任意线程可读**的缓存。
+     *
+     * ⚠️ **不能直接写成 `aiBrowser?.visibility == View.VISIBLE`。**
+     *   `View.getVisibility()` 是 View 的方法，Android 规定只能在主线程调用；
+     *   而本方法会被 `GeckoWebHost.pushSnapshot()` 从**内核线程**调到
+     *   （快照里带 `aiBrowser` 字段给页面的 `aiBrowserState()` 同步读）。
+     *   跨线程读 View 属于未定义行为：轻则读到撕裂的旧值，重则在某些 ROM 上
+     *   直接抛 `CalledFromWrongThreadException`，而它出现在快照推送路径上 ——
+     *   表现会是「设置页/侧栏某些状态一直不更新」，很难联想到线程问题。
+     *
+     * 所以按本项目既有做法（见 MainActivity 里其他 `@Volatile` 的 KDoc），
+     * 把 UI 状态**镜像**到一个 volatile 字段里：主线程在改可见性的同时更新它，
+     * 任意线程读这个字段。
+     */
+    @Volatile
+    private var aiBrowserVisible = false
+
+    /** 同步镜像。**只能在主线程调用**（它读 View）。 */
+    private fun syncAiBrowserVisible() {
+        aiBrowserVisible = aiBrowser?.visibility == View.VISIBLE
+    }
+
+    fun isAiBrowserVisible(): Boolean = aiBrowserVisible
 
     /**
      * 拉起系统的文件选择器，把结果交回内核。
@@ -2379,6 +2405,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 aiBrowser?.let {
                     it.visibility = View.GONE
+                    syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
                     // ⚠️ 必须清掉嵌入矩形：否则面板关掉后 AI 再调工具打开时，
                     //   浏览器会出现在上一次那块（已经不存在的）面板位置。
                     it.clearEmbedRect()
