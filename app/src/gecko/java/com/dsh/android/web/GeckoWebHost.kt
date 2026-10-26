@@ -840,6 +840,31 @@ class GeckoWebHost(
     private fun postToExtension(msg: JSONObject) {
         val p = port
         if (p == null) {
+            /*
+             * ⚠️ **队列必须有上限。**
+             *
+             * 端口没通时把动作排进 `pendingUntilReady` 等握手，这个设计是对的
+             * （内容脚本是「先装桥、后 connectNative」，中间这段窗口里的动作不能丢）。
+             * 但「端口没通」**可能是永久的**：`installBridgeExtension()` 的失败分支
+             * 只会打一行 E —— 扩展装不上 ⇒ 内容脚本永远不会来 connect ⇒
+             * 队列永远不会被 flush。
+             *
+             * 那时每一次 `evaluateJavascript`（探针、宠物、UI 工具、状态回传…）
+             * 都会往里塞一个闭包，而每个闭包**强引用着 msg 这个 JSONObject**。
+             * 长时间运行的结果是内存只涨不降、没有任何异常，最后表现为
+             * 「用了几个小时之后突然被杀」—— 极难归因到这条路径。
+             *
+             * 上限 256：正常情况下端口几百毫秒内就连上，这个量级远远够用
+             * （实测一次页面加载的动作也就十几个）。超了丢**最老的**并留日志 ——
+             * 丢老动作只会让某个状态晚一轮对齐，比无界增长强得多。
+             */
+            if (pendingUntilReady.size >= MAX_PENDING_UNTIL_READY) {
+                pendingUntilReady.removeFirst()
+                Log.w(
+                    DshApplication.TAG,
+                    "桥端口长时间未连接，待发队列已满（$MAX_PENDING_UNTIL_READY），丢弃最老的一条",
+                )
+            }
             pendingUntilReady.addLast { postToExtension(msg) }
             return
         }
@@ -966,6 +991,14 @@ class GeckoWebHost(
     private companion object {
         /** 本地引擎的 URL 前缀；其余一律当外链。 */
         const val LOCAL_ENGINE_PREFIX = "http://127.0.0.1"
+
+        /**
+         * 端口未连上时最多排队多少个待发动作。
+         *
+         * ⚠️ 见 [postToExtension] 里的说明：扩展装不上时队列**永远**不会被 flush，
+         *   不设上限就是无界内存增长。
+         */
+        private const val MAX_PENDING_UNTIL_READY = 256
 
         /** 注入 token 跟随脚本前的等待（ms）：等桥扩展握手完成。 */
         const val TOKEN_FOLLOW_DELAY_MS = 2500L
