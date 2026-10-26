@@ -136,6 +136,35 @@ class LogViewerActivity : AppCompatActivity() {
         handler.removeCallbacks(autoRefresh)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        /*
+         * ⚠️ `onStop` 里的 `removeCallbacks` **挡不住一种情况**：
+         *
+         * [autoRefresh] 是「跑完自己再排一次」的自续期 Runnable：
+         *
+         *     override fun run() {
+         *         reload()                                  // ← 正在执行（要读文件）
+         *         handler.postDelayed(this, REFRESH_MS)     // ← 然后重新排队
+         *     }
+         *
+         * 如果 `onStop` 恰好在 `reload()` 执行期间被调用，`removeCallbacks`
+         * 移除的是**队列里的**那一条 —— 而当前这一轮已经出队，它接下来会
+         * 无条件执行第 101 行，把任务重新排进队列。
+         *
+         * 于是 Activity 被销毁（用户按返回退出）之后，这个 Runnable 仍在
+         * 每 2 秒醒来一次，对着一个已销毁的 Activity 调 `reload()` 读日志、
+         * 碰已经拆掉的 View。表现是「退出日志页后偶发闪退」，
+         * 而且 `reload()` 里读文件的开销会一直挂着。
+         *
+         * `onDestroy` 是最后一道闸：此时 Activity 确定要没了，
+         * 清空这个 Handler 的全部排队与已排期任务，自续期链随之终止。
+         * 用 `removeCallbacksAndMessages(null)` 而不是 `removeCallbacks`，
+         * 因为销毁后不再需要区分是哪一个任务。
+         */
+        handler.removeCallbacksAndMessages(null)
+    }
+
     // ── 顶部信息 ─────────────────────────────────────────────────────────────
 
     /**
@@ -181,6 +210,17 @@ class LogViewerActivity : AppCompatActivity() {
 
     /** 重新读内存缓冲 + 崩溃现场，应用筛选，刷新列表。 */
     private fun reload() {
+        /*
+         * ⚠️ 第二道防线：Activity 已经在销毁就不要碰视图了。
+         *
+         * [onDestroy] 里清了 Handler，正常路径下这里不会在销毁后被调到。
+         * 但 `reload()` 还有别的调用者（筛选/搜索/手动刷新/自动刷新），
+         * 任何一条在销毁瞬间触发的路径都会走到下面 `list.adapter = ...`
+         * 去操作一棵已经拆掉的视图树 —— 那会抛 IllegalStateException
+         * 或静默无效。加一行守卫的代价可以忽略，换来的是「日志页退出时
+         * 绝不因为自己的刷新逻辑而崩」。
+         */
+        if (isFinishing || isDestroyed) return
         val all = LogStore.entries()
         val minSev = LogStore.severity(minLevel)
 
