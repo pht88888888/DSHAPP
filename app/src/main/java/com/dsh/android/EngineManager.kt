@@ -1369,16 +1369,35 @@ class EngineManager private constructor(private val context: Context) {
         }
 
         try {
-            val source = entry.readText()
-            if (source.contains(ATTACH_SYNC_ANCHOR)) {
-                return
+            var source = entry.readText()
+            var changed = false
+
+            // ① open 的 EACCES/EPERM 兜底（SELinux 拒绝祖先目录 open）。
+            if (!source.contains(ATTACH_SYNC_ANCHOR)) {
+                if (source.contains(ATTACH_SYNC_GUARD)) {
+                    source = source.replace(ATTACH_SYNC_GUARD, ATTACH_SYNC_ANCHOR)
+                    changed = true
+                } else {
+                    Log.w(TAG, "附件模块的目录 open 结构与预期不符，跳过该处容错")
+                }
             }
-            if (!source.contains(ATTACH_SYNC_GUARD)) {
-                Log.w(TAG, "附件模块的目录 fsync 结构与预期不符，跳过容错补丁")
-                return
+
+            // ② **真正的根因**：只读分区上目录 fsync 返回 EINVAL。
+            //    原版 `sync()` 只有 try/finally、没有 catch，EINVAL 直接穿透，
+            //    整条附件落盘失败 → 用户看到「会话忙」，且**只有发图片会中招**
+            //    （纯文字不走附件落盘）。
+            if (!source.contains(ATTACH_FSYNC_ANCHOR)) {
+                if (source.contains(ATTACH_FSYNC_GUARD)) {
+                    source = source.replace(ATTACH_FSYNC_GUARD, ATTACH_FSYNC_ANCHOR)
+                    changed = true
+                } else {
+                    Log.w(TAG, "附件模块的目录 fsync 结构与预期不符，跳过该处容错")
+                }
             }
-            entry.writeText(source.replace(ATTACH_SYNC_GUARD, ATTACH_SYNC_ANCHOR))
-            Log.i(TAG, "已放行附件模块的祖先目录 fsync: dsh-attachment-local")
+
+            if (!changed) return
+            entry.writeText(source)
+            Log.i(TAG, "已放行附件模块的目录 fsync（open+sync）: dsh-attachment-local")
         } catch (t: Throwable) {
             Log.w(TAG, "放行附件模块的祖先目录 fsync 失败: ${t.message}")
         }
@@ -8427,6 +8446,44 @@ class EngineManager private constructor(private val context: Context) {
                 "\t\t   而这些目录项的崩溃持久性在应用沙箱内本来就不可达，跳过即可。 */\n" +
                 "\t\tif (err && (err.code === \"EACCES\" || err.code === \"EPERM\")) return;\n" +
                 "\t\tthrow err;\n" +
+                "\t}"
+
+        /**
+         * `handle.sync()` 那段的原样文本与容错版本。见 [patchAttachmentDurability]。
+         *
+         * **这是「发图报 session/agent-busy」的真正根因，只补 `open` 是不够的。**
+         *
+         * 因果链：`ensureDurableHome` 把持久化边界算成 `parse(home).root`（恒为 `/`），
+         * `ensureDurableDirectory` 于是逐级上溯到 `/`，对只读分区做目录 `fsync`。
+         * Android 的 `/` 是 erofs **只读**挂载，内核对只读文件系统上的目录 `fsync`
+         * 返回 **`EINVAL`**（这是 Linux 标准行为，不是某台机器的毛病）。
+         * 而原版 `sync()` 只有 `try/finally`、**没有 `catch`**，`EINVAL` 直接穿透 →
+         * 附件落盘失败 → `session-controller` 兜底成 `session/agent-busy`。
+         *
+         * 表现上的迷惑点：**纯文字完全正常**。因为 `admitPromptContent` 里
+         * `if (content.every((part) => part.type !== "image")) return;` ——
+         * 只有图片才走附件落盘。
+         *
+         * ⚠️ 缩进是**一个制表符**，与官方发布件逐字一致；引擎升级后若不再匹配，
+         * 补丁会跳过并在日志里提示，不会让启动失败。
+         */
+        private const val ATTACH_FSYNC_GUARD =
+            "\ttry {\n" +
+                "\t\tawait handle.sync();\n" +
+                "\t} finally {\n" +
+                "\t\tawait handle.close();\n" +
+                "\t}"
+        private const val ATTACH_FSYNC_ANCHOR =
+            "\ttry {\n" +
+                "\t\tawait handle.sync();\n" +
+                "\t} catch (err) {\n" +
+                "\t\t/* Android: / 是 erofs 只读挂载，对只读文件系统上的目录做 fsync，\n" +
+                "\t\t   内核返回 EINVAL（Linux 标准行为）。这类目录项本进程根本改不动，\n" +
+                "\t\t   跳过即可 —— 否则整条附件落盘失败，用户看到的是「会话忙」。 */\n" +
+                "\t\tif (err && (err.code === \"EINVAL\" || err.code === \"EACCES\" || err.code === \"EPERM\")) return;\n" +
+                "\t\tthrow err;\n" +
+                "\t} finally {\n" +
+                "\t\tawait handle.close();\n" +
                 "\t}"
 
         /**

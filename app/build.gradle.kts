@@ -103,7 +103,16 @@ android {
         //        现在 install() 整体包 try/catch，失败只写日志并放行；
         //        catch 块里的日志写本身也再包一层（stderr 已关 / EPIPE 时
         //        write 会抛，实测会让进程二次退出）。
-        versionCode = 69
+        //   v70：补上「发图报 session/agent-busy」的**真正根因**。
+        //        App 侧原有的 `patchAttachmentDurability` 只给 `open()` 兜了
+        //        EACCES/EPERM，但真正的故障点是 `handle.sync()` 抛 **EINVAL**：
+        //        `ensureDurableHome` 把持久化边界算成 `/`，逐级上溯对只读分区
+        //        做目录 fsync，Android 的 `/` 是 erofs 只读挂载 ⇒ 内核返回
+        //        EINVAL ⇒ 原版 `sync()` 只有 try/finally 没有 catch ⇒ 直接穿透
+        //        ⇒ 附件落盘失败 ⇒ 被兜底成 `session/agent-busy`。
+        //        迷惑点：**纯文字完全正常**，因为只有图片才走附件落盘。
+        //        现在 sync() 也加 EINVAL 兜底（其他错误照抛）。
+        versionCode = 70
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
