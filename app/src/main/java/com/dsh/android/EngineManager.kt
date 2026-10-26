@@ -2314,25 +2314,69 @@ class EngineManager private constructor(private val context: Context) {
             return
         }
 
+        /*
+         * ⚠️ **解包必须是原子的：先解到临时目录，全部成功后再整体换上去。**
+         *
+         * 原来的写法是 `target.deleteRecursively()` 之后直接往 `target` 里解。
+         * 这有个很硬的问题：**一旦解包中途失败，旧版本已经被删掉了**。
+         * 失败原因在真机上都是现实存在的 ——
+         *   · 磁盘不足（这个 zip 解出来约 1.2 MB，但 dshHome 在共享存储上，
+         *     用户把它塞满是很常见的事，`copyTo` 中途抛 IOException）；
+         *   · 用户在解包过程中把 App 切走，进程被系统回收；
+         *   · 存储被卸载（SD 卡用户）。
+         * 结果是 `lib/client.js` 缺失或只有半个文件 —— 插件加载失败，
+         * 界面**静默退回桌面布局**，而用户完全不知道发生了什么，
+         * 下次启动还会因为「clientJs 不完整」再删一遍。反复几次仍然如此。
+         *
+         * 现在改成：解到 `<pkg>.tmp` → 全部写完并落戳 → 删旧 → 改名替换。
+         * 任何一步失败都只留下一个可丢弃的 `.tmp`，**旧版本原样可用**。
+         * 这是本项目所有资产解包都应该遵守的规矩（engine.bin 那条同理）。
+         */
+        val tmp = File(target.parentFile, "$MOBILE_UI_PACKAGE.tmp")
         try {
-            target.deleteRecursively()
+            // 清掉上次失败的残留（它一定是不完整的，没有保留价值）
+            tmp.deleteRecursively()
+            tmp.mkdirs()
+            if (!tmp.isDirectory) {
+                throw java.io.IOException("无法创建临时目录: ${tmp.absolutePath}")
+            }
             java.util.zip.ZipInputStream(context.assets.open(MOBILE_UI_ASSET).buffered()).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
                     if (!entry.isDirectory) {
-                        val out = File(target, entry.name)
-                        out.parentFile?.mkdirs()
-                        out.outputStream().use { zis.copyTo(it) }
+                        // 防目录穿越：zip 条目名不允许跑出临时目录
+                        val out = File(tmp, entry.name)
+                        val basePath = tmp.canonicalPath + File.separator
+                        if (!out.canonicalPath.startsWith(basePath)) {
+                            Log.w(TAG, "mobile-ui.zip 条目越界，已丢弃: ${entry.name}")
+                        } else {
+                            out.parentFile?.mkdirs()
+                            out.outputStream().use { zis.copyTo(it) }
+                        }
                     }
                     zis.closeEntry()
                     entry = zis.nextEntry
                 }
             }
-            stamp.writeText(MOBILE_UI_VERSION)
+            // 先确认解出来的东西真的完整，再换掉旧版本
+            val tmpClient = File(tmp, "lib/client.js")
+            if (!tmpClient.isFile || tmpClient.length() <= 0L) {
+                throw java.io.IOException("解包结果缺少 lib/client.js")
+            }
+            File(tmp, MOBILE_UI_STAMP).writeText(MOBILE_UI_VERSION)
+            // 换上去：删旧 → 改名。两步之间窗口极短，且此时新版本已完整就绪。
+            target.deleteRecursively()
+            if (!tmp.renameTo(target)) {
+                // rename 失败（跨设备挂载等）就退化成拷贝，仍然保证新版本可用
+                tmp.copyRecursively(target, overwrite = true)
+                tmp.deleteRecursively()
+            }
             Log.i(TAG, "已安装移动端 UI 插件 $MOBILE_UI_PACKAGE $MOBILE_UI_VERSION (${clientJs.length()} 字节)")
         } catch (t: Throwable) {
-            // 装不上就不阻断启动：宁可给桌面布局，也不要白屏
-            Log.w(TAG, "安装移动端 UI 插件失败: ${t.message}")
+            // 装不上就不阻断启动：宁可给桌面布局，也不要白屏。
+            // ⚠️ 旧版本**仍然完好**（上面没有提前删它），下次启动会重试。
+            Log.w(TAG, "安装移动端 UI 插件失败（旧版本保持可用）: ${t.message}")
+            tmp.deleteRecursively()
         }
 
         // 清理旧位置：早先版本解到 profile 的 node_modules 下，留在那里既没用，
