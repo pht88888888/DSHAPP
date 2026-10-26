@@ -608,9 +608,25 @@ class EngineManager private constructor(private val context: Context) {
         }
 
         try {
-            // 先读 zip 里的戳（在流开头之后才能知道），再决定要不要落盘
+            // ── 第一遍：**只读戳、只数前缀**，不持有任何条目内容 ──────────
+            //
+            // ⚠️ **原来是「把 zip 全部条目读进 LinkedHashMap<String, ByteArray>」
+            //   再决定要不要落盘 —— 这是个会真炸的 OOM 风险，已改掉。**
+            //
+            //   实测本资产解压后共 **32.2 MB**（234 个条目，单个最大 8.7 MB 的
+            //   client.excel.js）。旧写法等于每次启动都在堆上摊开 32 MB 字节数组，
+            //   而且**连「戳一致、什么都不用做」的那条路径也要先摊开**才判断得出来 ——
+            //   绝大多数启动都属于这一类，等于纯白付。
+            //
+            //   触发条件在真机上很现实：低内存机（2~3 GB）、Dalvik 堆上限 192~256 MB，
+            //   再叠加引擎/WebView 的常驻占用，32 MB 的瞬时分配足以 OutOfMemoryError。
+            //   而这里 catch 的是 Throwable，OOM 会被吞成一行 W，表现为
+            //   「降级没打上 → 老内核白屏」，排查方向完全跑偏。
+            //
+            //   改成两遍扫描后：跳过路径**零字节分配**；落盘路径一次只持有**单个条目**。
             var stampInZip = ""
-            val entries = LinkedHashMap<String, ByteArray>()
+            val prefixCounts = HashMap<String, Int>()
+            var totalEntries = 0
             java.util.zip.ZipInputStream(context.assets.open(WEBVIEW_COMPAT_ASSET).buffered()).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
@@ -618,15 +634,19 @@ class EngineManager private constructor(private val context: Context) {
                         if (entry.name == WEBVIEW_COMPAT_STAMP_ENTRY) {
                             stampInZip = zis.readBytes().toString(Charsets.UTF_8).trim()
                         } else {
-                            entries[entry.name] = zis.readBytes()
+                            totalEntries++
+                            val p = entry.name.substringBefore('/')
+                            prefixCounts[p] = (prefixCounts[p] ?: 0) + 1
                         }
                     }
+                    // ⚠️ closeEntry 会自行 skip 掉当前条目未读的数据，**不占内存** ——
+                    //   所以「不读内容也能前进」是成立的，不需要先读出来再丢掉。
                     zis.closeEntry()
                     entry = zis.nextEntry
                 }
             }
 
-            if (entries.isEmpty()) {
+            if (totalEntries == 0) {
                 Log.w(TAG, "WebView 降级资产是空的，跳过")
                 return
             }
@@ -642,7 +662,7 @@ class EngineManager private constructor(private val context: Context) {
             val distUpToDate = File(dist, WEBVIEW_COMPAT_STAMP).let {
                 it.isFile && it.readText().trim() == stampInZip
             }
-            val wantsMobile = entries.keys.any { it.startsWith("$COMPAT_PREFIX_MOBILEUI/") }
+            val wantsMobile = (prefixCounts[COMPAT_PREFIX_MOBILEUI] ?: 0) > 0
             val mobileStamp = File(mobileUiRoot, WEBVIEW_COMPAT_STAMP)
             val mobileUpToDate = !wantsMobile ||
                 (mobileStamp.isFile && mobileStamp.readText().trim() == stampInZip)
@@ -659,53 +679,66 @@ class EngineManager private constructor(private val context: Context) {
             var distWrote = false
             var mobileWrote = false
 
-            for ((name, bytes) in entries) {
-                // 条目前缀决定落到哪棵树。前缀本身就是防目录穿越的第一道闸：
-                // 认不出的前缀直接丢弃，绝不按 zip 里的路径原样拼。
-                val prefix = name.substringBefore('/')
-                val root: File
-                val rel: String
-                when (prefix) {
-                    COMPAT_PREFIX_DIST -> {
-                        if (distUpToDate) continue
-                        root = dist
-                        rel = name.removePrefix("$COMPAT_PREFIX_DIST/")
-                        distWrote = true
-                    }
-                    COMPAT_PREFIX_ENGINE -> {
-                        if (distUpToDate) continue
-                        root = engineModules
-                        rel = name.removePrefix("$COMPAT_PREFIX_ENGINE/")
-                        distWrote = true
-                    }
-                    COMPAT_PREFIX_MOBILEUI -> {
-                        if (mobileUpToDate) continue
-                        root = mobileUiRoot
-                        rel = name.removePrefix("$COMPAT_PREFIX_MOBILEUI/")
-                        mobileWrote = true
-                    }
-                    else -> {
-                        Log.w(TAG, "跳过前缀无法识别的降级条目: $name")
-                        continue
-                    }
-                }
+            // ── 第二遍：逐条流式落盘，一次只持有**一个条目** ──────────────
+            //
+            // ⚠️ 不要退回到「先把 entries 全读进 Map 再写」：见上面第一遍的说明，
+            //   那是 32 MB 的堆分配。这里每条写完立刻丢掉，峰值 ≈ 最大单条（8.7 MB）。
+            java.util.zip.ZipInputStream(context.assets.open(WEBVIEW_COMPAT_ASSET).buffered()).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name != WEBVIEW_COMPAT_STAMP_ENTRY) {
+                        val name = entry.name
+                        // 条目前缀决定落到哪棵树。前缀本身就是防目录穿越的第一道闸：
+                        // 认不出的前缀直接丢弃，绝不按 zip 里的路径原样拼。
+                        val prefix = name.substringBefore('/')
+                        var root: File? = null
+                        var rel = ""
+                        when (prefix) {
+                            COMPAT_PREFIX_DIST -> if (!distUpToDate) {
+                                root = dist
+                                rel = name.removePrefix("$COMPAT_PREFIX_DIST/")
+                                distWrote = true
+                            }
+                            COMPAT_PREFIX_ENGINE -> if (!distUpToDate) {
+                                root = engineModules
+                                rel = name.removePrefix("$COMPAT_PREFIX_ENGINE/")
+                                distWrote = true
+                            }
+                            COMPAT_PREFIX_MOBILEUI -> if (!mobileUpToDate) {
+                                root = mobileUiRoot
+                                rel = name.removePrefix("$COMPAT_PREFIX_MOBILEUI/")
+                                mobileWrote = true
+                            }
+                            else -> {
+                                Log.w(TAG, "跳过前缀无法识别的降级条目: $name")
+                            }
+                        }
 
-                val out = File(root, rel)
-                // 防目录穿越：资产是我们自己打的，但解包路径仍按约定校验
-                if (!out.canonicalPath.startsWith(root.canonicalPath + File.separator)) {
-                    Log.w(TAG, "跳过越界的资产条目: $name")
-                    continue
+                        if (root != null) {
+                            val out = File(root, rel)
+                            when {
+                                // 防目录穿越：资产是我们自己打的，但解包路径仍按约定校验
+                                !out.canonicalPath.startsWith(root.canonicalPath + File.separator) -> {
+                                    Log.w(TAG, "跳过越界的资产条目: $name")
+                                }
+                                // mobile-ui 那棵树要等 [ensureMobileUi] 先解包出目录才能写。
+                                // 真缺了就跳过（下次启动会重试，因为戳没写），
+                                // 不要把整趟降级带崩 —— dist/engine 两棵树跟它无关，照常生效。
+                                prefix == COMPAT_PREFIX_MOBILEUI && !mobileUiRoot.isDirectory -> {
+                                    mobileWrote = false
+                                }
+                                else -> {
+                                    out.parentFile?.mkdirs()
+                                    // 流式拷贝：不把整条读成 ByteArray
+                                    out.outputStream().use { zis.copyTo(it) }
+                                    counts[prefix] = (counts[prefix] ?: 0) + 1
+                                }
+                            }
+                        }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
                 }
-                // mobile-ui 那棵树要等 [ensureMobileUi] 先解包出目录才能写。
-                // 真缺了就跳过（下次启动会重试，因为戳没写），不要把整趟降级带崩 ——
-                // dist/engine 两棵树跟它无关，照常生效。
-                if (prefix == COMPAT_PREFIX_MOBILEUI && !mobileUiRoot.isDirectory) {
-                    mobileWrote = false
-                    continue
-                }
-                out.parentFile?.mkdirs()
-                out.writeBytes(bytes)
-                counts[prefix] = (counts[prefix] ?: 0) + 1
             }
 
             // 戳只在对应树真的写了之后才落盘，否则会把「没写成功」记成「已完成」
