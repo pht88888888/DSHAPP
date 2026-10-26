@@ -2292,7 +2292,16 @@ class EngineManager private constructor(private val context: Context) {
                 Log.w(TAG, "profile-boot 的 release 回调结构与预期不符，跳过第 2 步")
                 return
             }
-            profileBoot.writeText(source.replace(FAIL_LOUD_RELEASE_GUARD, FAIL_LOUD_RELEASE_ANCHOR))
+            // ⚠️ 走原子写入：这是引擎启动必经的文件，写坏了引擎直接起不来，
+            //   而报错信息不会指向「文件被写了一半」这件事。
+            if (!writeTextAtomically(
+                    profileBoot,
+                    source.replace(FAIL_LOUD_RELEASE_GUARD, FAIL_LOUD_RELEASE_ANCHOR),
+                )
+            ) {
+                Log.w(TAG, "profile-boot 补丁未能落盘，保持原样（下次启动重试）")
+                return
+            }
             Log.i(TAG, "已让引擎在插件崩溃后保留进程: ${profileBoot.name}")
         } catch (t: Throwable) {
             Log.w(TAG, "应用引擎抗崩溃补丁第 2 步失败: ${t.message}")
@@ -5049,7 +5058,13 @@ class EngineManager private constructor(private val context: Context) {
         }
         try {
             profileDir.mkdirs()
-            patch.writeText(DEFAULT_SETTINGS_PATCH)
+            // ⚠️ 走原子写入：写坏一半的话，下次启动 isEmptyProfilePatch 会判定
+            //   「不是空模板」从而不再播种，而引擎拿到的是一个语法坏掉的 YAML ——
+            //   用户设置等于永久损坏，且不会自愈。
+            if (!writeTextAtomically(patch, DEFAULT_SETTINGS_PATCH)) {
+                Log.w(TAG, "默认设置未能落盘（引擎会写空模板，不影响启动）")
+                return
+            }
             Log.i(TAG, "已播种默认设置: ${patch.absolutePath}")
         } catch (t: Throwable) {
             // 播种失败不能挡住启动：引擎会自己写一份空的模板，只是没有默认值
@@ -5085,6 +5100,53 @@ class EngineManager private constructor(private val context: Context) {
             .filter { it.isNotEmpty() && !it.startsWith("#") }
             .joinToString("")
         return meaningful == "[]"
+    }
+
+    /**
+     * 原子写入文本文件：先写同目录的临时文件，再 `renameTo` 顶上。
+     *
+     * ## 为什么不能直接 `writeText`
+     *
+     * `File.writeText()` 是「truncate 成 0 字节 → 写内容」。这两步之间**有窗口**，
+     * 且在真机上真的会被打断：`start()` 跑在 `Dispatchers.IO`，用户随手把 App
+     * 切走、系统因内存压力杀进程，或者写一半没空间了 —— 结果是文件只剩前一半，
+     * 或者干脆 0 字节。
+     *
+     * 对本文件里的两处调用来说，后果分别是：
+     *   · `profiles/web/cordis.patch.yml`（用户设置）写坏了 → **用户的配置丢了**，
+     *     而且下次启动 `isEmptyProfilePatch` 判定它不是空模板、不会重新播种，
+     *     于是引擎拿一个语法坏掉的 YAML 去启动，报错信息还指不到配置文件上；
+     *   · `profile-boot` 的引擎补丁写坏了 → 引擎直接起不来。
+     *
+     * ## 为什么临时文件必须同目录
+     *
+     * `renameTo` 跨文件系统会失败（返回 false）而不是抛异常。同目录保证同一个
+     * 文件系统，改名是原子操作。
+     *
+     * @return 成功与否。**调用方必须处理 false** —— 它意味着磁盘上仍是旧内容。
+     */
+    private fun writeTextAtomically(target: File, text: String): Boolean = try {
+        val dir = target.parentFile
+        if (dir != null && !dir.isDirectory) dir.mkdirs()
+        // 临时文件用固定后缀而不是随机名：同名残留下次会被直接覆盖，不会越积越多。
+        val tmp = File(dir, target.name + ".tmp")
+        tmp.writeText(text)
+        // 先把临时文件的内容刷到磁盘，再改名 —— 否则断电时可能改完名但内容还在页缓存里。
+        // 这里刻意不 fsync：这些文件在切换到后台时本来就是「下次启动重写」的语义，
+        // 而 fsync 在 Android 上会引入明显的掉帧（主线程调用时）。原子性靠 rename 保证。
+        if (tmp.renameTo(target)) {
+            true
+        } else {
+            // rename 失败（极少见，如跨挂载点）：退化成直接写。
+            // 此时原子性没了，但至少内容是对的 —— 比留一个损坏的旧文件强。
+            Log.w(TAG, "原子改名失败，退化为直接写入: ${target.name}")
+            target.writeText(text)
+            tmp.delete()
+            true
+        }
+    } catch (t: Throwable) {
+        Log.w(TAG, "原子写入失败: ${target.name}: ${t.message}")
+        false
     }
 
     /**
