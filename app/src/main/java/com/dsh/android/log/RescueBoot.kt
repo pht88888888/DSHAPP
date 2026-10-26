@@ -357,7 +357,7 @@ object RescueBoot {
         val streak = (lastFailure()?.consecutiveFailures ?: 0) + 1
         val parsed = parseFailure(bootId, exitCode, tailLines, at, streak)
         return try {
-            f.writeText(toJson(parsed).toString(2))
+            writeJsonAtomic(f, toJson(parsed))
             Log.w(TAG, "救援：已记录启动失败（第 $streak 次连续失败，" +
                 "required 未激活=${parsed.requiredDidNotActivate ?: "未提及"}，" +
                 "失败插件 ${parsed.failedPlugins.size} 个" +
@@ -625,7 +625,7 @@ object RescueBoot {
         val parsed = parseFailure(bootId, null, tailLines, at, streak)
         val marked = parsed.copy(gatewayCulprit = culprit.ifEmpty { null })
         return try {
-            f.writeText(toJson(marked).toString(2))
+            writeJsonAtomic(f, toJson(marked))
             Log.w(
                 TAG,
                 "救援：已记录 gateway 失效（第 $streak 次，涉事=${culprit.ifEmpty { "未解析到包名" }}）" +
@@ -717,7 +717,7 @@ object RescueBoot {
         cachedState = s
         val f = fileOf(FILE_STATE) ?: return false
         return try {
-            f.writeText(toJson(s).toString(2))
+            writeJsonAtomic(f, toJson(s))
             Log.w(TAG, "救援：启动层级 = ${tier.id}（${tier.label}）原因=$reason")
             true
         } catch (t: Throwable) {
@@ -899,6 +899,50 @@ object RescueBoot {
             File(d, name)
         } catch (t: Throwable) {
             null
+        }
+    }
+
+    /**
+     * 原子地把 JSON 写进 [f]。
+     *
+     * ## 为什么不能直接 `f.writeText(...)`
+     *
+     * 救援状态文件（`state.json` / `last-failure.json`）是**救援逻辑的全部记忆**：
+     * 当前降到哪一层、连续失败几次、隔离了哪些插件、恢复点在哪，全在里面。
+     *
+     * 而写这个文件的**恰恰是崩溃恢复路径** —— 进程随时可能被系统杀掉、被用户清掉、
+     * 或因内存紧张直接 OOM。直接 `writeText` 是「先截断再写」：
+     * 一旦在截断之后、写完之前断掉，文件就成了**半截 JSON**。
+     *
+     * 读取侧虽然有 try/catch 不会崩（[tier] 退回默认、[lastFailure] 返回 null），
+     * 但那个后果比崩溃更隐蔽：
+     * · 层级被判回 NORMAL ⇒ 明明该进安全模式却按正常启动 ⇒ **继续启动失败**，
+     *   用户看到的是「怎么修都修不好」；
+     * · 连续失败计数归零 ⇒ 防死循环的门槛永远达不到 ⇒ 每次冷启动都白试一遍；
+     * · 隔离名单丢失 ⇒ 已确认有问题的插件被重新加载 ⇒ 回到崩溃原点。
+     *
+     * 所以必须「写临时文件 → rename」：rename 在同一文件系统内是原子的，
+     * 要么看到旧的完整内容，要么看到新的完整内容，不存在半截状态。
+     *
+     * ⚠️ rename 失败时**退回直接写**（不让状态完全丢失），并删掉残留 tmp。
+     *   该取舍与 `BootState.write` 一致。
+     */
+    private fun writeJsonAtomic(f: File, json: JSONObject) {
+        val text = json.toString(2)
+        val tmp = File(f.parentFile, "${f.name}.tmp")
+        try {
+            tmp.writeText(text)
+            // ⚠️ 必须检查 renameTo 的返回值：它失败时**只返回 false、不抛异常**，
+            //   不看返回值就会静默地用不上新内容（项目里踩过，见 EventLog 的注释）。
+            if (!tmp.renameTo(f)) {
+                Log.w(TAG, "救援状态 rename 失败，退回直接写: ${f.name}")
+                f.writeText(text)
+                tmp.delete()
+            }
+        } catch (t: Throwable) {
+            // 临时文件写完但 rename 前失败：别留垃圾。
+            runCatching { tmp.delete() }
+            throw t
         }
     }
 
