@@ -10129,8 +10129,9 @@ class EngineManager private constructor(private val context: Context) {
         /** 插件解包目录，相对 `$DSH_HOME`。同样刻意在 pnpm 管辖之外。 */
         private const val UI_TOOL_DIR = "uiagent-tool"
 
-        /** 页面探针源码；由 [UiProbeBridge] 读走打进 WebView。 */
-        private const val UI_PROBE_ASSET = "ui-probe.js"
+        // ⚠️ 这里原本有 `UI_PROBE_ASSET = "ui-probe.js"`，已删除：从未被使用。
+        //   探针资产的实际读取点不在本类（资产名请以 `assets/ui-probe.js` 为准，
+        //   见 [UiProbeBridge] 与 `EngineManager` 的注释）。
 
         // ── 日志工具 ─────────────────────────────────────────────────
         //

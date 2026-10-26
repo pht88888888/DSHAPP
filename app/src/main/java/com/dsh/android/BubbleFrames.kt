@@ -239,6 +239,25 @@ object BubbleFrames {
         // 先全部解码验证，再落盘 —— 避免"前 3 帧好了、第 4 帧是坏的"这种半成品。
         val decoded = ArrayList<ByteArray>(payloads.size)
         for ((i, uri) in payloads.withIndex()) {
+            /*
+             * ⚠️ **[MAX_FRAME_BASE64] 必须真的检查。**
+             *
+             * 这个常量原本只定义、从未使用（`grep` 全文只有那一行声明），
+             * 而它的注释写着「单帧 base64 长度上限。与头像同一口径（约 512KB
+             * 原始数据）」—— 也就是说**承诺了而没兑现**。
+             *
+             * 对照同类的 `BubbleStatusImages`：那里的 `MAX_IMAGE_BASE64`
+             * 是真的在第 296 行判过的。唯独这里漏了。
+             *
+             * 不检查的后果：`frames` 是插件下发的内容（`bubble` 工具的 `frames`
+             * 字段），一帧给个几十 MB 的 base64 就会在这里被整段解码进堆 ——
+             * 而下面还要 `decoded` 累积**全部**帧，峰值是「所有帧字节之和」。
+             * 用户看到的只是「桌宠换了套动画，App 就崩了」。
+             */
+            if (uri.length > MAX_FRAME_BASE64) {
+                Log.w(TAG, "动作 $name 的第 $i 帧 base64 过长（${uri.length} > $MAX_FRAME_BASE64），整批放弃")
+                return null
+            }
             val bytes = decodeDataUri(uri)
             if (bytes == null || bytes.isEmpty()) {
                 Log.w(TAG, "动作 $name 的第 $i 帧不是可解析的 data URI，整批放弃")

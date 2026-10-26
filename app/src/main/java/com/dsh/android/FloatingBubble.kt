@@ -117,8 +117,10 @@ class FloatingBubble(private val context: Context) {
     companion object {
         private const val TAG = DshApplication.TAG
 
-        /** 状态横条自动消失的默认时长（ms）。插件可用 `statusAutoHideMs` 覆盖。 */
-        private const val STATUS_AUTO_HIDE_MS = 2000
+        // ⚠️ 这里原本有 `STATUS_AUTO_HIDE_MS = 2000`，已删除：它从未被使用，
+        //   真正生效的默认值是 `BubbleAppearance.statusAutoHideMs`（同样 2000，
+        //   但插件可经 `statusAutoHideMs` 字段覆盖）。两份定义并存只会让读者
+        //   以为改这里能生效 —— 实际改它没有任何效果。
 
         /**
          * AI 推送的宽限期（ms）。
