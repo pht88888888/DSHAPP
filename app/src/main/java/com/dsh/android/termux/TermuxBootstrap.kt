@@ -547,10 +547,35 @@ class TermuxBootstrap(private val context: Context) {
                 put("LD_LIBRARY_PATH", "${prefixDir.absolutePath}/lib")
                 put("TMPDIR", "$prefixDir/tmp")
             }
+            /*
+             * ⚠️ **必须把 stderr 合并进 stdout，不能分两条流读。**
+             *
+             * 原来的写法是「先读 stdout 到 EOF、再读 stderr」：
+             *
+             *     val text = proc.inputStream.bufferedReader().use { it.readText() }
+             *     val err  = proc.errorStream.bufferedReader().use { it.readText() }
+             *
+             * 这是一个**经典管道死锁**：管道的缓冲只有约 64 KB，
+             * 而这里恰恰是「node 跑不起来」的那条路径 —— 缺库时
+             * `CANNOT LINK EXECUTABLE` 那串错误是往 **stderr** 写的。
+             * 一旦 stderr 写满 64 KB，子进程就阻塞在 write 上，再也写不出 stdout；
+             * 而本线程正卡在 `readText()` 等 stdout 的 EOF —— **两边永远等不到对方**。
+             *
+             * 更糟的是超时兜不住它：`NODE_CHECK_TIMEOUT_MS` 写在后面的
+             * `proc.waitFor(...)` 里，而死锁发生在**到达 waitFor 之前**。
+             * 结果是「装了个缺库的运行时 ⇒ App 每次启动都卡死在检查这一步」，
+             * 而且没有任何日志 —— 因为那行 `Log.w` 也在 waitFor 之后。
+             *
+             * 合并成一条流就没有这个问题：只有一个读端，读到 EOF 即进程结束。
+             * 代价是 stdout/stderr 混在一起，但这里只做字符串比较
+             * （`text.trim() == NODE_EXECUTABLE_VERSION`），混了也不影响判断 ——
+             * 反而失败时能在同一条日志里看到两边的输出。
+             */
+            pb.redirectErrorStream(true)
             val proc = pb.start()
             // 必须把输出读走：不读会让子进程卡在写管道上，waitFor 等到超时。
             val text = proc.inputStream.bufferedReader().use { it.readText() }
-            val err = proc.errorStream.bufferedReader().use { it.readText() }
+            // stderr 已并入 text（见上面的 redirectErrorStream），不再单读。
             val ok = proc.waitFor(NODE_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS) &&
                 proc.exitValue() == 0 &&
                 text.trim() == NODE_EXECUTABLE_VERSION
@@ -558,7 +583,8 @@ class TermuxBootstrap(private val context: Context) {
                 Log.w(
                     "TERMUX",
                     "node --version 校验失败: rc=${if (proc.isAlive) "timeout" else proc.exitValue()} " +
-                        "out=${text.trim().take(120)} err=${err.trim().take(200)}",
+                        // stderr 已合并进 text（redirectErrorStream），这里一并输出。
+                        "output=${text.trim().take(300)}",
                 )
                 if (proc.isAlive) proc.destroyForcibly()
             }
@@ -843,9 +869,51 @@ class TermuxBootstrap(private val context: Context) {
         pb.redirectErrorStream(true)
         pb.environment().putAll(getShellEnv())
         val proc = pb.start()
-        val out = proc.inputStream.readBytes().toString(Charsets.UTF_8)
-        proc.waitFor()
-        out
+        /*
+         * ⚠️ 三点都必须有，缺一个就会"卡死整条链路"：
+         *
+         * ① **`waitFor` 必须带超时**。原来是无参的 `proc.waitFor()`，
+         *    探测脚本要连 19 个镜像站，任何一个 TCP 连接挂在半开状态
+         *    （SYN 不回也不 RST）就会永远不返回 —— 而这段代码跑在
+         *    `Dispatchers.IO` 上，占住的是一条 IO 线程，排队等它的协程全卡住。
+         *    本项目在 [checkNodeRuntime] 里已经有同样的做法（`NODE_CHECK_TIMEOUT_MS`），
+         *    这里照抄那个范式。
+         *
+         * ② **`readBytes()` 必须换成带上限的读**。`/system/bin/sh` 跑的是
+         *    我们能改的脚本没错，但脚本里的 `curl` 输出量取决于**远端**：
+         *    镜像站返回一个巨大的错误页，`readBytes()` 就把它整个吃进堆。
+         *    与 [ShizukuShell.drain] / [ShizukuChannel.drain] 同一族问题。
+         *
+         * ③ **超时后必须 `destroyForcibly`**，否则子进程会变成孤儿继续跑
+         *    （它可能还在挨个连镜像站），用户装一次 App 多 19 条 TCP 连接。
+         *
+         * ⚠️ 补充说明：本函数**当前没有活调用方**（`probeMirrors` 从初始提交起
+         *   就没人调用，见 [saveState] 的注释）。但这不构成"不用管"的理由 ——
+         *   死代码一旦被接上就立刻变成真实缺陷，而修它只花这几行。
+         */
+        val maxBytes = 512 * 1024
+        val out = StringBuilder()
+        try {
+            val buf = ByteArray(8 * 1024)
+            var captured = 0
+            while (true) {
+                val n = proc.inputStream.read(buf)
+                if (n <= 0) break
+                if (captured >= maxBytes) continue   // 到上限后继续读空，避免子进程写阻塞
+                val take = minOf(n, maxBytes - captured)
+                out.append(String(buf, 0, take, Charsets.UTF_8))
+                captured += take
+            }
+            // 流读到 EOF 说明进程已结束，这个 waitFor 会立刻返回；超时分支只为兜底。
+            if (!proc.waitFor(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w("TERMUX", "镜像探测脚本超过 ${PROBE_TIMEOUT_MS / 1000}s 未结束，强制结束")
+                proc.destroyForcibly()
+            }
+        } catch (t: Throwable) {
+            Log.w("TERMUX", "镜像探测脚本执行失败: ${t.message}")
+            runCatching { proc.destroyForcibly() }
+        }
+        out.toString()
     }
 
     /**
@@ -1621,6 +1689,15 @@ DPkg::options { "--instdir=$instdir"; };
          * 一次约 15 秒的重装 —— 远小于把一个起不来的运行时封印成「已安装」。
          */
         private const val NODE_CHECK_TIMEOUT_MS = 10_000L
+
+        /**
+         * 镜像探测脚本的总超时。
+         *
+         * 脚本要依次试 19 个候选站，每个都带自己的 `--max-time`；
+         * 整体给 90 秒 —— 足够跑完最坏情况（19 × 几个小请求），
+         * 又不至于让一条 IO 线程被永久占住。
+         */
+        private const val PROBE_TIMEOUT_MS = 90_000L
 
         /**
          * prefix 的写锁。
