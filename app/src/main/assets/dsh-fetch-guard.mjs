@@ -224,4 +224,37 @@ export function install() {
   }
 }
 
-install()
+/**
+ * 预加载入口：**绝不允许抛错**。
+ *
+ * ## 为什么必须包 try/catch（本文件最重要的一处设计）
+ *
+ * 本模块由 `NODE_OPTIONS=--import` 预加载。Node 对 `--import` 模块求值失败是
+ * **致命的**：任何异常都让进程直接退出，连引擎主逻辑都不执行。实测：
+ *
+ * ```
+ * NODE_OPTIONS="--import /tmp/bad-guard.mjs" node -e "console.log('启动')"
+ * → Error: 垫片自身 bug ... Node.js v22.23.2   （进程根本没跑起来）
+ * ```
+ *
+ * 也就是说，这里一旦有 bug，用户看到的不是「发不出消息」，而是**整台 App 打不开**
+ * —— 比我们本来要修的故障严重得多。垫片是锦上添花，绝不能成为新的单点。
+ *
+ * 所以：任何异常只写一行 stderr（进 `engine.log`，诊断包可见）然后放行，
+ * 让引擎带着原生行为继续跑（最坏退化成修复前的样子）。
+ */
+try {
+  install()
+} catch (error) {
+  // ⚠️ 连写日志本身都要包一层：`process.stderr.write` 在 stderr 已关闭 /
+  //    EPIPE 时会抛（实测：把 write 换成会抛的函数，catch 块里的写会让进程
+  //    二次退出）。兜底日志失败绝不能反过来把引擎带走。
+  try {
+    process.stderr.write(
+      `${TAG} 安装失败，本次不启用 header 净化（引擎照常启动）: ` +
+        `${(error && error.stack) || error}\n`,
+    )
+  } catch {
+    // 日志都写不出去就算了，静默放行 —— 保住引擎启动是唯一目标。
+  }
+}

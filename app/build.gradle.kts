@@ -96,7 +96,14 @@ android {
         //        装好后 `new Request` 仍抛与用户截图一模一样的错）。
         //        SDK 里 `new Request(...)` → `fetch(request)` 是常见写法。
         //        现在三个入口（Headers / Request / fetch）全部覆盖。
-        versionCode = 68
+        //   v69：给垫片自身加**故障隔离**。它由 `--import` 预加载，而 Node 对
+        //        预加载模块求值失败是**致命的**（进程直接退出，引擎主逻辑一行
+        //        都不执行）⇒ 垫片自己出 bug 会让用户看到「App 打不开」，
+        //        比它要修的「发不出消息」严重得多。
+        //        现在 install() 整体包 try/catch，失败只写日志并放行；
+        //        catch 块里的日志写本身也再包一层（stderr 已关 / EPIPE 时
+        //        write 会抛，实测会让进程二次退出）。
+        versionCode = 69
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。

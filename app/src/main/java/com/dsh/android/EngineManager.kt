@@ -484,8 +484,43 @@ class EngineManager private constructor(private val context: Context) {
     private fun ensureFetchGuard(): File? {
         return try {
             val target = File(context.filesDir, FETCH_GUARD_FILE)
+            val temp = File(context.filesDir, "$FETCH_GUARD_FILE.tmp")
+
+            // ⚠️ **必须先写临时文件再原子 rename**，不能直接往 target 上覆盖写。
+            //
+            // 这个文件是 `--import` 的加载目标，而 Node 对预加载模块的**语法错误**
+            // 是解析阶段就炸的（实测：文件里混进一行非法语法 ⇒
+            // `SyntaxError: Unexpected identifier` ⇒ 进程根本不启动），
+            // 垫片内部的 try/catch **救不了**（它在模块求值之后才生效）。
+            //
+            // 直接覆盖写的话，只要某次写入中途失败（磁盘满、进程被杀、电量断），
+            // target 就永久停在「半个文件」上，之后**每次启动引擎都起不来**。
+            // 先写 .tmp 再 rename，target 要么是旧的完整版、要么是新的完整版，
+            // 不存在中间态。
             context.assets.open(FETCH_GUARD_ASSET).use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
+                temp.outputStream().use { output -> input.copyTo(output) }
+            }
+
+            // 落盘后自检：内容必须与资产一致，且看起来像一份完整的 ES 模块。
+            // 不一致就放弃替换，继续用上一次的（或干脆不启用）。
+            val expected = context.assets.open(FETCH_GUARD_ASSET).use { it.readBytes() }
+            val actual = temp.readBytes()
+            if (!expected.contentEquals(actual)) {
+                Log.w(TAG, "净化垫片写入不完整（${actual.size}/${expected.size} 字节），放弃替换")
+                temp.delete()
+                return fetchGuardPath?.takeIf { it.isFile }
+            }
+            if (!actual.toString(Charsets.UTF_8).contains("export function install()")) {
+                Log.w(TAG, "净化垫片内容异常（缺少 install 导出），放弃替换")
+                temp.delete()
+                return fetchGuardPath?.takeIf { it.isFile }
+            }
+
+            if (!temp.renameTo(target)) {
+                // rename 失败时退回覆盖写（极罕见：同目录 rename 一般不会失败）
+                Log.w(TAG, "净化垫片 rename 失败，退回直接覆盖写")
+                temp.copyTo(target, overwrite = true)
+                temp.delete()
             }
             target.setReadable(true, false)
             fetchGuardPath = target
