@@ -193,7 +193,32 @@ object UiProbeBridge {
     // 轮询
     // ────────────────────────────────────────────────────────────────────
 
+    /**
+     * 轮询一次UI 调试命令信箱。
+     *
+     * ⚠️ **整个方法体必须被 try/catch 包住，不能有异常漏出去。**
+     *
+     * 它由 `scheduler.scheduleWithFixedDelay(::pollOnce, …)` 驱动，而
+     * `ScheduledExecutorService` 的语义是：**周期任务一旦抛出未捕获异常，
+     * 该任务就被永久终止** —— 后续周期不再执行，也没有任何通知。
+     *
+     * 于是症状是：这个信箱在某个瞬间之后再无响应，而日志里只有崩溃那一刻
+     * 的一行堆栈，之后完全静默。用户看到的是「UI 调试命令突然不管用了」，
+     * 实际是轮询线程已经死了，重启 App 才能恢复。
+     *
+     * 能抛的点都在外部输入路径上（读文件、JSON 解析、落盘、系统调用），
+     * 内层即便已经兜了几处，外层仍必须有这一层 —— 漏一处就是永久失效。
+     */
     private fun pollOnce() {
+        try {
+            pollOnceInner()
+        } catch (t: Throwable) {
+            // 吞掉但**必须留痕**：静默吞等于把问题藏起来。
+            Log.w(TAG, "UI 调试命令信箱轮询异常（已兜住，下个周期继续）: ${t.message}", t)
+        }
+    }
+
+    private fun pollOnceInner() {
         val dir = home ?: return
         val cmd = File(dir, CMD_FILE)
         if (!cmd.isFile) return

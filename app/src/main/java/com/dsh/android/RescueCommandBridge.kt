@@ -164,7 +164,33 @@ object RescueCommandBridge {
     }
 
     /** 读一次信箱。跑在 `dsh-rescue-cmd` 线程上。 */
+    /**
+     * 轮询一次信箱。
+     *
+     * ⚠️ **整个方法体必须被 try/catch 包住，不能有异常漏出去。**
+     *
+     * 它由 `scheduler.scheduleWithFixedDelay(::pollOnce, …)` 驱动，而
+     * `ScheduledExecutorService` 的语义是：**周期任务一旦抛出未捕获异常，
+     * 该任务就被永久终止**（后续周期不再执行，也没有任何回调通知）。
+     *
+     * 这条通道偏偏是「App 起不来时的唯一出路」—— 一旦它被静默终止，
+     * 用户和 AI 都再也发不进救援命令，而日志里只会在崩溃那一刻留一行堆栈，
+     * 之后**完全静默**：看着像「救援命令没人处理」，实际是轮询线程已经死了。
+     *
+     * 这里能抛的点不少，且都跟外部输入有关：读文件、JSON 解析（已在局部兜了）、
+     * `handleFast` 里各种系统调用、`writeResult` 落盘。
+     * 所以即便内层已经兜了几处，外层仍必须有这一层 —— 漏一处就是永久失效。
+     */
     private fun pollOnce() {
+        try {
+            pollOnceInner()
+        } catch (t: Throwable) {
+            // 吞掉但**必须留痕**：静默吞等于把问题藏起来。
+            Log.w(TAG, "救援信箱轮询异常（已兜住，下个周期继续）: ${t.message}", t)
+        }
+    }
+
+    private fun pollOnceInner() {
         val dir = home ?: return
         val cmd = File(dir, CMD_FILE)
         if (!cmd.isFile) return
@@ -216,9 +242,25 @@ object RescueCommandBridge {
             val filter = json.optJSONArray("bundleFilter")?.let { arr ->
                 (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }
             }
+            // ⚠️ 这个 lambda 跑在独立线程池上，**没有 catch 出口**：
+            //   未捕获异常虽然不会杀进程（ExecutorService 会捕获后交给
+            //   线程的 UncaughtExceptionHandler），但 `try-boot` 就**没有任何回执**了
+            //   —— AI 那边等的是一个永远不会来的结果，只能干等到超时。
+            //   所以这里必须自己兜住，失败也要写回执。
             worker.execute {
-                val result = runTryBoot(dir, id, profile, filter)
-                writeResult(dir, id, result.first, result.second, result.third)
+                try {
+                    val result = runTryBoot(dir, id, profile, filter)
+                    writeResult(dir, id, result.first, result.second, result.third)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "try-boot 执行异常: ${t.message}", t)
+                    runCatching {
+                        writeResult(
+                            dir, id, false,
+                            "try-boot 执行时抛异常: ${t.javaClass.simpleName}: ${t.message}",
+                            null,
+                        )
+                    }
+                }
             }
         } else {
             val result = handleFast(dir, id, action, json)
