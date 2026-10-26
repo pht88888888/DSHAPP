@@ -264,23 +264,39 @@ class LogViewerActivity : AppCompatActivity() {
     // ── 交互绑定 ─────────────────────────────────────────────────────────────
 
     private fun bindChips() {
-        chips["lvl:all"] = findViewById(R.id.logLevelAll)
-        chips["lvl:warn"] = findViewById(R.id.logLevelWarn)
-        chips["lvl:error"] = findViewById(R.id.logLevelError)
-        chips["src:all"] = findViewById(R.id.logSrcAll)
-        chips["src:app"] = findViewById(R.id.logSrcApp)
-        chips["src:engine"] = findViewById(R.id.logSrcEngine)
-        chips["src:web"] = findViewById(R.id.logSrcWeb)
-        chips["src:crash"] = findViewById(R.id.logSrcCrash)
+        /*
+         * ⚠️ **这里刻意不用 `!!`。**
+         *
+         * `findViewById` 返回的是**平台类型**（可能是 null），原来的写法是
+         * 先把它塞进 `MutableMap<String, TextView>`、再到处 `chips[...]!!`。
+         * 两个隐患叠在一起：
+         *   · map 的泛型参数是非空的 `TextView`，但塞进去的可能是 null ——
+         *     编译器一句话都不说，运行时 `!!` 才炸；
+         *   · 一旦布局里的 ID 被改名/删掉（重构布局时很容易），
+         *     用户**点开日志页就直接闪退**。而日志页恰恰是出问题时
+         *     最需要能打开的那个界面 —— 它崩了，连"为什么崩"都看不到。
+         *
+         * 改成逐个安全接收 + 跳过缺失项：缺一个筛选按钮不该让整页打不开，
+         * 其余按钮照常可用。这里只补一行 W 日志，不做任何弹窗。
+         */
+        fun bind(id: Int, key: String, onClick: () -> Unit) {
+            val v = findViewById<TextView>(id)
+            if (v == null) {
+                android.util.Log.w("LogViewer", "筛选按钮缺失: $key（布局里没有对应 id）")
+                return
+            }
+            chips[key] = v
+            v.setOnClickListener { onClick() }
+        }
 
-        chips["lvl:all"]!!.setOnClickListener { minLevel = 'V'; renderChips(); reload() }
-        chips["lvl:warn"]!!.setOnClickListener { minLevel = 'W'; renderChips(); reload() }
-        chips["lvl:error"]!!.setOnClickListener { minLevel = 'E'; renderChips(); reload() }
-        chips["src:all"]!!.setOnClickListener { source = null; renderChips(); reload() }
-        chips["src:app"]!!.setOnClickListener { source = "app"; renderChips(); reload() }
-        chips["src:engine"]!!.setOnClickListener { source = "engine"; renderChips(); reload() }
-        chips["src:web"]!!.setOnClickListener { source = "web"; renderChips(); reload() }
-        chips["src:crash"]!!.setOnClickListener { source = "crash"; renderChips(); reload() }
+        bind(R.id.logLevelAll, "lvl:all") { minLevel = 'V'; renderChips(); reload() }
+        bind(R.id.logLevelWarn, "lvl:warn") { minLevel = 'W'; renderChips(); reload() }
+        bind(R.id.logLevelError, "lvl:error") { minLevel = 'E'; renderChips(); reload() }
+        bind(R.id.logSrcAll, "src:all") { source = null; renderChips(); reload() }
+        bind(R.id.logSrcApp, "src:app") { source = "app"; renderChips(); reload() }
+        bind(R.id.logSrcEngine, "src:engine") { source = "engine"; renderChips(); reload() }
+        bind(R.id.logSrcWeb, "src:web") { source = "web"; renderChips(); reload() }
+        bind(R.id.logSrcCrash, "src:crash") { source = "crash"; renderChips(); reload() }
         renderChips()
     }
 
