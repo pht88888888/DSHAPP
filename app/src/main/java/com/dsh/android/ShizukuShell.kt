@@ -41,6 +41,9 @@ internal object ShizukuShell {
 
     private const val TAG = "DSH"
 
+    /** 单次 Shizuku 命令的总超时。见 [exec] 的说明。 */
+    private const val EXEC_TIMEOUT_MS = 3_000L
+
     /**
      * 执行命令，返回 stdout。失败（无 binder / 无授权 / 执行异常）返回 **null**。
      *
@@ -139,8 +142,39 @@ internal object ShizukuShell {
             runCatching { errBox[0] = drain(proc.errorStream) }
         }
 
+        /*
+         * ⚠️ `waitFor` **必须带超时**，不能是无参的那个。
+         *
+         * 无参 `waitFor()` 会一直等到子进程退出。而这个函数唯一的调用方是
+         * [ImeProbe]，它**每 2 秒轮询一次** `dumpsys input_method`。
+         *
+         * 只要有一次子进程挂死（远端 binder 卡住、`dumpsys` 撞上系统服务死锁、
+         * 或被 Shizuku 服务端抛弃），这一次调用就永久占住调用线程；更麻烦的是
+         * **每次轮询还会新建两条 daemon 线程**（下面的 t1/t2）去排空那两个流 ——
+         * 它们同样永远等不到 EOF。于是每分钟最多攒 60 组、120 条线程，
+         * 最终 OOM 或线程耗尽。
+         *
+         * 注意下面 `t1.join(1500)` / `t2.join(1500)` 本来就已经带了超时 ——
+         * 说明"流可能读不完"这件事是想到过的，只是 `waitFor` 漏了。
+         *
+         * 取 3000 ms：`dumpsys input_method` 实测 95–150 ms，3 秒是二十倍余量；
+         * 而 [ImeProbe] 的轮询周期是 **600 ms**（见 `ImeProbe.POLL_INTERVAL_MS`），
+         * 且它有 `inFlight` 守卫会跳过重叠的拍 —— 超时不宜远大于一个周期，
+         * 否则挂死期间会白等好几拍。
+         */
         return try {
-            proc.waitFor()
+            /*
+             * ⚠️ `IRemoteProcess.waitFor()` **没有带超时的重载**（它是 Shizuku 自己
+             *    的接口，签名是 `fun waitFor(): Int`，不像 `java.lang.Process` 那样
+             *    有 `waitFor(long, TimeUnit)`）。所以超时只能靠「另起一条线程去等，
+             *    主线程限时 join」实现。
+             */
+            val waiter = thread(isDaemon = true) { runCatching { proc.waitFor() } }
+            waiter.join(EXEC_TIMEOUT_MS)
+            if (waiter.isAlive) {
+                Log.w(TAG, "Shizuku 命令超过 ${EXEC_TIMEOUT_MS}ms 未结束，强制结束")
+                runCatching { proc.destroy() }
+            }
             t1.join(1500)
             t2.join(1500)
             outBox[0]?.toString(Charsets.UTF_8)

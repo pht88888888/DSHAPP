@@ -87,7 +87,27 @@ internal class ImeProbe(
     var unavailable: Boolean = false
         private set
 
+    /*
+     * ⚠️ **这两个必须是 `@Volatile`。**
+     *
+     * `inFlight` 的写方在**两处不同线程**：
+     *   · 主线程：`tick.run()` 里 `inFlight = true`（第 ~101 行）
+     *   · 后台线程：`Thread({ … inFlight = false })` 结尾
+     * 而读方是主线程（`if (inFlight) { schedule(); return }`）。
+     *
+     * 没有 `@Volatile` 时，后台线程写的 `false` **不保证被主线程看到**
+     * （JIT 可以把 `inFlight` 缓存在寄存器里，或读到过期的缓存行）。
+     * 后果极具迷惑性：主线程一直认为 `inFlight == true`，于是
+     * **此后每一拍都直接跳过、再也不发起探测** —— 表现为
+     * 「键盘避让功能用着用着就不动了」，重启 App 才恢复，
+     * 而且没有任何日志（因为根本没进探测逻辑）。
+     *
+     * `running` 同理：`start()`/`stop()` 在主线程，`tick.run()` 也读它，
+     * 但它还被 [FloatingBubble] 的其它路径触及，统一加 `@Volatile` 更稳。
+     */
+    @Volatile
     private var running = false
+    @Volatile
     private var inFlight = false
 
     private val tick = object : Runnable {
@@ -100,10 +120,53 @@ internal class ImeProbe(
             }
             inFlight = true
             Thread({
+                /*
+                 * ⚠️ **[PROBE_TIMEOUT_MS] 必须真的用上，不能只是声明。**
+                 *
+                 * 原来这个常量只在 KDoc 里被提到过一次（`grep` 全文只有定义那一行），
+                 * 实际代码里**从来没有拿它做过任何事**。而 KDoc 明确写着
+                 * 「超过就当作读不到 … 那时线程会一直占着，下一次 tick 又排一个，
+                 * 很快就把线程堆满。所以给个上限」—— 这个保证并不存在。
+                 *
+                 * 真正的失效模式是：`shell(...)` 挂死（binder 卡住 / 系统服务死锁）
+                 * ⇒ 这个线程永远不返回 ⇒ 末尾的 `inFlight = false` 永不执行
+                 * ⇒ 之后**每一拍都被 `if (inFlight)` 跳过**，键盘避让永久失效，
+                 * 且没有任何日志。
+                 *
+                 * 下面用看门狗定时器保证 `inFlight` 被复位。
+                 */
+                /*
+                 * ⚠️ 为什么不用 `withTimeout`：`shell` 是普通同步 lambda
+                 *    `(String) -> String?`，不是 suspend 函数，协程无法取消它。
+                 *    对它的调用会一直占着这条线程直到自己返回。
+                 *
+                 * 所以超时的作用点只有一个：**保证 `inFlight` 能被复位**。
+                 * 复位之后主线程的 tick 会继续发起新的探测（挂死的那条线程
+                 * 由 [ShizukuShell] 的 `EXEC_TIMEOUT_MS` 兜底释放）。
+                 *
+                 * 如果什么都不做，`inFlight` 一旦卡在 true，此后每一拍都被
+                 * `if (inFlight)` 跳过 —— 键盘避让永久失效且无日志。
+                 */
+                val watchdog = java.util.Timer("dsh-ime-probe-wd", true).apply {
+                    schedule(object : java.util.TimerTask() {
+                        override fun run() {
+                            if (inFlight) {
+                                Log.w(
+                                    "ImeProbe",
+                                    "探测超过 ${PROBE_TIMEOUT_MS}ms 未返回，强制复位 inFlight",
+                                )
+                                inFlight = false
+                            }
+                        }
+                    }, PROBE_TIMEOUT_MS)
+                }
                 val out = try {
                     shell("dumpsys input_method | grep -m1 mInputShown=")
                 } catch (t: Throwable) {
+                    Log.w("ImeProbe", "探测异常: ${t.message}")
                     null
+                } finally {
+                    watchdog.cancel()
                 }
                 val shown = parseInputShown(out)
                 inFlight = false
