@@ -1152,6 +1152,73 @@
             var where = '地址 ' + String(url).replace(/^https?:\/\/[^/]+/, '') +
               '，' + body.size + ' 字节';
 
+            // ── 先把 Blob **读进内存**，读成功再发 ─────────────────────────
+            //
+            // 为什么必须先读：真机取证（v64，nubia NX809J / Android 16 /
+            //   WebView 143）显示 XHR `status=0` 且 fetch `Failed to fetch`，
+            //   而 `body.size` 是**正确**的 1336030。
+            //
+            //   「大小对、却发不出去」这个组合说明：Blob 的**元数据可读**，
+            //   但把它整个交给网络栈这条路走不通。Android WebView 的文件
+            //   选择器返回 `content://` URI，内核的 Blob 是**惰性**的 ——
+            //   size 来自 ContentResolver 的 metadata（不必真读），
+            //   真正取字节时才 openInputStream。个别 ROM 的 ContentProvider
+            //   对 WebView 这个调用方不给读权限，于是取字节失败。
+            //
+            //   ⚠️ 这只是**当前最合理的解释，尚未在失败设备上证实**。
+            //     所以本改动不是「按假设修」，而是**让两条路都变成可观测的**：
+            //       - 预读失败 ⇒ 明确报「文件内容读取失败（不是网络问题）」
+            //         ⇒ 确诊是 Blob 读不出来，与网络无关
+            //       - 预读成功但发送仍失败 ⇒ 仍是网络层问题，报原来的错
+            //     无论哪种，客户截图都能直接告诉我们答案。
+            //
+            //   「为什么只有个别用户」也符合这个解释：ContentProvider 实现
+            //   因 ROM 而异，有的会把内容提前落到临时文件，有的不会。
+            //
+            //   「为什么图片不受影响」也符合：图片走
+            //   `ctx.remote.fileUploads.upload` → base64 → WebSocket RPC，
+            //   字节在 JS 层就被取出来了，**从不经过把 Blob 交给网络栈**这一步。
+            //
+            // 所以这里主动读一次，把字节握在手里再发：
+            //   - 读成功 ⇒ 用真实字节发送，彻底绕开惰性 Blob
+            //   - 读失败 ⇒ 直接报「文件内容读取失败」，而不是让它伪装成网络错误
+            //
+            // ⚠️ 体积上限：超过 MAX_PRELOAD_BYTES 就不预读（几个 GB 的文件
+            //   读进内存会 OOM），退回原来的流式发送。正常附件都在这个线内。
+            var MAX_PRELOAD_BYTES = 128 * 1024 * 1024;
+            function preloadBytes() {
+              if (body.size > MAX_PRELOAD_BYTES) {
+                console.warn('[dsh-webview] 文件过大，跳过预读，直接流式发送: ' + body.size);
+                return Promise.resolve(null);
+              }
+              if (typeof body.arrayBuffer !== 'function') return Promise.resolve(null);
+              return body.arrayBuffer().then(
+                function (buf) {
+                  var bytes = new Uint8Array(buf);
+                  // ⚠️ 读出来是 0 字节、或与声明的大小不符 —— 说明内容确实
+                  //   没取到。**必须在这里报错**，不能拿一个空字节数组去发：
+                  //   那样服务端会回 200 + 业务错误，看起来像「上传成功但失败」，
+                  //   比直接报错更难查。
+                  if (bytes.length === 0 && body.size > 0) {
+                    fail('文件内容读取为空（不是网络问题）',
+                      where + '；读出来 0 字节');
+                    return undefined;
+                  }
+                  if (bytes.length !== body.size) {
+                    fail('文件内容读取不完整（不是网络问题）',
+                      where + '；实际读到 ' + bytes.length + ' 字节');
+                    return undefined;
+                  }
+                  return bytes;
+                },
+                function (e) {
+                  fail('文件内容读取失败（不是网络问题）',
+                    where + '；读取异常: ' + ((e && e.message) || String(e)));
+                  return undefined;   // undefined = 已失败，调用方必须停手
+                },
+              );
+            }
+
             // ── 先用 XHR（能报进度），失败后**自动换 fetch 重试一次** ──────
             //
             // 为什么要有这一步：真机诊断包实证（nubia NX809J / Android 16 /
@@ -1166,7 +1233,7 @@
             // ⚠️ 重试**不丢进度条**：fetch 拿不到 upload progress，但重试前
             //   本来就已经失败过一次，此时保证「传上去」比保住进度条重要；
             //   进度条在成功路径（XHR）上照旧。
-            function viaFetch(reason) {
+            function viaFetch(reason, sendBody) {
               console.warn('[dsh-webview] XHR 上传失败，改用 fetch 重试: ' + reason);
               // ⚠️ 必须能被 `terminate()` 打断：用户点「取消」时若 fetch 还在
               //   传，会白传完整个文件（大文件尤其明显），且界面已经显示取消了。
@@ -1174,7 +1241,10 @@
               activeFetchAbort = controller;
               var init = {
                 method: 'POST',
-                body: body,
+                // ⚠️ 用**预读到的字节**（调用方传进来），不要用原始 Blob ——
+                //   XHR 已经证明这个 Blob 发不出去，fetch 再拿它重试只会
+                //   重复同一个失败（v64 真机就是这个结果：Failed to fetch）。
+                body: sendBody === undefined ? body : sendBody,
                 headers: headers,
                 credentials: 'include',
               };
@@ -1197,35 +1267,46 @@
 
             var xhr = new XMLHttpRequest();
             activeXhr = xhr;
-            try {
-              xhr.open('POST', url);
-              xhr.withCredentials = true;
-              for (var name in headers) {
-                if (Object.prototype.hasOwnProperty.call(headers, name)) {
-                  xhr.setRequestHeader(name, headers[name]);
+            // `sendBody` 由预读结果决定：读到字节就用字节，读不到才退回原 Blob。
+            function sendWith(sendBody) {
+              try {
+                xhr.open('POST', url);
+                xhr.withCredentials = true;
+                for (var name in headers) {
+                  if (Object.prototype.hasOwnProperty.call(headers, name)) {
+                    xhr.setRequestHeader(name, headers[name]);
+                  }
                 }
+                xhr.upload.onprogress = function (progress) {
+                  var out = { kind: 'progress', loaded: progress.loaded };
+                  if (progress.lengthComputable) out.total = progress.total;
+                  emit(out);
+                };
+                xhr.onload = function () {
+                  emit({ kind: 'complete', status: xhr.status, body: xhr.responseText });
+                };
+                xhr.onerror = function () {
+                  activeXhr = null;
+                  viaFetch('网络层错误（status=' + xhr.status + '）', sendBody);
+                };
+                xhr.ontimeout = function () {
+                  activeXhr = null;
+                  viaFetch('超时', sendBody);
+                };
+                xhr.send(sendBody);
+              } catch (e) {
+                activeXhr = null;
+                viaFetch('发起请求抛错: ' + ((e && e.message) || String(e)), sendBody);
               }
-              xhr.upload.onprogress = function (progress) {
-                var out = { kind: 'progress', loaded: progress.loaded };
-                if (progress.lengthComputable) out.total = progress.total;
-                emit(out);
-              };
-              xhr.onload = function () {
-                emit({ kind: 'complete', status: xhr.status, body: xhr.responseText });
-              };
-              xhr.onerror = function () {
-                activeXhr = null;
-                viaFetch('网络层错误（status=' + xhr.status + '）');
-              };
-              xhr.ontimeout = function () {
-                activeXhr = null;
-                viaFetch('超时');
-              };
-              xhr.send(body);
-            } catch (e) {
-              activeXhr = null;
-              viaFetch('发起请求抛错: ' + ((e && e.message) || String(e)));
             }
+
+            preloadBytes().then(function (bytes) {
+              // undefined = 预读已经失败并上报过，**不能再往下走**（否则会
+              // 用一个读不出来的 Blob 再发一次，把真因覆盖成网络错误）。
+              if (bytes === undefined) return;
+              // null = 超过预读上限或内核不支持 arrayBuffer，退回原 Blob。
+              sendWith(bytes === null ? body : bytes);
+            });
           },
         };
 

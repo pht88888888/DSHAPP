@@ -54,7 +54,17 @@ android {
         //   不是超时、不是服务端拒绝），而旧代码**没有任何降级**。
         //   两处改动见 `webview-polyfill.js` 的 `uploadWorkerOnMainThread`
         //   与 `MainActivity.surfaceWebErrorReason`。
-        versionCode = 64
+        //   v64：加 fetch 兜底 + 把真因弹到界面上。**实测仍失败**，但拿到了
+        //        决定性证据：`status=0` + `Failed to fetch`，且 `body.size`
+        //        正确（1336030）⇒ 请求根本没发出去，服务端自始至终没收到。
+        //        curl 直打同一个路由返回 200 ⇒ 服务端完全正常，问题在浏览器端。
+        //   v65：改成**先把 Blob 读成字节再发**。size 对却发不出去，说明
+        //        Blob 元数据可读、内容取不出来（WebView 的惰性 Blob 在个别
+        //        ROM 上取不到 content:// 的内容）。预读成功就用真实字节发，
+        //        预读失败就明确报「文件内容读取失败（不是网络问题）」——
+        //        两种结果都能从客户截图直接判断，不再靠猜。
+        //        见 `webview-polyfill.js` 的 `preloadBytes`。
+        versionCode = 65
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
