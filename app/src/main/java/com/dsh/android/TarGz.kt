@@ -73,7 +73,7 @@ internal object TarGz {
 
                 // tar 每个条目按 512 字节对齐
                 val padding = (BLOCK - (size % BLOCK)) % BLOCK
-                if (padding > 0) skipFully(stream, padding)
+                if (padding > 0) skipFully(stream, padding, fullName)
             }
         }
     }
@@ -94,12 +94,45 @@ internal object TarGz {
         return true
     }
 
-    private fun skipFully(stream: java.io.InputStream, count: Long) {
+    /**
+     * 跳过 [count] 个字节（tar 的 512 字节对齐 padding）。
+     *
+     * ⚠️ **流提前结束必须抛异常，不能静默 return。**
+     *
+     * 原来这里是 `if (stream.read() < 0) return` —— 也就是「到了 EOF 就悄悄收工」。
+     * 它的后果比看上去严重得多，因为**调用点就在主循环里**：
+     *
+     *   文件数据段写完 → skipFully 跳过 padding → 流已截断（EOF）
+     *   → 静默 return → 回到主循环 → readFully 读到 0 字节（off == 0）
+     *   → 它把「EOF」当成**归档正常结束标志** → break
+     *   → `extract()` **正常返回**，一个异常都不抛
+     *
+     * 于是上层看到的是：
+     *
+     *   `Log.i(TAG, "引擎资产解包完成：…")` → 版本戳落盘 → 之后永远跳过重解包
+     *
+     * 而磁盘上是**不完整的引擎**。表现是引擎起来就报插件加载失败、
+     * 或者 node 找不到模块 —— 排查方向会完全指向「引擎本身有问题」，
+     * 而真因是「上次解包被截断了，且被记成了成功」。
+     *
+     * 归档被截断在真机上不是理论场景：APK 边下边装（部分 ROM 的 split 安装）、
+     * 存储在解包过程中被卸载、或用户强制停止 —— 都会产生「读到一半没了」。
+     *
+     * 所以这里改成：skip 不足就抛 IOException，让 [extract] 的调用方
+     * （`ensureExtracted` 的 catch）把它当失败处理，**不要落版本戳**。
+     */
+    private fun skipFully(stream: java.io.InputStream, count: Long, name: String) {
         var remaining = count
         while (remaining > 0) {
             val skipped = stream.skip(remaining)
             if (skipped <= 0) {
-                if (stream.read() < 0) return
+                // skip 返回 0 表示「暂时跳不动」，用一个 read 推进一步；
+                // read 返回 -1 才是真的 EOF —— 此时数据确实不全。
+                if (stream.read() < 0) {
+                    throw java.io.IOException(
+                        "tar 归档在 padding 处被截断（还差 $remaining 字节，条目: $name）",
+                    )
+                }
                 remaining--
             } else {
                 remaining -= skipped
