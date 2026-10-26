@@ -8068,10 +8068,12 @@ class EngineManager private constructor(private val context: Context) {
                 )
                 _state.value = State.Ready(url)
                 Log.i(TAG, "引擎就绪: $url")
+                startHeapWatch(proc)
                 return@withContext
             }
             _state.value = State.Ready(url)
             Log.i(TAG, "引擎就绪: $url")
+            startHeapWatch(proc)
             // ⚠️ 引擎**真的起来了** ⇒ 清掉上次的失败记录。
             //
             //   见 RescueBoot 的类注释：这份记录是「上次为什么起不来」的唯一线索，
@@ -8298,7 +8300,144 @@ class EngineManager private constructor(private val context: Context) {
         }
     }
 
+    // ══════════════════════════════════════════════════════════════════
+    // 引擎堆水位监控（防止可预测的 OOM 突然打死界面）
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * 堆水位监控线程。
+     *
+     * ## 为什么需要它（真机取证，2026-10-27）
+     *
+     * 真机 `files/logs/engine.log` 里 **10 次**同样的 FATAL：
+     *
+     * ```
+     * Mark-Compact 1004.4 (1026.1) -> 1004.4 (1026.1) MB, 1903.46 / 0.00 ms
+     * FATAL ERROR: Ineffective mark-compacts near heap limit
+     * ```
+     *
+     * 注意 GC 前后都是 **1004.4 MB**、释放量 0.00 —— 一个字节都没回收。
+     * 这不是"堆不够大"，是**真实泄漏**（可达对象一直在涨）。
+     *
+     * 而 `events.jsonl` 里 10 次退出的运行时长是：
+     * `11.1h / 7.8h / 7.7h / 7.8h / 7.8h / 7.7h / 7.8h` —— **规整得可怕**，
+     * 折算约 130 MB/小时线性增长。也就是说：
+     *
+     * · 崩溃时刻是**可预测的**（约 7.7 小时）；
+     * · 提高堆上限（[oldSpaceMb]）只能把 7.7 小时推成约 24 小时，**治不了本**；
+     * · 用户每次撞上的体验都是：正用着 → 界面突然全无响应 → 等 27 秒才恢复
+     *   （`engine.ready ms=27534`）。
+     *
+     * 既然崩溃可预测，就不该"等它崩"，而该**在它崩之前有序重启**。
+     *
+     * ## 为什么用 /proc 而不是 Node 自报
+     *
+     * 读 `VmRSS` 不需要在引擎里跑代码、不需要改引擎、不依赖任何协议 ——
+     * 引擎进程就是我们自己 spawn 的，pid 一直在手上。
+     * `VmRSS` 包含 V8 堆 + native + code space，比 `heapUsed` 更接近
+     * "这个进程真的吃了多少"，正是 OOM 的判据。
+     *
+     * @see HEAP_WATCH_INTERVAL_MS
+     * @see heapRestartRatio
+     */
+    @Volatile
+    private var heapWatch: Thread? = null
+
+    /** 停止堆水位监控。幂等；由 [stop] 调用。 */
+    private fun stopHeapWatch() {
+        val t = heapWatch ?: return
+        heapWatch = null
+        t.interrupt()
+    }
+
+    /**
+     * 启动堆水位监控。
+     *
+     * ⚠️ **在引擎就绪之后才启动**：`process` 还没起来时读不到 `/proc`。
+     * ⚠️ 幂等：已在跑就先停掉旧的（重启引擎时会有上一代的线程）。
+     */
+    private fun startHeapWatch(proc: Process) {
+        stopHeapWatch()
+        val limitMb = oldSpaceMb()
+        // 水位 = 上限的 [heapRestartRatio]。留出余量是因为从"判定"到"重启完成"
+        // 之间引擎还在涨，而重启本身要 10+ 秒。
+        val triggerMb = (limitMb * heapRestartRatio()).toInt()
+        val t = Thread {
+            var warned = false
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(HEAP_WATCH_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                // 引擎已经换了/停了就别再看这个 proc。
+                if (process !== proc || userStopped) return@Thread
+                val rssMb = readRssMb(proc)
+                if (rssMb <= 0) continue
+                if (rssMb >= triggerMb) {
+                    /*
+                     * 到水位了。**只重启一次，不要反复触发。**
+                     *
+                     * 用 `warned` 而不是直接 return：重启是异步的（`restart()`
+                     * 走状态机），如果这里立刻退出，重启失败时就再没人看水位了。
+                     * 记一次日志后保持监控，但不再重复触发 —— `restart` 成功后
+                     * `startHeapWatch` 会起一个新线程（旧的被 interrupt 掉）。
+                     */
+                    if (!warned) {
+                        warned = true
+                        Log.w(
+                            TAG,
+                            "引擎堆水位 ${rssMb}MB 已达上限的 " +
+                                "${(heapRestartRatio() * 100).toInt()}%（$triggerMb / $limitMb MB），" +
+                                "主动重启以免用户撞上 OOM 闪崩（真机实测约 130MB/小时线性增长）",
+                        )
+                        EventLog.record(
+                            "engine.heap-high",
+                            mapOf("rssMb" to rssMb.toString(), "triggerMb" to triggerMb.toString()),
+                        )
+                        // 在主线程之外发起重启是安全的：restart 内部自己切线程。
+                        runCatching { requestRestart("堆水位过高") }
+                    }
+                } else if (rssMb < triggerMb / 2) {
+                    // 掉回一半以下说明水位过去了（比如用户清空了长会话），允许再次触发。
+                    warned = false
+                }
+            }
+        }
+        t.isDaemon = true
+        t.name = "dsh-heap-watch"
+        heapWatch = t
+        t.start()
+        Log.i(
+            TAG,
+            "堆水位监控已启动：上限 ${limitMb}MB，水位 ${triggerMb}MB，" +
+                "每 ${HEAP_WATCH_INTERVAL_MS / 60_000} 分钟检查一次",
+        )
+    }
+
+    /**
+     * 读引擎进程的 `VmRSS`（MB）；读不到给 -1。
+     *
+     * ⚠️ **不能用 `proc.pid()`**：那是 Java 9 的 API，Android 的 `java.lang.Process`
+     *   没有它（`Unresolved reference: pid`，已实测编译失败）。Android 上
+     *   `ProcessImpl` 有一个私有 `int pid` 字段，只能用反射读。
+     *
+     * ⚠️ 反射失败时**必须安静返回 -1**，不能抛：这条路径跑在监控线程上，
+     *   而监控本身是锦上添花 —— 读不到就退化成"不监控"，绝不能因为它影响引擎。
+     *   （不同 ROM / 未来 Android 版本把 `ProcessImpl` 改名或换实现都可能发生。）
+     */
+    private fun readRssMb(proc: Process): Int = runCatching {
+        val pidField = proc.javaClass.getDeclaredField("pid").apply { isAccessible = true }
+        val pid = pidField.getInt(proc)
+        if (pid <= 0) return@runCatching -1
+        val status = File("/proc/$pid/status").readText()
+        val kb = Regex("VmRSS:\\s+(\\d+)\\s+kB").find(status)
+            ?.groupValues?.getOrNull(1)?.toLongOrNull() ?: return@runCatching -1
+        (kb / 1024L).toInt()
+    }.getOrDefault(-1)
+
     fun stop() {
+        stopHeapWatch()
         // Shizuku 桥随引擎一起收：它的接受线程是 daemon、名字随进程释放，
         // 但显式关掉能让下一次 start() 重新绑定同一个名字而不撞车。
         ShizukuChannel.stop()
@@ -8557,6 +8696,30 @@ class EngineManager private constructor(private val context: Context) {
         private const val ASSET_NAME = "engine.bin"
         private const val READY_TIMEOUT_MS = 120_000L
         private const val MAX_LOG_LINES = 400
+
+        /**
+         * 堆水位监控的检查间隔。
+         *
+         * 取 3 分钟：泄漏速率实测约 130 MB/小时 ≈ 2.2 MB/分钟，3 分钟只涨
+         * 约 6.5 MB —— 相对水位余量（见 [heapRestartRatio]）完全可以忽略，
+         * 而检查一次只是读一个 `/proc/<pid>/status` 里的一行，代价可忽略。
+         * 不要调得更勤：那对判据没有帮助，只是白唤醒。
+         */
+        private const val HEAP_WATCH_INTERVAL_MS = 3 * 60_000L
+
+        /**
+         * 触发主动重启的水位（占堆上限的比例）。
+         *
+         * 为什么是 0.85：
+         * · 从判定到重启完成，引擎还在按 2.2 MB/分钟继续涨。`requestRestart`
+         *   要走「停 → 起 → 等 ready」的完整状态机，真机上实测 ready 要
+         *   10–29 秒，也就是约 0.5–1 MB，相对余量（15% of 3072 ≈ 460 MB）绰绰有余；
+         * · 不能取 0.95 以上：V8 在逼近上限时 GC 会退化成近乎停顿（真机日志里
+         *   `Mark-Compact 1903.46 / 0.00 ms`，单次 GC 近 2 秒），界面先卡死
+         *   再重启，体验反而更差；
+         * · 不要取 0.7 以下：那会让 3 GB 的机器每隔几小时就重启一次，太激进。
+         */
+        private fun heapRestartRatio(): Double = 0.85
 
         /**
          * 引擎「起来了」的唯一判据：它打印了带 token 的回环 URL。
