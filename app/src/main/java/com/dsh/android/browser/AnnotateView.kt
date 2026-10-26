@@ -654,7 +654,14 @@ class AnnotateView(context: Context) : FrameLayout(context) {
         hideIme()
         val png = exportBitmap()
         if (png == null) {
-            Log.w(TAG, "导出图片失败")
+            // ⚠️ 必须提示，不能只记日志：画布**不会**收起（onSend 没被调用），
+            //   用户看到的是「点了发送，毫无反应」，会反复点。告诉他失败了、
+            //   但圈画还在、可以直接重试。
+            android.widget.Toast.makeText(
+                context,
+                "生成标注图失败，请重试（圈画不会丢失）",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
             return
         }
         onSend?.invoke(png, question)

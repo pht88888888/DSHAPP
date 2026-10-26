@@ -1404,7 +1404,16 @@ class MainActivity : AppCompatActivity() {
             .onFailure { Log.w(DshApplication.TAG, "通知侧栏面板失败: ${it.message}") }
     }
 
-    /** 待前端取走的标注结果：图片文件 + 提问。 */
+    /**
+     * 待前端取走的标注结果：图片文件 + 提问。
+     *
+     * ⚠️ **必须 `@Volatile`**：写发生在**主线程**（[showAnnotate] 里
+     *   `AnnotateView.onSend` 的回调），读发生在 **WebView 的 JS 线程**
+     *   （`StatusBridge.aiAnnotateResult()`）。不加的话 JS 线程可能一直读到
+     *   过期的 `null` —— 现象是用户圈完画点「发送」，**什么都没发生**，
+     *   而且没有任何提示。这与本文件其它跨线程字段（L96/L122/L263）同因。
+     */
+    @Volatile
     private var pendingAnnotate: Pair<java.io.File, String>? = null
 
     /** 正在显示的标注画布。 */
@@ -3527,10 +3536,22 @@ class MainActivity : AppCompatActivity() {
         Log.i(DshApplication.TAG, "已向用户显示错误真因: $text")
     }
 
-    /** 上一条已弹过的错误真因（[surfaceWebErrorReason] 的去重状态）。 */
+    /**
+     * 上一条已弹过的错误真因（[surfaceWebErrorReason] 的去重状态）。
+     *
+     * ⚠️ 必须 `@Volatile`：只在 [onConsole] 回调里读写，而那是**内核线程**，
+     *   不是主线程。少了它，去重判断可能读到过期值 —— 表现为同一错误
+     *   连弹多个 Toast（去重失效），或者反过来该弹的不弹。
+     */
+    @Volatile
     private var lastWebErrorToast: String? = null
 
-    /** 上次弹该原因的单调时钟（毫秒）。与 [lastWebErrorToast] 一起做时间窗去重。 */
+    /**
+     * 上次弹该原因的单调时钟（毫秒）。与 [lastWebErrorToast] 一起做时间窗去重。
+     *
+     * ⚠️ 同上，必须 `@Volatile`：单调时钟本身不会回退，但**可见性**需要它。
+     */
+    @Volatile
     private var lastWebErrorAt: Long = 0L
 
     /**
