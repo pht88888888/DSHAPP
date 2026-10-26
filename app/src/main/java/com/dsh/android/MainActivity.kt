@@ -865,6 +865,22 @@ class MainActivity : AppCompatActivity() {
         ensureBatteryExempt()
         ensureStorageAccess()
         setupShizukuPermissionListener()
+        // 清一次历史截图：`ShotStore.prune` 只在**写新图时**触发，所以升级前
+        // 已经攒下来的那批不会自己消失 —— 而它们正是最占地方的（老版本没有
+        // 任何上限，有人可能已经攒了几十上百张全屏 PNG）。
+        // 放后台线程：`listFiles` + 删几个文件不该占启动路径。
+        Thread {
+            runCatching {
+                com.dsh.android.browser.ShotStore.prune(
+                    java.io.File(workspaceDir(), ".browser-shots"),
+                )
+                com.dsh.android.browser.ShotStore.prune(
+                    com.dsh.android.browser.ShotStore.dir(filesDir),
+                )
+            }.onFailure {
+                Log.w(DshApplication.TAG, "启动清理历史截图失败: ${it.message}")
+            }
+        }.start()
         bootEngine()
     }
 
