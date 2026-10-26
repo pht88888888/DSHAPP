@@ -1996,7 +1996,16 @@ class MainActivity : AppCompatActivity() {
                     return@runOnUiThread
                 }
                 if (rendererGaveUp) {
+                    // ⚠️ **不能静默 return。** 用户点了「刷新界面」，如果什么都不发生，
+                    //   他只会以为这个菜单坏了、然后反复点，或者下拉/手势刷新 ——
+                    //   而后者会丢登录态（那正是加 [reloadWebUi] 的理由）。
+                    //   这里必须把「为什么不能刷 + 该怎么做」直接讲出来。
                     Log.i(DshApplication.TAG, "已停止自动恢复，忽略本次刷新请求")
+                    Toast.makeText(
+                        this@MainActivity,
+                        "界面此前反复出错，已停止自动恢复。请重开 App。",
+                        Toast.LENGTH_LONG,
+                    ).show()
                     return@runOnUiThread
                 }
                 reloadWithRetry(attempt = 1)
