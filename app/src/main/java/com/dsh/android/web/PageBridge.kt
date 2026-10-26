@@ -400,4 +400,65 @@ interface PageBridge {
      * 基本类型与 String，返回对象会静默变成 `undefined`。
      */
     fun logSummary(): String
+
+    // ══ 原生上传兜底通道 ══════════════════════════════════════════════════
+    //
+    // ## 为什么需要这条通道
+    //
+    // 真机取证（v64、v65，nubia NX809J / Android 16 / WebView 143）：
+    // 非图片附件（mp4）上传时 XHR 立刻 `onerror`（status=0）、fetch 接着
+    // `Failed to fetch`，而 `body.size` 与预读到的字节数都是**正确**的。
+    //
+    // v65 已经排除「Blob 内容读不出来」：polyfill 先 `arrayBuffer()` 把字节
+    // 握在手里，再拿真实 `Uint8Array` 发 —— 依然两条通道全失败。
+    // 也就是说 **JS 层取数据完全正常，失败发生在「把 body 交给内核网络栈」**。
+    //
+    // 同一个 `127.0.0.1:3080` 上，普通接口（聊天、会话导出）全部正常，
+    // curl 直接 POST 这两个体积也回 HTTP 200 —— 服务端与路由都没问题。
+    //
+    // 结论：这是**该内核处理大 body POST 的能力缺陷**，成因随 ROM/内核而变，
+    // JS 层无法绕过。唯一健壮的做法是**不走内核网络栈** ——
+    // 原生 `HttpURLConnection` 到 127.0.0.1 已在同一台设备的「下载会话导出」
+    // 上长期验证可用，两者互不相干。
+    //
+    // ## 协议（为什么是三个方法而不是一个）
+    //
+    // 字节最大到几十 MB，**不能一次性塞进一个 JS 桥调用**（会长时间阻塞
+    // JS 线程，且 gecko 的 native messaging 单条消息也不宜过大）。所以拆成
+    // begin → write* → finish 三段式，由页面侧分块喂进来。
+    //
+    // ⚠️ `taskId` 由**页面侧生成**并带下来，原生不回传 id ——
+    //   gecko 的桥只能异步（native messaging），**拿不到同步返回值**。
+    //   把 id 的生成权交给页面侧，两个 flavor 的签名就能完全一致，
+    //   不必为 gecko 再造一套「原生主动推送 + content script 缓存」的东西。
+    //
+    // ⚠️ 上传结束（成功或失败）原生会调页面侧的
+    //   `window.__dshNativeUploadDone(taskId, ok, status, body, error)`。
+    //   页面侧**必须**先把这个函数挂上去再调 [uploadNativeFinish]。
+
+    /**
+     * 开始一次原生上传。返回 false 表示参数非法（URL 不是本机 / 任务重复）。
+     *
+     * @param taskId 页面侧生成的唯一 id。
+     * @param url    完整 URL。**只接受 `127.0.0.1` / `localhost` / `::1`** ——
+     *               这条通道是为了绕开本机回环的内核缺陷，不是通用 HTTP
+     *               客户端，放开任意地址等于把 SSRF 面直接开给页面。
+     * @param headersJson 要带的请求头，JSON 对象文本，可空串。
+     */
+    fun uploadNativeBegin(taskId: String, url: String, headersJson: String): Boolean
+
+    /**
+     * 追加一块数据（base64）。返回 false 表示任务不存在或已超上限。
+     *
+     * ⚠️ 单块**必须**控制在 512 KB 原始字节以内（页面侧负责切）：太大有两个
+     *   代价 —— JS 线程被这次跨语言调用占住（界面卡一下），以及 base64
+     *   解码时一份额外的堆峰值。
+     */
+    fun uploadNativeWrite(taskId: String, base64: String): Boolean
+
+    /** 数据喂完，真正发出 POST。立即返回，结果走 `__dshNativeUploadDone`。 */
+    fun uploadNativeFinish(taskId: String)
+
+    /** 页面侧取消（用户点「取消上传」）或组件卸载时调用。幂等。 */
+    fun uploadNativeAbort(taskId: String)
 }

@@ -417,6 +417,27 @@ const BRIDGE_INSTALLER_SOURCE = `(function (post, getRoot, getBubble, getPairing
     shizukuRequestPermission: function () { post('shizukuRequestPermission', []); },
     shizukuOpenManager: function () { post('shizukuOpenManager', []); },
     shizukuOpenDownload: function () { post('shizukuOpenDownload', []); },
+    // 原生上传兜底通道（见 system 版 NativeUploader 的类注释）。
+    //   ⚠️ 四个方法都**乐观返回 true**：native messaging 只能异步，返回值送不
+    //     回去。真正结果走「window.__dshNativeUploadDone」回调，polyfill 侧
+    //     另有超时兜底 —— 所以这里返回 true 不会造成「静默卡住」。
+    //   ⚠️ 本段是模板字符串内容，注释里用「」包住标识符，不要写反引号。
+    uploadNativeBegin: function (taskId, url, headersJson) {
+      post('uploadNativeBegin', [String(taskId), String(url), String(headersJson || '')]);
+      return true;
+    },
+    uploadNativeWrite: function (taskId, base64) {
+      post('uploadNativeWrite', [String(taskId), String(base64)]);
+      return true;
+    },
+    uploadNativeFinish: function (taskId) {
+      post('uploadNativeFinish', [String(taskId)]);
+      return true;
+    },
+    uploadNativeAbort: function (taskId) {
+      post('uploadNativeAbort', [String(taskId)]);
+      return true;
+    },
   };
 })`;
 

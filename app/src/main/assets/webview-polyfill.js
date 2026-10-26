@@ -1095,6 +1095,8 @@
         var bus = new EventTarget();
         var activeXhr = null;
         var activeFetchAbort = null;
+        // 正在跑的原生上传任务 id（见 viaNative）。terminate() 要能取消它。
+        var activeNativeTask = null;
 
         function emit(detail) {
           try {
@@ -1138,6 +1140,19 @@
                 /* 已结束 */
               }
               activeFetchAbort = null;
+            }
+            // 原生通道也要能被打断：不打的话用户点了取消，原生还在默默传完
+            // 整个文件（大文件尤其明显），而界面已经显示取消了。
+            if (activeNativeTask) {
+              var bridge = (typeof window !== 'undefined' && window.DSHAndroid) || null;
+              if (bridge && typeof bridge.uploadNativeAbort === 'function') {
+                try {
+                  bridge.uploadNativeAbort(activeNativeTask);
+                } catch (e) {
+                  /* 已结束 */
+                }
+              }
+              activeNativeTask = null;
             }
           },
           postMessage: function (message) {
@@ -1260,9 +1275,163 @@
                   activeFetchAbort = null;
                   // 用户主动取消不算故障，不弹错（AbortError）。
                   if (e && e.name === 'AbortError') return;
-                  fail('上传通道不可用（XHR 与 fetch 均失败）',
-                    where + '；XHR: ' + reason + '；fetch: ' + ((e && e.message) || String(e)));
+                  // ⚠️ 到这里说明 XHR 与 fetch **两条内核通道都废了**。
+                  //   不要再报错收工 —— 还有最后一条路：原生 HttpURLConnection
+                  //   直接 POST 回环地址（见 viaNative 的注释）。
+                  viaNative(
+                    where + '；XHR: ' + reason + '；fetch: ' + ((e && e.message) || String(e)),
+                    sendBody,
+                  );
                 });
+            }
+
+            // ── 最后兜底：交给原生发（不经内核网络栈）──────────────────────
+            //
+            // ## 为什么这条路一定行
+            //
+            // 真机取证（v64、v65，nubia NX809J / Android 16 / WebView 143）：
+            // XHR 立刻 onerror（status=0）、fetch 随后 Failed to fetch，
+            // 而 `body.size` 与预读到的字节数都是**正确**的。
+            // 也就是说 JS 层取数据完全正常，失败在「把 body 交给内核网络栈」。
+            //
+            // 同一个 `127.0.0.1:3080` 上，普通接口（聊天、会话导出）全部正常；
+            // curl 直接 POST 这两个体积也回 HTTP 200 —— 服务端与路由没问题。
+            //
+            // 所以这是**该内核处理大 body POST 的能力缺陷**，JS 层绕不过去。
+            // 唯一健壮的做法是**换一个网络栈**：原生 HttpURLConnection 打
+            // 127.0.0.1 已在同一台设备的「下载会话导出」上长期验证可用。
+            //
+            // ## 协议
+            //
+            // 字节经 base64 分块喂给原生（begin → write* → finish），
+            // 原生另起线程 POST，结果经 `window.__dshNativeUploadDone` 回投。
+            // 分块是为了不长时间占住 JS 线程，也避免一份等量堆峰值。
+            function viaNative(reason, sendBody) {
+              var bridge = (typeof window !== 'undefined' && window.DSHAndroid) || null;
+              if (bridge === null || typeof bridge.uploadNativeBegin !== 'function') {
+                // 没有原生桥（桌面浏览器 / 老包）：只能如实报错。
+                fail('上传通道不可用（XHR、fetch 与原生通道均失败）', reason);
+                return;
+              }
+              // sendBody 是预读到的字节（Uint8Array），null 表示超限没预读。
+              // 原生通道**必须**有真实字节：Blob 都发不出去，再让原生去
+              // 读一个惰性 Blob 只会重现同一个失败。
+              if (!(sendBody instanceof Uint8Array)) {
+                fail('上传通道不可用（原生通道需要文件字节）', reason);
+                return;
+              }
+              console.warn('[dsh-webview] XHR 与 fetch 均失败，改走原生上传通道');
+              var taskId = 'u' + Date.now().toString(36) +
+                Math.random().toString(36).slice(2, 8);
+              var finished = false;
+              activeNativeTask = taskId;
+
+              function done(ok, status, body, error) {
+                if (finished) return;
+                finished = true;
+                activeNativeTask = null;
+                delete window.__dshNativeUploadDone;
+                if (ok) {
+                  emit({ kind: 'complete', status: status, body: body });
+                } else {
+                  fail('上传失败（原生通道）',
+                    '地址 ' + String(url).replace(/^https?:\/\/[^/]+/, '') +
+                    '，' + sendBody.length + ' 字节；' + error + '；内核通道: ' + reason);
+                }
+              }
+
+              // ⚠️ 必须**先挂回调再调 finish**：原生在网络线程结束时立刻回投，
+              //   顺序反了结果就没人接（原生那边只能留一条日志，手机上看不到）。
+              window.__dshNativeUploadDone = function (id, ok, status, body, error) {
+                if (id !== taskId) return;
+                done(ok, status, body, error);
+              };
+
+              var okBegin = false;
+              try {
+                okBegin = bridge.uploadNativeBegin(taskId, String(url), JSON.stringify(headers));
+              } catch (e) {
+                delete window.__dshNativeUploadDone;
+                fail('上传通道不可用（原生通道发起失败）',
+                  reason + '；' + ((e && e.message) || String(e)));
+                return;
+              }
+              if (!okBegin) {
+                // begin 同步返回 false 时原生已经回投过失败（见 NativeUploader.begin），
+                // 但 gecko 的桥是异步的、返回值恒为 true，所以这里不能只靠它 ——
+                // 交给超时兜底。不主动 fail，避免把原生的真因覆盖掉。
+                console.warn('[dsh-webview] 原生上传 begin 返回 false，等回投或超时');
+              }
+
+              // 分块喂字节：512 KB 原始字节 ≈ 683 KB base64 字符串，
+              // 一次跨语言调用不至于把 JS 线程卡住太久。
+              var CHUNK = 512 * 1024;
+              var offset = 0;
+
+              function pump() {
+                if (finished) return;
+                if (offset >= sendBody.length) {
+                  try {
+                    bridge.uploadNativeFinish(taskId);
+                  } catch (e) {
+                    done(false, 0, '', (e && e.message) || String(e));
+                  }
+                  return;
+                }
+                var end = Math.min(offset + CHUNK, sendBody.length);
+                var slice = sendBody.subarray(offset, end);
+                var text;
+                try {
+                  text = bytesToBase64(slice);
+                } catch (e) {
+                  try { bridge.uploadNativeAbort(taskId); } catch (ignored) { /* 已结束 */ }
+                  done(false, 0, '', 'base64 编码失败: ' + ((e && e.message) || String(e)));
+                  return;
+                }
+                var okWrite = false;
+                try {
+                  okWrite = bridge.uploadNativeWrite(taskId, text);
+                } catch (e) {
+                  done(false, 0, '', (e && e.message) || String(e));
+                  return;
+                }
+                if (okWrite === false) {
+                  // 原生同步拒绝（超上限 / 任务不存在）。它可能已经回投失败，
+                  // 给一个很短的机会让回投先到，再兜底。
+                  setTimeout(function () {
+                    if (finished) return;
+                    done(false, 0, '', '原生通道拒绝写入（可能超过体积上限）');
+                  }, 0);
+                  return;
+                }
+                offset = end;
+                // 让出主线程：大文件分块循环若同步跑完会卡住界面（进度条不动）。
+                setTimeout(pump, 0);
+              }
+
+              // 超时兜底：原生 120s 读超时 + 连接 15s，给到 150s。
+              // ⚠️ 必须有它：gecko 的桥拿不到同步返回值，万一 `__dshNativeUploadDone`
+              //   没回来（页面被导航打断等），没有超时就会永远「上传中」。
+              setTimeout(function () {
+                if (finished) return;
+                done(false, 0, '', '原生通道超时（150 秒无响应）');
+              }, 150 * 1000);
+
+              pump();
+            }
+
+            // Uint8Array → base64。分块喂原生用。
+            // ⚠️ 不能用 `String.fromCharCode.apply(null, bytes)`：几 MB 的数组
+            //   会直接爆调用栈（RangeError: too many arguments）。按 8 KB 切。
+            function bytesToBase64(bytes) {
+              var binary = '';
+              var STEP = 8192;
+              for (var i = 0; i < bytes.length; i += STEP) {
+                binary += String.fromCharCode.apply(
+                  null, bytes.subarray(i, Math.min(i + STEP, bytes.length))
+                );
+              }
+              return btoa(binary);
             }
 
             var xhr = new XMLHttpRequest();

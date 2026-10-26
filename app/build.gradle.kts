@@ -64,7 +64,13 @@ android {
         //        预读失败就明确报「文件内容读取失败（不是网络问题）」——
         //        两种结果都能从客户截图直接判断，不再靠猜。
         //        见 `webview-polyfill.js` 的 `preloadBytes`。
-        versionCode = 65
+        //   v66：预读确实成功了（v65 客户截图文案是「上传通道不可用」，
+        //        不是「文件内容读取失败」）⇒ 字节在手里**仍然发不出去**。
+        //        结论：该内核处理大 body POST 的能力缺陷，JS 层绕不过。
+        //        改成最后兜底走**原生 HttpURLConnection**（不经内核网络栈），
+        //        与「下载会话导出」同一套，后者在同设备长期可用。
+        //        见 `NativeUploader` 与 polyfill 的 `viaNative`。
+        versionCode = 66
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。

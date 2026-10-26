@@ -88,6 +88,21 @@ class MainActivity : AppCompatActivity() {
     private val assetStamp = "0.2.1-rc.2-1"
 
     /**
+     * 原生上传兜底通道。
+     *
+     * 页面侧的大 body POST 在个别内核上发不出去（见 [NativeUploader] 类注释），
+     * 这里给一条**不经过内核网络栈**的备用通道：`HttpURLConnection` 打
+     * `127.0.0.1` —— 与「下载会话导出」用的是同一套，已验证可用。
+     *
+     * ⚠️ `by lazy` 在这里是安全的：它只在 [StatusBridge] 的方法里被访问，
+     *   而那些方法要等页面加载完、JS 调用桥时才会进来，远晚于 `web` 的赋值。
+     *   且 `postToPage` 是 lambda，捕获的是 `this`，真正取值时才碰 `web`。
+     */
+    private val nativeUploader: NativeUploader by lazy {
+        NativeUploader { script -> web.evaluateJavascript(script, null) }
+    }
+
+    /**
      * 最近一次已应用的页面底色。
      *
      * ⚠️ 由 `StatusBridge`（WebView 的 JS 线程）读写，必须 `@Volatile`；
@@ -2603,6 +2618,23 @@ class MainActivity : AppCompatActivity() {
             """{"total":0,"warn":0,"error":0,"crash":0,"pending":0,""" +
                 """"lastExit":"读取失败","uploadConfigured":false,"version":""}"""
         }
+
+        // ── 原生上传兜底通道（见 NativeUploader 的类注释）──────────────────
+        //
+        // ⚠️ 四个方法都跑在 WebView 的 JS 线程上，**必须立即返回**；
+        //   真正的网络 IO 在 finish() 里另起线程。
+        // ⚠️ 页面侧的 finish 依赖 `window.__dshNativeUploadDone` 回投结果，
+        //   polyfill 保证「先挂函数再调 finish」。
+
+        override fun uploadNativeBegin(taskId: String, url: String, headersJson: String): Boolean =
+            nativeUploader.begin(taskId, url, headersJson)
+
+        override fun uploadNativeWrite(taskId: String, base64: String): Boolean =
+            nativeUploader.write(taskId, base64)
+
+        override fun uploadNativeFinish(taskId: String) = nativeUploader.finish(taskId)
+
+        override fun uploadNativeAbort(taskId: String) = nativeUploader.abort(taskId)
     }
 
     /**

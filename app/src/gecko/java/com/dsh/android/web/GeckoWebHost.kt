@@ -716,6 +716,20 @@ class GeckoWebHost(
                     // 白名单**必须逐条对齐** —— 漏一条的症状是设置页那一块显示成
                     // 「没有原生桥」，不报错、不崩溃，只是静默失效。
                     "openLogs" -> b.openLogs()
+                    // 原生上传兜底通道（见 NativeUploader 的类注释）。
+                    // ⚠️ 与 system 版 `SystemPageBridge` 白名单**必须逐条对齐**。
+                    //   这里比 system 版多一层坑：native messaging 只能异步，
+                    //   所以 `begin` / `write` 的返回值**送不回去**（content.js
+                    //   那边乐观返回 true）。真正的成败一律走
+                    //   `__dshNativeUploadDone` 回调 —— polyfill 侧还挂了超时兜底。
+                    "uploadNativeBegin" -> b.uploadNativeBegin(
+                        args.optString(0), args.optString(1), args.optString(2),
+                    )
+                    "uploadNativeWrite" -> b.uploadNativeWrite(
+                        args.optString(0), args.optString(1),
+                    )
+                    "uploadNativeFinish" -> b.uploadNativeFinish(args.optString(0))
+                    "uploadNativeAbort" -> b.uploadNativeAbort(args.optString(0))
                     // `logSummary` 页面侧走快照同步读，这里只处理「请重推一份」。
                     // ⚠️ 必须重推：用户从日志界面（另一个 Activity）清空/上传后
                     //   回到设置页，缓存里还是旧数字，不重推就永远不刷新。

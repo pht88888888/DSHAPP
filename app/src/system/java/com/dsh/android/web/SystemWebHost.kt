@@ -750,4 +750,24 @@ private class SystemPageBridge(private val impl: PageBridge) {
      */
     @android.webkit.JavascriptInterface
     fun logSummary(): String = impl.logSummary()
+
+    // ── 原生上传兜底通道（见 NativeUploader 的类注释）──────────────────────
+    //
+    // ⚠️ 同样必须出现在这个白名单里。漏了的症状比别处更隐蔽：
+    //   polyfill 会以为「没有原生桥」，于是只报「XHR 与 fetch 均失败」，
+    //   用户看到的现象和没修一样 —— 而原生侧其实完全正常。
+
+    @android.webkit.JavascriptInterface
+    fun uploadNativeBegin(taskId: String, url: String, headersJson: String): Boolean =
+        impl.uploadNativeBegin(taskId, url, headersJson)
+
+    @android.webkit.JavascriptInterface
+    fun uploadNativeWrite(taskId: String, base64: String): Boolean =
+        impl.uploadNativeWrite(taskId, base64)
+
+    @android.webkit.JavascriptInterface
+    fun uploadNativeFinish(taskId: String) = impl.uploadNativeFinish(taskId)
+
+    @android.webkit.JavascriptInterface
+    fun uploadNativeAbort(taskId: String) = impl.uploadNativeAbort(taskId)
 }
