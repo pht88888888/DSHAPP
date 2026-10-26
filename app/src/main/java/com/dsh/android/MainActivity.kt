@@ -3483,8 +3483,16 @@ class MainActivity : AppCompatActivity() {
         val interesting = line.contains("agent-busy") ||
             line.contains("prompt rejected") ||
             line.contains("sharp") ||
-            line.contains("EACCES")
-        if (!interesting) return
+            line.contains("EACCES") ||
+            // ── 上传失败 ───────────────────────────────────────────────
+            // 这条是「个别用户」才踩到的（某内核上 XHR 通道不可用），
+            // 而且**只在非图片文件**上出现 —— 图片走的是 base64 JSON 另一条路。
+            // 前端只回一句「上传失败，点击重试」，用户在手机上完全无法判断
+            // 是网络、体积还是内核问题，只能反复下载调试包试错。
+            // polyfill 现在会把「地址 + 字节数 + XHR/fetch 各自的失败原因」
+            // 拼进这条日志，弹出来就能直接定位。
+            line.contains("上传失败") ||
+            line.contains("上传通道不可用")
         // ① 去重：**带时间窗**，不是永久去重。
         //    前端一次失败会连着打印多行同一原因，必须压住（否则一次失败弹
         //    七八个 Toast）；但如果永久记住，用户**第二次**遇到同一个错误就

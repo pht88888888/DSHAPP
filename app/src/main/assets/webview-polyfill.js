@@ -1094,6 +1094,7 @@
         // 属性存取器直接映射到同一个中枢上。
         var bus = new EventTarget();
         var activeXhr = null;
+        var activeFetchAbort = null;
 
         function emit(detail) {
           try {
@@ -1103,8 +1104,19 @@
           }
         }
 
-        function fail(message) {
-          console.error('[dsh-webview] 上传改走主线程后仍失败: ' + message);
+        // ── 失败必须带真因，且必须能上屏 ─────────────────────────────────
+        //
+        // ⚠️ 日志里**必须**有「原因:」三个字。`MainActivity.surfaceWebErrorReason`
+        //   只认这个标记；没有它就只进 `web.log`，手机上什么都看不到 ——
+        //   而用户明确要求过「错误原因要显示在 App 界面里」（他每次装包都要
+        //   花钱和时间，不能让他拿一个只会说「上传失败」的包反复试）。
+        //
+        // ⚠️ `context` 用来带「地址 + 字节数 + 内核线索」：同样是失败，
+        //   1.3 MB 和 200 MB 的成因完全不同，缺了这个数就无法判断是不是体积问题。
+        //   之前只有一句 `background upload transport failed`，等于没留痕。
+        function fail(message, context) {
+          var detail = context === undefined ? message : message + '（' + context + '）';
+          console.error('[dsh-webview] 上传失败，原因: ' + detail);
           emit({ kind: 'error', message: message });
         }
 
@@ -1118,6 +1130,15 @@
               }
               activeXhr = null;
             }
+            // fetch 兜底也要能被打断（见 viaFetch 里的说明）。
+            if (activeFetchAbort) {
+              try {
+                activeFetchAbort.abort();
+              } catch (e) {
+                /* 已结束 */
+              }
+              activeFetchAbort = null;
+            }
           },
           postMessage: function (message) {
             var data = message || {};
@@ -1125,12 +1146,60 @@
               fail('background upload worker received an invalid body');
               return;
             }
+            var body = data.body;
+            var url = data.url;
+            var headers = data.headers || {};
+            var where = '地址 ' + String(url).replace(/^https?:\/\/[^/]+/, '') +
+              '，' + body.size + ' 字节';
+
+            // ── 先用 XHR（能报进度），失败后**自动换 fetch 重试一次** ──────
+            //
+            // 为什么要有这一步：真机诊断包实证（nubia NX809J / Android 16 /
+            //   WebView 143）「上传失败」是 XHR **立刻** onerror（130ms），
+            //   不是超时、也不是服务端拒绝 —— 即**该内核上这条 XHR 通道不可用**。
+            //   而 fetch 走的是另一套网络栈，两者在同一内核里可以一个坏一个好。
+            //
+            // 只重试一次、只在**传输层**失败（onerror/超时）时重试：
+            //   `onload` 拿到 4xx/5xx 属于服务端明确答复，重试没有意义，
+            //   那类失败原样上报（附状态码），由上层显示真因。
+            //
+            // ⚠️ 重试**不丢进度条**：fetch 拿不到 upload progress，但重试前
+            //   本来就已经失败过一次，此时保证「传上去」比保住进度条重要；
+            //   进度条在成功路径（XHR）上照旧。
+            function viaFetch(reason) {
+              console.warn('[dsh-webview] XHR 上传失败，改用 fetch 重试: ' + reason);
+              // ⚠️ 必须能被 `terminate()` 打断：用户点「取消」时若 fetch 还在
+              //   传，会白传完整个文件（大文件尤其明显），且界面已经显示取消了。
+              var controller = typeof AbortController === 'function' ? new AbortController() : null;
+              activeFetchAbort = controller;
+              var init = {
+                method: 'POST',
+                body: body,
+                headers: headers,
+                credentials: 'include',
+              };
+              if (controller !== null) init.signal = controller.signal;
+              fetch(url, init)
+                .then(function (response) {
+                  return response.text().then(function (text) {
+                    activeFetchAbort = null;
+                    emit({ kind: 'complete', status: response.status, body: text });
+                  });
+                })
+                .catch(function (e) {
+                  activeFetchAbort = null;
+                  // 用户主动取消不算故障，不弹错（AbortError）。
+                  if (e && e.name === 'AbortError') return;
+                  fail('上传通道不可用（XHR 与 fetch 均失败）',
+                    where + '；XHR: ' + reason + '；fetch: ' + ((e && e.message) || String(e)));
+                });
+            }
+
             var xhr = new XMLHttpRequest();
             activeXhr = xhr;
             try {
-              xhr.open('POST', data.url);
+              xhr.open('POST', url);
               xhr.withCredentials = true;
-              var headers = data.headers || {};
               for (var name in headers) {
                 if (Object.prototype.hasOwnProperty.call(headers, name)) {
                   xhr.setRequestHeader(name, headers[name]);
@@ -1145,11 +1214,17 @@
                 emit({ kind: 'complete', status: xhr.status, body: xhr.responseText });
               };
               xhr.onerror = function () {
-                fail('background upload transport failed');
+                activeXhr = null;
+                viaFetch('网络层错误（status=' + xhr.status + '）');
               };
-              xhr.send(data.body);
+              xhr.ontimeout = function () {
+                activeXhr = null;
+                viaFetch('超时');
+              };
+              xhr.send(body);
             } catch (e) {
-              fail((e && e.message) || String(e));
+              activeXhr = null;
+              viaFetch('发起请求抛错: ' + ((e && e.message) || String(e)));
             }
           },
         };

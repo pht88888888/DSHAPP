@@ -42,7 +42,19 @@ android {
         //   versionCode 必须单调递增，否则已装 62 的设备**装不上**这个包
         //   （INSTALL_FAILED_VERSION_DOWNGRADE），而卸载重装会清掉整个
         //   Termux 环境与 $DSH_HOME。版本名是给人看的，versionCode 是给系统看的。
-        versionCode = 63
+        // ⚠️ 64（本次）**修「非图片文件上传失败」**（versionName 仍为 0.4.1，靠
+        //   versionCode 区分 —— 既有惯例，见上）。
+        //   症状：个别用户（服务器诊断包实证 nubia NX809J / Android 16 /
+        //   WebView 143）在 composer 左下角「+」→「文件」选任意非图片文件，
+        //   都只回一句「上传失败，点击重试」，重试也永远失败。
+        //   而**发图片正常** —— 两者是两条不同的路：图片走主线程 fetch +
+        //   base64 JSON（`ctx.remote.fileUploads.upload`），非图片走
+        //   `/api/session/uploadFileBinary` 二进制通道。
+        //   真因是那个内核上 XHR 通道不可用（选完文件 130ms 就 onerror，
+        //   不是超时、不是服务端拒绝），而旧代码**没有任何降级**。
+        //   两处改动见 `webview-polyfill.js` 的 `uploadWorkerOnMainThread`
+        //   与 `MainActivity.surfaceWebErrorReason`。
+        versionCode = 64
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
