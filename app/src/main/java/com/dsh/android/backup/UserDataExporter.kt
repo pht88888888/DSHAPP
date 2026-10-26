@@ -75,6 +75,18 @@ object UserDataExporter {
     /** 全部可导出项。**顺序即界面顺序**。 */
     val ITEMS: List<Item> = listOf(
         Item("sessions", "对话记录", DshApplication.DSH_HOME_REL + "/sessions"),
+        // ⚠️ **附件必须导出**，否则换设备/重装后会话里的图片全变成裂图。
+        //
+        //   群友反馈原话：「如果跨版本进行数据迁移的话，可能不知道为什么
+        //   会读取不到图片」—— 原因就是这一项原来**不在清单里**：
+        //   图片本体存在 `$DSH_HOME/attachments/v1/objects/<前2位>/<id>`，
+        //   而 `sessions/` 里存的只是**引用 id**。只导出 sessions 的话，
+        //   会话结构完整、消息也在，但每一张图都指向一个不存在的对象，
+        //   界面上就是一片裂图。
+        //
+        //   ⚠️ 顺序放在 sessions 紧后面：两者是一体的，界面上挨着看才不容易
+        //     只勾一个。
+        Item("attachments", "图片与附件", DshApplication.DSH_HOME_REL + "/attachments"),
         Item("profiles", "配置与插件", DshApplication.DSH_HOME_REL + "/profiles"),
         Item("storages", "引擎数据", DshApplication.DSH_HOME_REL + "/storages"),
         Item("skills", "技能", DshApplication.DSH_HOME_REL + "/skills"),
@@ -92,7 +104,7 @@ object UserDataExporter {
         companion object {
             /** 默认勾选：用户独有、体积可控、无安全风险的那些。 */
             fun defaultIds(): Set<String> =
-                setOf("sessions", "profiles", "storages", "skills")
+                setOf("sessions", "attachments", "profiles", "storages", "skills")
         }
     }
 

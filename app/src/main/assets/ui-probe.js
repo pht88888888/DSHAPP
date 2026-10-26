@@ -1328,9 +1328,23 @@ function (CMD) {
       });
     }
 
+    // ── lastError：取走「最近一次兜底错误码 + 真实原因」 ─────────────
+    //
+    // 引擎把真正的失败包成 `session/agent-busy` 这类笼统错误码，真因藏在
+    // `details.reason` 里（见 webview-polyfill.js 末尾那段）。这里把它读出来，
+    // 让原生能弹 Toast —— 用户在手机上不用连电脑就能看到真正的原因。
+    //
+    // 取走即清空：同一条错误不该每次调用都重复弹。
+    if (action === 'lastError') {
+      if (typeof window.__DSH_TAKE_ERROR__ === 'function') {
+        return ok(window.__DSH_TAKE_ERROR__());
+      }
+      return ok({});
+    }
+
     return fail('未知 action: ' + action, {
       known: ['ping', 'dump', 'find', 'tap', 'type', 'key', 'scroll', 'text', 'html',
-        'wait', 'info', 'overlay']
+        'wait', 'info', 'overlay', 'lastError']
     });
   }
 

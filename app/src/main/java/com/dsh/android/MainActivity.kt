@@ -1216,6 +1216,9 @@ class MainActivity : AppCompatActivity() {
                     //   `import failed` / `did not activate` 单独都不够 ——
                     //   `did not activate` 在正常告警里也会出现。
                     maybeRescueFromWebFailure(line)
+                    // ⚠️ 兜底错误码的**真实原因**必须让用户在手机上看见。
+                    //   见 [surfaceWebErrorReason] 的注释。
+                    surfaceWebErrorReason(line)
                 },
                 onExternalUrl = { url ->
                     // ── http/https 一律用**内置**浏览器打开 ────────────────
@@ -3435,6 +3438,67 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    /**
+     * 兜底错误码 ⇒ 把**真实原因**显示到界面上。
+     *
+     * ## 为什么必须有这一层
+     *
+     * DSH 引擎有一批**兜底错误码**：真正的失败被包成 `session/agent-busy`
+     * 这类笼统的码，真因藏在 `details.reason` 里。用户在 App 上只能看到
+     *
+     * ```
+     * prompt rejected (session/agent-busy)
+     * ```
+     *
+     * 而实际原因可能是
+     *
+     * ```
+     * Could not load the "sharp" module using the android-arm64 runtime
+     * EACCES: permission denied, open '/data/user/0'
+     * ```
+     *
+     * 两者的修法完全不同，但提示一模一样 ⇒ 用户报「发不了图」时**无法定位**，
+     * 只能靠反复下载调试包试错。用户原话：
+     * 「你知不知道我每次调试都要下载那个安装包 很浪费钱的」。
+     *
+     * ## 为什么落在 console 上
+     *
+     * 引擎的失败最终都会以一条 `console.error` 冒到浏览器侧（那是它唯一能把
+     * 错误交出去的通道）。页面里的 `webview-polyfill.js` 已经把这行
+     * **补全成「码 + 原因」**，所以这里只要认出来、弹给用户看即可 ——
+     * 原生侧不需要理解引擎的错误结构。
+     *
+     * ## ⚠️ 两条守卫
+     *
+     * ① **同一条原因只弹一次**（[lastWebErrorToast]）：前端会重复打印同一行，
+     *    不判重会连弹好几次 Toast。
+     * ② **只在含「原因」时弹**：纯粹的 `prompt rejected (session/agent-busy)`
+     *    没有新增信息，弹了只是噪音 —— 那本来就是界面上已经显示的原文。
+     */
+    private fun surfaceWebErrorReason(line: String) {
+        // 只认「兜底错误码 + 补全的原因」这种形态。
+        // 判据取 `原因:` 这个由 polyfill 拼进去的标记 —— 没有它就说明
+        // polyfill 没能挖到真因，弹出来也没有新信息。
+        if (!line.contains("原因:")) return
+        val interesting = line.contains("agent-busy") ||
+            line.contains("prompt rejected") ||
+            line.contains("sharp") ||
+            line.contains("EACCES")
+        if (!interesting) return
+        // ① 去重：同一行只弹一次。
+        if (line == lastWebErrorToast) return
+        lastWebErrorToast = line
+        // ② 截断：Toast 太长会直接不显示，保留前 200 字足够定位。
+        val text = line.substringAfter("原因:").trim().take(200)
+        runOnUiThread {
+            Toast.makeText(this, "出错了：$text", Toast.LENGTH_LONG).show()
+        }
+        Log.i(DshApplication.TAG, "已向用户显示错误真因: $text")
+    }
+
+    /** 上一条已弹过的错误真因（[surfaceWebErrorReason] 的去重状态）。 */
+    private var lastWebErrorToast: String? = null
 
     /**
      * 浏览器侧插件加载失败 ⇒ 自动降级到救援模式（不加载任何第三方插件）。

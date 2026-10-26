@@ -342,6 +342,10 @@ object BrowserBridge {
                 // 模型没传就退化成「AI 正在操作页面」，至少表明它还活着。
                 view.showAction(pill)
                 op(view) { r ->
+                    // ⚠️ **必须归还控制权**：AI 操作期间 `applyControl()` 给
+                    //   WebView 挂了吞触摸的监听器，不还回去用户就永远拖不动
+                    //   光标、点不动输入框（真实用户反馈过）。成功/失败都要还。
+                    view.releaseAiControl()
                     view.hideActionSoon()
                     // 登录成功后 Cookie 刚写进内存，这时候落盘最稳妥：
                     // AI 的 click/type 很可能就是提交登录表单，操作一结束
@@ -361,6 +365,7 @@ object BrowserBridge {
                     finish(r)
                 }
             } catch (t: Throwable) {
+                lastView?.releaseAiControl()
                 lastView?.hideActionSoon()
                 finish(err("原生异常: ${t.javaClass.simpleName}: ${t.message}"))
             }
@@ -370,7 +375,10 @@ object BrowserBridge {
         if (box[0] == null) {
             // 超时：op 的回调永远不来了，胶囊得由这里收走，
             // 否则它会一直挂在页面上，看起来像 AI 卡死。
-            mainHandler.post { lastView?.hideActionSoon() }
+            mainHandler.post {
+                lastView?.releaseAiControl()
+                lastView?.hideActionSoon()
+            }
             return err("等待页面响应超时（${OP_TIMEOUT_MS}ms），页面可能正在加载或已崩溃")
         }
         return box[0]!!

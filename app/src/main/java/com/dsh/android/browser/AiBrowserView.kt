@@ -1269,7 +1269,10 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
      * 切换控制权。
      *
      * ⚠️ AI 操作时**吃掉所有触摸**（返回 true 不往下传），否则用户随手一点
-     *   就会让 AI 正在填的表单失焦。用户点状态按钮切回自己后恢复正常。
+     *   就会让 AI 正在填的表单失焦。
+     *
+     * ⚠️ 但**操作一结束必须还回去**（见 [releaseAiControl]）。以前没有归还
+     *   路径，监听器会永久留在 WebView 上，导致用户之后连光标都拖不动。
      */
     private fun toggleControl() {
         control = if (control == Control.AI) Control.USER else Control.AI
@@ -1284,6 +1287,35 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     /** AI 执行动作前抢占控制权（用户点 chip 可随时收回）。 */
     fun claimAiControl() {
         if (control != Control.AI) setControl(Control.AI)
+    }
+
+    /**
+     * AI 的一次操作做完了，把控制权**还给用户**。
+     *
+     * ## 为什么必须有这个
+     *
+     * [Control.AI] 状态下会给 WebView 挂 `setOnTouchListener { _, _ -> true }`
+     * 把触摸全部吃掉 —— 这是为了 AI 填表单时用户随手一点不至于让输入框失焦。
+     *
+     * 但以前**只有** `claimAiControl()`，没有任何地方把它还回去：
+     * `setControl(Control.USER)` 全项目一处都没调用过。于是只要 AI 操作过
+     * 一次，那个吞触摸的监听器就永远留在 WebView 上。用户反馈的现象是
+     * 「输入框里输了文字，光标拖不动、点别处也没反应」—— 因为所有触摸
+     * 事件都被这个监听器吃掉了，页面根本收不到。
+     *
+     * 现在每次操作结束（成功、失败、超时都算）都归还控制权，触摸恢复正常。
+     * AI 连续操作时每次操作开始会重新抢占，中间那点间隙用户就算点了，
+     * 也只会是用户自己的操作，符合「AI 和用户共用一个浏览器」的预期。
+     */
+    fun releaseAiControl() {
+        if (control == Control.AI) setControl(Control.USER)
+        // ⚠️ 静默输入也要一起解除。
+        //
+        // `silentInput` 原本靠用户手指**按下**来解除（见 [onInterceptTouchEvent]）。
+        // 但 AI 干完活之后用户往往不会重新按一次就以为能输入了 —— 只要它还是
+        // true，`onCreateInputConnection` 就返回 null，键盘压根不弹、输入框
+        // 的光标也拖不动。操作已结束，没有任何理由继续静默。
+        silentInput = false
     }
 
     fun currentControl(): Control = control

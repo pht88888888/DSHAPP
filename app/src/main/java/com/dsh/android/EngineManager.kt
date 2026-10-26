@@ -9443,8 +9443,20 @@ class EngineManager private constructor(private val context: Context) {
           *      那是基于旧的 66/22 算的。合并时**必须取本地已推进的值再 +1**
           *      （99 → 100 / 33 → 34），否则会回退，设备上静默跑回没有这张卡的旧 UI。
           *      ⚠️ 两个戳都 bump（本常量 99 → 100，-CompatVersion 33 → 34）。
+          * 1.0.0-103：两条移动端修复（用户截图报的两个问题）。
+          *      ① 修复 78 —— 输入框点中间落行尾。0.1.5 起官方把输入框从
+          *         `<textarea>` 换成 contenteditable div，Android WebView 在这上面
+          *         的「像素 → 字符偏移」算得很差（点中间、光标跳行尾）。改为在
+          *         `click` 上自己用 caretPositionFromPoint 定光标；只在
+          *         「空选区 + 落点明显不同」时动手，不干扰长按选词/扩选/组字。
+          *      ② 修复 79 —— 思考正文两行竖直叠在一起糊成一团。流式追加时容器
+          *         高度更新落后于文字一帧（叠加 `overflow-wrap: anywhere` 让每行
+          *         宽度不可预测），改为给思考正文显式 line-height + contain: layout。
+          *      本版是**纯 JS 改动**（只有 client.js），未动 CSS 之外的产物，
+          *      但 `mobileui/lib/client.js` 是降级编译输入，字节变了，
+          *      所以本常量必须 bump（否则设备上继续跑旧 client.js，两条修复都收不到）。
           */
-        private const val MOBILE_UI_VERSION = "1.0.0-102"
+        private const val MOBILE_UI_VERSION = "1.0.0-103"
         private const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────

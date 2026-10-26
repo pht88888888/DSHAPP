@@ -616,6 +616,39 @@ window.__ModuleLoader__.load({
   overflow-wrap: anywhere !important;
 }
 
+/* ══ 修复 79：思考正文两行**竖直叠在一起**，糊成一团看不清 ═══════════════
+
+   现象（用户截图，红框标出）：AI 回复过程中，思考块里同一行位置上下叠着
+   两段不同文字，比如
+
+     「ui dump 找不到 composer（可能 App 在后台，或者 UI 状态不对）」
+     「确认前端输入框用的是 textarea 还是可编辑层」
+
+   两行**共用同一段竖直空间**，笔画互相穿插，完全读不出内容。
+
+   根因：思考正文是流式追加的（每个 reasoning-delta 往同一个容器里塞文字），
+   而官方那个 span 的行高是**继承来的 line-height: normal**，配合我们为了
+   修复 67 加的 overflow-wrap: anywhere —— 后者允许在**任意字符间断行**，
+   于是浏览器在每次 delta 到达时都要重算行数。流式高频重排时，容器高度更新
+   落后于文字更新一帧，两段文字就短暂地占同一行位置。实测这类「高度没跟上
+   内容」在 Chromium 上表现为**持续**的重叠（不是一闪而过），因为
+   anywhere 让每行宽度都变得不可预测。
+
+   修法：给思考正文一个**显式行高**（不再依赖继承），并强制
+   display: block + contain: layout —— 后者让容器成为独立布局单元，
+   高度变化不会与父级的重排互相干扰。这治的是「高度跟不上」这个根，
+   而不是把文字藏起来。
+
+   ⚠️ 用 [data-chat-group-part="reasoning"] 这个**语义属性**定位，不用
+      官方构建期哈希类名 —— 后者每次官方升级都会变（见修复 67 的警告）。
+   ⚠️ 行高取 1.6：中文正文的常规值，也是官方正文在用的一档，视觉一致。 */
+[data-mobile] [data-chat-group-part="reasoning"] ._text_1rdzk_17,
+[data-mobile] [data-chat-group-part="reasoning"] [class*="_text_"] {
+  line-height: 1.6 !important;
+  display: block !important;
+  contain: layout !important;
+}
+
 /* ══ 修复 71：整页能横向滚 114px，点一下「更多操作」页面就左偏 ══════════
    现象（真机复现，两次）：点右上角「⋯」打开菜单后，整个界面**左移 114px** ——
    标题栏按钮从 x=294 跑到 x=180，输入框、发送键、遥测栏一起跟着跑。
@@ -8481,6 +8514,107 @@ window.__ModuleLoader__.load({
 			};
 		}
 
+		/* ══ 修复 78：contenteditable 里「点中间落行尾」—— 亲手校正光标 ══
+
+		   背景：0.1.5 起官方把输入框从 "<textarea>" 换成了 **contenteditable div**
+		   （".uV2eYG_input[data-composer-input][role=textbox]"，见修复 61 的注释）。
+		   textarea 的光标定位由内核直接映射「像素 → 字符偏移」，很准；而
+		   contenteditable 需要内核先把视口坐标落到**文本行内的字形**上，这一步
+		   Android WebView 做得相当差：
+
+		     · 点在文字中间，光标却跳到**行尾**（最常见）
+		     · 点在第二行，光标留在第一行末尾
+		     · 有时干脆不动
+
+		   用户反馈原话：「这个 app 输入框里没法通过点击选中文字中间的位置」。
+
+		   这是 WebView 的固有缺陷（不是本 App 写错），但**可以自己算**：
+		   "{@link caretRangeFromPoint}" 能直接把视口坐标换成 DOM Range，
+		   再由 Range 定出光标。Chromium 从 76 起就同时支持标准的
+		   "caretPositionFromPoint" 和带 "-webkit-" 前缀的旧名，两个都试。
+
+		   ## 为什么必须放在 "click" 而不是 "touchstart"
+
+		   用户可能是在**长按选词**、也可能是**滑动**。若在 touchstart 就强行
+		   落光标，长按选择会被打断、滑动会变成误点。放在 "click" 上，
+		   浏览器已经判定「这是一次点击（没有拖拽）」—— 语义正好。
+
+		   ## 为什么只在「落点与内核算出来的位置不一致」时才动手
+
+		   内核大多数情况下是对的，无脑覆盖会破坏：
+		     · 输入法组字中的光标（组字期间动 selection 会丢字）
+		     · 用户按住 shift/外接键盘的扩选
+		     · 双击选词、三击选段
+
+		   所以先读出现有 selection，只有「这是空选区（光标，不是选区）」且
+		   「算出来的落点明显不同」才修正。偏差容差用 1 个字符。
+
+		   ⚠️ **不动 "contenteditable" 之外的元素**：普通 input/textarea 内核
+		     定位是准的，插手反而出错。
+		   ⚠️ 全程 try/catch：光标是锦上添花，任何异常都不能影响输入。 */
+
+		function setupCaretFix() {
+			if (!mpIsMobile()) return () => {}; // 修复 40：仅移动端（必须返回空清理函数）
+
+			/** 把视口坐标换成 Range；拿不到返回 null。 */
+			function rangeFromPoint(x, y) {
+				try {
+					// 标准名（Chromium 128+ 起是标准）与旧前缀名都试。
+					if (typeof document.caretPositionFromPoint === "function") {
+						const pos = document.caretPositionFromPoint(x, y);
+						if (pos && pos.offsetNode) {
+							const r = document.createRange();
+							r.setStart(pos.offsetNode, pos.offset);
+							r.collapse(true);
+							return r;
+						}
+					}
+					if (typeof document.caretRangeFromPoint === "function") {
+						const r = document.caretRangeFromPoint(x, y);
+						if (r) return r;
+					}
+				} catch (e) { /* 老内核不支持就算了 */ }
+				return null;
+			}
+
+			const onClick = (e) => {
+				try {
+					// 只在「真正的点击」上动手：键盘修饰键一律让给官方（扩选/选段）。
+					if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+					// 输入法组字中不动 selection，否则会丢字。
+					if (e.isComposing) return;
+
+					const t = e.target;
+					if (!t || !t.isContentEditable) return;
+					// 只认 composer 输入区，别去动对话正文（那里不需要打字光标）。
+					if (!t.closest || !t.closest("[data-composer-input], .uV2eYG_root")) return;
+
+					const sel = window.getSelection && window.getSelection();
+					if (!sel || sel.rangeCount === 0) return;
+					// 已经有选区（不是光标）⇒ 用户可能在选字，别抢。
+					if (!sel.isCollapsed) return;
+
+					const want = rangeFromPoint(e.clientX, e.clientY);
+					if (!want) return;
+					// 落点必须在同一个编辑区里，否则说明算到了别处（例如浮层）。
+					if (!t.contains(want.startContainer) && want.startContainer !== t) return;
+
+					// 与内核算出来的位置比对：同一个节点且偏移差 ≤1 就不动。
+					const cur = sel.getRangeAt(0);
+					if (cur.startContainer === want.startContainer &&
+						Math.abs(cur.startOffset - want.startOffset) <= 1) {
+						return;
+					}
+
+					sel.removeAllRanges();
+					sel.addRange(want);
+				} catch (err) { /* 光标修正失败绝不影响输入 */ }
+			};
+
+			document.addEventListener("click", onClick, true);
+			return () => document.removeEventListener("click", onClick, true);
+		}
+
 		/* ══ 修复 68：凭据输入框改用普通键盘（移动端）══
 
 		   背景：官方把「API key / 凭据」输入框渲染成 "<input type="password">"：
@@ -9492,6 +9626,7 @@ window.__ModuleLoader__.load({
 			const disposeKeepFocusGuard = setupKeepFocusGuard();
 			const disposeEnterAsNewline = setupEnterAsNewline();   /* 修复 67 */
 			const disposePlainKey = setupPlainKeyboardForCredentials();   /* 修复 68 */
+			const disposeCaretFix = setupCaretFix();   /* 修复 78 */
 			// 初始一轮
 			document.querySelectorAll(".xzv4MW_timeEnd").forEach(trimMeta);
 			processStatsLine();
@@ -9555,6 +9690,7 @@ window.__ModuleLoader__.load({
 				disposeKeepFocusGuard();
 				disposeEnterAsNewline();   /* 修复 67 */
 				disposePlainKey();   /* 修复 68 */
+				disposeCaretFix();   /* 修复 78 */
 				document.removeEventListener("click", onPanelRowClick, true);   /* 修复 66 */
 			};
 		}

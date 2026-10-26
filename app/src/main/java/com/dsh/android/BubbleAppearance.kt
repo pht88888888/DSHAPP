@@ -58,7 +58,7 @@ import kotlin.math.roundToInt
  * | `size` | int(dp) | 球的**边长**，24~320。方形画布时它是宽，也是高 |
  * | `boxWidth` | int(dp) | **画布宽**，0 = 跟随 `size`（正方形）。16~400 |
  * | `boxHeight` | int(dp) | **画布高**，0 = 跟随 `size`（正方形）。16~400 |
- * | `showDot` | bool | 是否显示右下角状态点。默认 **false**（不显示） |
+ * | `showDot` | bool | **已废弃**，恒不显示。状态改用头顶消息气泡表达 |
  * | `cornerRadius` | int(dp) | `rounded` 形状的圆角 |
  * | `opacity` | float | **整体**不透明度 0.05~1.0 |
  * | `bgOpacity` | float | **只压背景层** 0~1（0 = 背景全透明，露出下层应用） |
@@ -126,10 +126,24 @@ data class BubbleAppearance(
     /** **画布高**，dp。0 = 自动。语义见 [boxWidth]。 */
     val boxHeight: Int = 0,
     /**
-     * 是否显示右下角状态点。
+     * 是否显示状态点。
      *
-     * ⚠️ 默认 **false**：那个绿点压在宠物形象上，与桌面宠物的观感冲突。
-     *   留这个开关只是给"就想要状态指示"的人。
+     * ⚠️ **已废弃，恒为 false。**
+     *
+     * 原来这个点画在球右下角（[FloatingBubble] 的 `bubbleDot`）和贴边薄片
+     * 正中（`edgeDot`），用来表示「AI 正在干活 / 空闲」。真机反馈的问题：
+     *
+     *  · 位置：贴边薄片那个点 `layout_gravity="center"`，正好压在探头人物
+     *    的脸上；球上的点也随 `size * 0.25` 放大，球一大就变成压在角色身上
+     *    的大白圈（用户截图反馈「桌宠状态点显示位置 bug」）。
+     *  · 表达力：空心环/实心点的信息量远不如一句话。
+     *
+     * 现在改成**只用头顶的消息气泡**表达状态（[FloatingBubble.showStatusBubble]）：
+     * AI 干完活会推一句话出来，用户不点就一直在，点一下还能展开面板。
+     * 这比一个会挡脸的小圆点既清楚又不碍事。
+     *
+     * 字段保留只为**配置兼容**（旧配置里写 `showDot: true` 不再报错，但不再
+     * 有任何视觉效果），不要再用它控制显示。
      */
     val showDot: Boolean = false,
     val cornerRadius: Int = 16,

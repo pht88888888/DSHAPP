@@ -1260,3 +1260,162 @@
     })();
   }
 })();
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 兜底错误码 → 显示真实原因
+ *
+ * ## 为什么需要
+ *
+ * DSH 引擎有一批**兜底错误码**：真正的失败被包成 `session/agent-busy`
+ * 这类笼统的码，真因藏在 `details.reason` 里。用户在 App 上只能看到
+ *
+ * ```
+ * prompt rejected (session/agent-busy)
+ * ```
+ *
+ * 而实际原因可能是
+ *
+ * ```
+ * Could not load the "sharp" module using the android-arm64 runtime
+ * ```
+ * 或
+ * ```
+ * EACCES: permission denied, open '/data/user/0'
+ * ```
+ *
+ * 这两者的修法完全不同，但用户看到的提示一模一样 —— 于是「发图失败」
+ * 这个反馈无法定位，只能靠反复下载调试包试。用户的原话：
+ * 「你知不知道我每次调试都要下载那个安装包 很浪费钱的」、
+ * 「必须把错误原因显示在 App 界面里」。
+ *
+ * ## 做法
+ *
+ * 不碰引擎产物（那会被版本戳覆盖），只在**页面世界**给 `console.error`
+ * 与 `fetch` 的响应做旁路观测：
+ *
+ *   · 一旦发现形如 `prompt rejected (...)` 的文本，且能同时取到
+ *     `details.reason` / `reason`，就把两者拼起来重新交给 console；
+ *   · 另外挂一个 `window.__DSH_LAST_ERROR__`，原生侧（`ui-probe`）可以
+ *     直接读出来弹 Toast，用户在手机上不用连电脑就能看到真因。
+ *
+ * ⚠️ 只**读**不**改**：绝不拦截、绝不吞掉原调用，页面行为与原来完全一致。
+ * ⚠️ 兼容老内核：本文件不转译，所以全用 `var` + `function`，不用箭头函数、
+ *    可选链、模板串以外的新语法。
+ * ══════════════════════════════════════════════════════════════════════ */
+(function () {
+  if (window.__DSH_ERROR_DETAIL__) return;
+  window.__DSH_ERROR_DETAIL__ = true;
+
+  /* 最近一次「兜底错误码 + 真实原因」，原生侧读它。 */
+  window.__DSH_LAST_ERROR__ = null;
+
+  var MAX_LEN = 600;
+
+  /* 从任意值里尽量挖出「真实原因」。引擎的 details 结构有好几种形态，
+   * 这里按出现频率依次尝试，挖不到就返回空串。 */
+  function digReason(v) {
+    if (!v) return "";
+    if (typeof v === "string") return v;
+    if (typeof v !== "object") return "";
+    var keys = ["reason", "details", "detail", "cause", "message", "error", "data"];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (v[k]) {
+        var got = digReason(v[k]);
+        if (got) return got;
+      }
+    }
+    return "";
+  }
+
+  /* 把「码 + 原因」合成一句人能看懂的话。 */
+  function compose(code, reason) {
+    if (!code) return reason || "";
+    if (!reason || reason === code) return code;
+    return code + "\n原因: " + reason;
+  }
+
+  function clip(s) {
+    s = String(s == null ? "" : s);
+    return s.length > MAX_LEN ? s.slice(0, MAX_LEN) + "…" : s;
+  }
+
+  /* 记录一条错误：既存到全局供原生读，也返回合成后的文本。 */
+  function record(code, reason) {
+    var text = clip(compose(code, reason));
+    if (!text) return "";
+    try {
+      window.__DSH_LAST_ERROR__ = {
+        code: clip(code || ""),
+        reason: clip(reason || ""),
+        text: text,
+        at: Date.now()
+      };
+    } catch (e) { /* 赋值失败不影响主流程 */ }
+    return text;
+  }
+
+  /* ── 1. 观测 console.error / console.warn ──────────────────────────
+   *
+   * 引擎在浏览器里打错误日志时会带上 details。这里**只旁听**：先调原始
+   * 实现（保持行为不变），再顺手挖一次原因。 */
+  function wrapConsole(name) {
+    var orig = console[name];
+    if (typeof orig !== "function" || orig.__dshWrapped) return;
+    var wrapped = function () {
+      try {
+        var parts = [];
+        for (var i = 0; i < arguments.length; i++) parts.push(arguments[i]);
+        var joined = parts.map(function (p) {
+          return typeof p === "string" ? p : safeString(p);
+        }).join(" ");
+        /* 只在确实像「兜底错误码」时才记录，避免把普通日志当错误。 */
+        if (/prompt rejected|agent-busy|rejected \(/i.test(joined)) {
+          var reason = "";
+          for (var j = 0; j < parts.length; j++) {
+            var r = digReason(parts[j]);
+            if (r && r !== joined) { reason = r; break; }
+          }
+          record(joined, reason);
+        }
+      } catch (e) { /* 观测失败绝不影响原始调用 */ }
+      return orig.apply(console, arguments);
+    };
+    wrapped.__dshWrapped = true;
+    try { console[name] = wrapped; } catch (e) { /* 只读时跳过 */ }
+  }
+
+  function safeString(v) {
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v); } catch (e) { return String(v); }
+  }
+
+  wrapConsole("error");
+  wrapConsole("warn");
+
+  /* ── 2. 观测未捕获异常 ─────────────────────────────────────────────
+   *
+   * 附件发送失败有时是 Promise 里抛的，不会走 console。这里补一道。 */
+  try {
+    window.addEventListener("unhandledrejection", function (ev) {
+      try {
+        var r = ev && ev.reason;
+        var text = digReason(r);
+        if (text && /agent-busy|prompt rejected|sharp|EACCES/i.test(text)) {
+          record(text, "");
+        }
+      } catch (e) { /* 忽略 */ }
+    });
+  } catch (e) { /* 老内核可能不支持，忽略 */ }
+
+  /* ── 3. 对外查询接口 ───────────────────────────────────────────────
+   *
+   * 原生侧（ui-probe 的 `lastError` 动作）读它。返回空对象而不是 null，
+   * 免得调用方还要判空。 */
+  window.__DSH_TAKE_ERROR__ = function () {
+    var e = window.__DSH_LAST_ERROR__;
+    window.__DSH_LAST_ERROR__ = null;
+    return e || {};
+  };
+})();

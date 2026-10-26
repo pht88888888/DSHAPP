@@ -1776,17 +1776,12 @@ class FloatingBubble(private val context: Context) {
             //   `android:elevation="8dp"`。把 elevation 与 `bgOpacity` 绑在一起，
             //   背景全透明时就没有投影。
             c.elevation = if (appearance.bgOpacity > 0f) ELEVATION_DP * density else 0f
-            // 状态点跟着球缩放：球小到 24dp 时 14dp 的点会占掉一大半。
-            // ⚠️ 默认 `showDot = false` —— 那个绿点压在宠物形象上很碍眼。
-            dotView?.let { d ->
-                d.visibility = if (appearance.showDot) View.VISIBLE else View.GONE
-                val dotPx = (appearance.size * 0.25f).roundToInt().coerceIn(8, 18)
-                (d.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-                    lp.width = dp(dotPx)
-                    lp.height = dp(dotPx)
-                    d.layoutParams = lp
-                }
-            }
+            // ⚠️ **状态点已下线**，恒隐藏（见 [BubbleAppearance.showDot] 的注释）。
+            //
+            // 原来它跟着球缩放（`size * 0.25`，8~18dp），球一大就变成压在
+            // 角色身上的一圈白边灰环 —— 用户截图反馈「桌宠状态点显示位置 bug」。
+            // 状态改由头顶消息气泡表达，比一个挡脸的小圆点清楚得多。
+            dotView?.let { d -> d.visibility = View.GONE }
         }
 
         // ── 内容层：内置头像 / 自定义图片 / 动作帧集 / 精灵图 ───────────
@@ -1823,12 +1818,12 @@ class FloatingBubble(private val context: Context) {
                 e.elevation = dp(8).toFloat()
             }
         }
-        // ⚠️ 贴边态的状态点**跟着 `showDot` 走**，与球上那个点同一套开关。
+        // ⚠️ **贴边态的状态点已下线**，恒隐藏（同 [BubbleAppearance.showDot]）。
         //
-        //   原实现让它无条件可见，而它 `layout_gravity="center"` 正好压在探头
-        //   人物的脸上 —— 真机反馈「那个圆圈挡到角色了」。
-        //   显示图片时尤其碍眼：图片本身已经表达了形象，再叠一个灰点没有信息量。
-        edgeDot?.visibility = if (appearance.showDot) View.VISIBLE else View.GONE
+        //   它 `layout_gravity="center"`，正好压在探头人物的脸上 —— 真机反馈
+        //   「那个圆圈挡到角色了」。显示图片时尤其碍眼：图片本身已经表达了
+        //   形象，再叠一个圈没有信息量。
+        edgeDot?.visibility = View.GONE
         applyEdgeImage()
 
         // ── 整体不透明度（与两个分层透明度相乘）─────────────────────────
@@ -4624,10 +4619,8 @@ class FloatingBubble(private val context: Context) {
         try {
             paintDot(dotView, status.running)
             paintDot(panelDot, status.running, small = true)
-            // ⚠️ 贴边态的状态点**默认不显示**（见 [applyEdgeImage] 里的可见性）。
-            //   它居中压在探头人物脸上，真机反馈「挡到角色了」。
-            //   只有在用户显式 `showDot: true` 时才画。
-            if (appearance.showDot) paintDot(edgeDot, status.running, small = true)
+            // 状态点已下线（见 [BubbleAppearance.showDot]），不再绘制。
+            // 状态改由头顶消息气泡表达 —— AI 干完活推一句话，比小圆点清楚。
             refreshStatusBubble(status)
 
             // 「停止」只在 AI 真在跑时出现。常驻的话用户会去点它 ——

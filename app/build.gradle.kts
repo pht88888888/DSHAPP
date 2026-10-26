@@ -32,7 +32,9 @@ android {
         // 全部包（node / bash / dpkg / python）都装在 filesDir 下的 $PREFIX 里，
         // 一升到 29 就会全线 Permission denied。Termux 官方 App 同样停在 28。
         targetSdk = 28
-        versionCode = 60
+        // 62（本次）：桌宠状态点隐藏（改由头顶气泡表达）+ 兜底错误码显示真因
+        // + 输入框点击定位光标 + 思考正文行高重叠 + 导出补上附件目录。
+        versionCode = 62
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
