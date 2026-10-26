@@ -1957,6 +1957,32 @@ class MainActivity : AppCompatActivity() {
             }.start()
         }
 
+        /**
+         * ⋯ 菜单「刷新」—— 安全重载界面。
+         *
+         * ⚠️⚠️ 页面侧**绝不能**用 `location.reload()`：整页重载请求的是 `./`，
+         *   不会再带启动时那条 `?token=`，于是 API / WebSocket 全部 401，
+         *   用户看到「连接异常」、会话列表空、回 Hero 页，**只能重启 App**。
+         *   正确做法是重载 `lastLoadedUrl`（带 token 的原始地址），
+         *   即 [com.dsh.android.web.WebHost.reload]。
+         *
+         * ⚠️ 走 [reloadWithRetry] 而不是直接 `web.reload()`：这条链路已经带上了
+         *   「重置首帧记忆 → 重载 → 等新首帧 → 失败再试一次」的完整判据
+         *   （见 [WebHost.resetFirstFrame] 的 KDoc）。绕过它会让「刷新后白屏」
+         *   重新变成不可观测的静默失败。
+         * ⚠️ 运行在 WebView 的 JS 线程上，必须切主线程 —— `reload()` 会碰 View。
+         */
+        override fun reloadWebUi() {
+            Log.i(DshApplication.TAG, "页面菜单请求刷新界面（安全重载）")
+            runOnUiThread {
+                if (rendererGaveUp) {
+                    Log.i(DshApplication.TAG, "已停止自动恢复，忽略本次刷新请求")
+                    return@runOnUiThread
+                }
+                reloadWithRetry(attempt = 1)
+            }
+        }
+
         // ══ 悬浮气泡：设置页的三个接口 ══════════════════════════════════
         //
         // 走 JS 桥而不是宿主半的 HTTP 路由：开关状态是**原生**的事实（SharedPreferences

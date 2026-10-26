@@ -383,6 +383,9 @@ const BRIDGE_INSTALLER_SOURCE = `(function (post, getRoot, getBubble, getPairing
     onUiReady: function () { post('onUiReady', []); },
     reportWebError: function (m) { post('reportWebError', [String(m)]); },
     switchToTcpMode: function () { post('switchToTcpMode', []); },
+    // ⋯ 菜单「刷新」的安全重载。⚠️ 页面侧绝不能自己 location.reload() ——
+    //   整页重载不带启动时那条 token ⇒ 全站 401（见 PageBridge.reloadWebUi 的 KDoc）。
+    reloadWebUi: function () { post('reloadWebUi', []); },
     bubbleState: function () { return getBubble(); },
     bubbleSetEnabled: function (enabled) { post('bubbleSetEnabled', [!!enabled]); },
     bubbleRequestOverlay: function () { post('bubbleRequestOverlay', []); },

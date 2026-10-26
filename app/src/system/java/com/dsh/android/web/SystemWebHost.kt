@@ -612,6 +612,11 @@ private class SystemPageBridge(private val impl: PageBridge) {
     @android.webkit.JavascriptInterface
     fun switchToTcpMode() = impl.switchToTcpMode()
 
+    // ⋯ 菜单「刷新」的安全重载（见 PageBridge.reloadWebUi 的 KDoc：
+    // 页面侧 location.reload() 会丢启动 token ⇒ 401）。
+    @android.webkit.JavascriptInterface
+    fun reloadWebUi() = impl.reloadWebUi()
+
     @android.webkit.JavascriptInterface
     fun bubbleState(): String = impl.bubbleState()
 

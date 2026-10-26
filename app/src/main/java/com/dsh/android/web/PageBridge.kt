@@ -66,6 +66,27 @@ interface PageBridge {
     /** 设置页「切到固定端口」：把 adbd 切到 `adb tcpip 5555`（阻塞，需后台线程）。 */
     fun switchToTcpMode()
 
+    /**
+     * 页面请求「重载界面」—— ⋯ 菜单里的「刷新」。
+     *
+     * ## 为什么不能直接 `location.reload()`
+     *
+     * 应用启动时内核加载的是 `http://127.0.0.1:<port>/?token=<一次性 token>`，
+     * 引擎对该地址回 **303 + `Set-Cookie`** 完成 token 交换。而**整页重载请求的是
+     * `./`，不会再带那个 token** —— 于是 API / WebSocket 全部 401，前端表现为
+     * 「连接异常，刷新重试」、会话列表空、回 Hero 页。只有重启 App 才能恢复
+     * （重启会重新带 token 打开）。
+     *
+     * 原生侧的 [WebHost.reload] 重载的是 `lastLoadedUrl` —— **就是那条带 token 的
+     * 原始地址**，所以走它不会丢鉴权。这就是本方法存在的理由。
+     *
+     * ⚠️ 与 [WebHost.reload] 同语义：不改变 `currentUrl`（仍是「最近一次发起的
+     *   URL」），所以 `observeEngine` 那套去重判断不受影响。
+     * ⚠️ 重载前页面应当先把当前会话落盘（见 mobile-ui-plugin 的
+     *   `mpPersistCurrentSession`），否则重载后会落到别的会话。
+     */
+    fun reloadWebUi()
+
     /** 读悬浮气泡状态。返回 JSON：`{"enabled":bool,"granted":bool, …物理开关…}`。 */
     fun bubbleState(): String
 

@@ -1302,6 +1302,66 @@ window.__ModuleLoader__.load({
  *
  * ⚠️ 本注释位于 CSS 模板字符串内部：**禁止出现反引号**，那会提前终止字符串。
  *    上面提到的属性名一律不加 markdown 反引号，就是这个原因。 */
+
+/* ══ 修复 80：过程行标题「一直抽搐」—— 官方单行契约被修复 67 顺手打掉了 ══
+
+   症状（用户反馈）：模型流式思考时，过程组标题（形如
+   「正在分析请求 · <流式思考摘要>」）在 1 行 / 2 行 / 3 行之间快速变化，
+   标题按钮高度在 19 → 38 → 57px 之间反复跳，下面整块内容跟着上下弹动；
+   标题上的扫光每 1.5s 循环一次，进一步放大抖动感。
+
+   根因（**不是**修复 67 想治的东西，是被它误伤的）：
+   官方 TextShimmer 组件（ui-primitives/src/TextShimmer.module.css）里
+       ._root_1rdzk_1 { display: inline-grid; width: max-content; }
+   「width: max-content」是标题**永远单行**的唯一保证，超宽部分交给
+   外层的 max-width:100% 截断。
+
+   而修复 67 为了治「思考正文不换行把整页推出屏幕」，把这个**同一个**
+   ._root_1rdzk_1 无差别改成了 width: auto。它同时命中思考正文容器与
+   TextShimmer 根节点，于是标题失去单行保证、按可用宽度换行；
+   标题内容又是**流式**的，行数不断变化 ⇒ 容器高度不断变化 ⇒ 整块上下弹。
+   ._decoration_1rdzk_25（扫光是 inset:0 的绝对定位层）跟着标题高度一起变，
+   在 2~3 行上反复扫，视觉上更抖。
+
+   修法：**只在过程行标题内部**把 max-content 还回去，思考正文完全不动 ——
+   两边的诉求不冲突，冲突的是修复 67 用了同一个选择器去满足它们。
+
+   ⚠️ 用 .O_Ebla_title 定位（官方过程组标题按钮），思考正文在
+      [data-chat-group-part="reasoning"] 下、不在 .O_Ebla_title 里，互不影响。
+   ⚠️ 全部是构建期哈希类名，官方升级可能失效；失效后果只是**回到抽搐**，
+      不会白屏。失效时按上面注释的语义重新对齐选择器即可。 */
+[data-mobile] .O_Ebla_title {
+  overflow: hidden !important;
+  max-width: 100% !important;
+}
+[data-mobile] .O_Ebla_title ._root_1rdzk_1 {
+  width: max-content !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+[data-mobile] .O_Ebla_title ._content_1rdzk_11 {
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+[data-mobile] .O_Ebla_title ._text_1rdzk_17 {
+  display: block !important;
+  max-width: 100% !important;
+  white-space: nowrap !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+[data-mobile] .O_Ebla_title ._decoration_1rdzk_25 {
+  overflow: hidden !important;
+}
+/* 官方扫光是 steps(48) 的离散跳变，窄屏上约等于每秒 32 次跳。
+   改成线性插值，观感平滑很多（不影响「一明一暗」的扫光本身）。 */
+[data-mobile] ._sweep_1rdzk_34,
+[data-mobile] ._highlight_1rdzk_54 {
+  animation-timing-function: linear !important;
+}
 `;
 
 		function injectStyles() {
@@ -1546,9 +1606,23 @@ window.__ModuleLoader__.load({
 				document.querySelector("[data-composer-stats] .bOPqQW_root") ||
 				document.querySelector(".bOPqQW_root");
 			if (!root) return;
-			// 先按语义属性找；找不到再退回旧的 label 选择器。
-			let labels = [...root.querySelectorAll("[data-composer-stat]")];
-			if (!labels.length) labels = [...root.querySelectorAll(".bOPqQW_label")];
+			// ⚠️⚠️ **修复 80：必须取到最内层的 label，绝不能停在 anchor 上。**
+			//
+			// 官方结构（真机实测）：
+			//   .uV2eYG_dock > span[data-composer-stat] > button.bOPqQW_pill > span.bOPqQW_label
+			//                  └────── anchor ──────┘  └── pill ──┘  └── 真正的文字 ──┘
+			//
+			// 旧实现直接拿 `[data-composer-stat]`（= anchor）当 label，随后
+			// `el.textContent = next` 会**把内部整个 button + span 删掉**，只剩一段裸文本。
+			// 裸文本不再继承官方 pill 的 13px 字号/内边距/圆角，而是继承 body 的 16px
+			// —— 症状就是「底部统计条字号突然变大，撑满整个底栏」。
+			//
+			// 所以先按语义属性拿到 anchor，再**逐个下钻到最内层 label**；
+			// 只有下钻不到（官方又改了结构）时才退回 anchor 本身，保证降档仍然发生。
+			const anchors = [...root.querySelectorAll("[data-composer-stat]")];
+			let labels = anchors.length
+				? anchors.map((el) => el.querySelector(".bOPqQW_label") || el)
+				: [...root.querySelectorAll(".bOPqQW_label")];
 			if (!labels.length) return;
 
 			// ① 原文快照：只有「当前文本不是我们上次写的那一份」时才认为 React 更新了原文。
@@ -3581,6 +3655,63 @@ window.__ModuleLoader__.load({
 			// 只把「刷新」按官方同样的 DOM/类名插进去（观感、间距、hover 全一致）。
 			// ⚠️ 幂等：官方每次打开菜单会重建 DOM，故按 data-mp-item 去重；
 			//    同时用 observer 兜住「菜单已开时 React 又重渲染」的情况。
+
+			/**
+			 * 安全重载界面（修复 80）。
+			 *
+			 * ⚠️⚠️ **不能用 location.reload()。**
+			 *
+			 * 应用启动时内核加载的是 `http://127.0.0.1:<port>/?token=<一次性 token>`，
+			 * 引擎对该地址回 303 + Set-Cookie 完成 token 交换。而**整页重载请求的是
+			 * `./`，不会再带那个 token**，于是 API / WebSocket 全部 401 ——
+			 * 用户看到「连接异常，刷新重试」、会话列表空、回 Hero 页，
+			 * **只有重启 App 才能恢复**（重启会重新带 token 打开）。
+			 *
+			 * 所以改走原生桥 `DSHAndroid.reloadWebUi()`：原生侧重载的是
+			 * `lastLoadedUrl`（就是那条**带 token 的原始地址**），不会丢鉴权。
+			 *
+			 * ⚠️ 重载前先把当前会话写回官方持久化键 `dsh.sessions.current`，
+			 *   否则重载后官方的启动恢复会落到「最近工作区」，表现为**会话跳槽**。
+			 * ⚠️ 桥不可用（桌面端 / gecko 未握手）时**什么都不做并明确告知** ——
+			 *   不做 `location.reload()` 兜底：那正是要修掉的那个 bug，
+			 *   「刷新后必须重启 App」比「刷新没反应」糟得多。
+			 */
+			function mpReloadUi() {
+				mpPersistCurrentSession();
+				var bridge = window.DSHAndroid;
+				if (!bridge || typeof bridge.reloadWebUi !== "function") {
+					window.alert("当前环境没有原生重载入口（DSHAndroid 桥不可用），无法刷新界面。\n请直接重启 App —— 不要用下拉或手势刷新，那会丢登录态。");
+					return;
+				}
+				try {
+					bridge.reloadWebUi();
+				} catch (e) {
+					window.alert("刷新失败：" + (e && e.message ? e.message : e) + "\n请直接重启 App。");
+				}
+			}
+
+			/**
+			 * 把「当前主会话 id」写回官方持久化键 `dsh.sessions.current`。
+			 *
+			 * ⚠️ 官方自己也会写这个键，但写时机是**切换会话时**；重载前若用户
+			 *   刚进来还没切换过，键里可能是上一个会话 —— 重载后就跳槽了。
+			 * ⚠️ 读不到当前会话（`uiSession` 服务还没就绪）时**不动原值**，
+			 *   保留官方最后写的那一份，比写一个空调过去安全。
+			 */
+			function mpPersistCurrentSession() {
+				try {
+					var ui = mpCtx && typeof mpCtx.get === "function" ? mpCtx.get("uiSession") : null;
+					var id = ui && ui.current && ui.current.value && ui.current.value.key;
+					if (!id || typeof id !== "string") return;
+					var raw = localStorage.getItem("dsh.sessions.current");
+					var parsed = raw ? JSON.parse(raw) : {};
+					if (!parsed || typeof parsed !== "object") parsed = {};
+					if (parsed.sessionId === id) return;   // 已经是它 → 不写（避免无谓触发）
+					parsed.sessionId = id;
+					localStorage.setItem("dsh.sessions.current", JSON.stringify(parsed));
+				} catch (e) { /* 落盘失败不能阻断重载本身 */ }
+			}
+
 			function mpEnsureRefreshItem() {
 				if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
 				// ⚠️ 修复 28：只认顶栏 ⋯ 菜单。官方这套 Menu 是全站通用组件——
@@ -3602,7 +3733,7 @@ window.__ModuleLoader__.load({
 					'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
 					'<path d="M13.5 8a5.5 5.5 0 1 1-1.62-3.9M13.5 2.2v3.2h-3.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>' +
 					"</svg>",
-					() => { location.reload(); });
+					() => { mpReloadUi(); });
 			}
 
 			// 按「官方同款类名克隆」的方式往 ⋯ 菜单里插一项（观感/间距/hover 与官方一致）

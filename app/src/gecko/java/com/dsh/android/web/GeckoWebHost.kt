@@ -672,6 +672,9 @@ class GeckoWebHost(
                     "onUiReady" -> b.onUiReady()
                     "reportWebError" -> b.reportWebError(args.optString(0))
                     "switchToTcpMode" -> b.switchToTcpMode()
+                    // ⋯ 菜单「刷新」的安全重载（见 PageBridge.reloadWebUi 的 KDoc：
+                    // 页面侧 location.reload() 会丢启动 token ⇒ 401）。
+                    "reloadWebUi" -> b.reloadWebUi()
                     "bubbleSetEnabled" -> b.bubbleSetEnabled(args.optBoolean(0))
                     "bubbleRequestOverlay" -> b.bubbleRequestOverlay()
                     // AI 浏览器（官方右侧边栏的「AI 浏览器」面板）。

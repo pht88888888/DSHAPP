@@ -9654,8 +9654,32 @@ class EngineManager private constructor(private val context: Context) {
           *         Lexical 跟着同步。不碰它的内部 API。
           *      ③ 同时把修复 79 的根因注释改成诚实表述：原注释把推断写成了
           *         「实测」，而这一条**没有真机逐帧验证过**，会误导后来人。
+          * 1.0.0-105：用户反馈的《移动端 UI 修复报告》里三条**在当前源码中真实存在**
+          *      的缺陷（报告其余条目描述的是手机上手工打的补丁，源码里没有）。
+          *      ① 修复 80 —— 过程行标题「一直抽搐」。修复 67 为了治「思考正文不换行
+          *         把整页推出屏幕」，把官方 TextShimmer 的 `._root_1rdzk_1`
+          *         （`width: max-content`，标题单行的唯一保证）无差别改成了 `auto`。
+          *         流式标题因此按可用宽度换行，行数 1→2→3 反复变，容器高度跟着弹。
+          *         改为**只在 `.O_Ebla_title`（过程组标题）内部**把 max-content 还回去，
+          *         思考正文章节完全不动；顺带把扫光的 `steps(48)` 改成 `linear`。
+          *      ② 修复 80 —— 底部统计条字号突然变大。`processStatsLine` 原先直接取
+          *         `[data-composer-stat]`（anchor 层）当 label，`textContent` 赋值会
+          *         **删掉内部 button.bOPqQW_pill + span.bOPqQW_label**，只剩裸文本，
+          *         字号从官方 13px 变成继承 body 的 16px，撑满底栏。
+          *         改为先取下钻到 `.bOPqQW_label`，取不到才退回 anchor（保证降档仍触发）。
+          *      ③ 修复 80 —— 点「刷新」后 401、会话列表空、回首页。页面侧原来是
+          *         整页 `location.reload()`，而重载请求的是 `./`、不再带启动时那条
+          *         `?token=`，于是 API / WebSocket 全部 401，只能重启 App 恢复。
+          *         改为走原生桥新增的 `reloadWebUi()`：重载 `lastLoadedUrl`
+          *         （带 token 的原始地址），并复用 `reloadWithRetry` 那套
+          *         「重置首帧 → 重载 → 等新首帧 → 失败重试」判据。
+          *         刷新前先 `mpPersistCurrentSession()` 落盘当前会话，避免跳槽。
+          *      ⚠️ 本版**动了 Kotlin**（PageBridge / SystemWebHost / GeckoWebHost /
+          *         MainActivity / content.js 五处），不只是 client.js。
+          *      本常量仍必须 bump：不然设备上的 `.mobile_ui_version` 不变，
+          *      mobile-ui.zip 解包被整体跳过，三条修复一条都收不到。
           */
-        private const val MOBILE_UI_VERSION = "1.0.0-104"
+        private const val MOBILE_UI_VERSION = "1.0.0-105"
         private const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────
