@@ -592,17 +592,19 @@ data class BubbleAppearance(
         const val AVATAR_FILE = "bubble-avatar.bin"
 
         /**
-         * 自定义头像允许的最大像素数（宽×高）。
+         * 悬浮球这类小图（自定义头像 / 贴边图）允许的最大像素数（宽×高）。
          *
          * ⚠️ 这是**独立于体积闸**的一道防线，不能省。
-         *   上游 `MAX_AVATAR_BASE64`（700 KB）限的是 base64 文本长度，与解码后
-         *   的内存没有线性关系：一张 700 KB 的高压缩 PNG 完全可以解出
-         *   8000×8000，ARGB_8888 下就是 **256 MB** —— 低内存机直接 OOM。
+         *   上游的 `MAX_AVATAR_BASE64`(700 KB) / `MAX_EDGE_IMAGE_BASE64`(1.4 MB)
+         *   限的都是 base64 文本长度，与解码后内存没有线性关系：
+         *   一张 700 KB 的高压缩 PNG 完全可以解出 8000×8000，
+         *   ARGB_8888 下就是 **256 MB** —— 低内存机直接 OOM。
          *
-         * 取 16 MP ≈ 4096×4096：头像显示尺寸最大也就几十 dp，16 MP 已远超需要；
-         * 而 16 MP 在 ARGB_8888 下占 64 MB，是「还能解、再大就该拒」的边界。
+         * 取 16 MP ≈ 4096×4096：这类图显示尺寸最大也就几十到一百多 dp，
+         * 16 MP 已远超需要；而 16 MP 在 ARGB_8888 下占 64 MB，
+         * 是「还能解、再大就该拒」的边界。
          */
-        private const val MAX_AVATAR_PIXELS = 16_000_000L
+        private const val MAX_BUBBLE_IMAGE_PIXELS = 16_000_000L
 
         // ── 贴边态（拖出屏幕后那一条）───────────────────────────────────
 
@@ -1628,8 +1630,20 @@ data class BubbleAppearance(
                 Log.w(TAG, "悬浮球贴边图 base64 解码失败: ${t.message}")
                 return null
             }
-            if (BitmapFactory.decodeByteArray(bytes, 0, bytes.size) == null) {
-                Log.w(TAG, "悬浮球贴边图不是有效图片，已忽略")
+            // ⚠️ 同样**只解边界、不解像素** —— 与 [writeAvatar] 完全同构，理由见那边。
+            //   体积闸在上游（`normalizeEdgeImage` 用 MAX_EDGE_IMAGE_BASE64 = 1.4 MB），
+            //   而 1.4 MB 的高压缩 PNG 解成 ARGB_8888 一样能吃掉几百 MB。
+            val probe = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, probe)
+            if (probe.outWidth <= 0 || probe.outHeight <= 0) {
+                Log.w(TAG, "悬浮球贴边图不是有效图片（解不出尺寸），已忽略")
+                return null
+            }
+            if (probe.outWidth.toLong() * probe.outHeight > MAX_BUBBLE_IMAGE_PIXELS) {
+                Log.w(
+                    TAG,
+                    "悬浮球贴边图尺寸过大（${probe.outWidth}x${probe.outHeight}），已忽略",
+                )
                 return null
             }
             return try {
@@ -1708,7 +1722,7 @@ data class BubbleAppearance(
                 Log.w(TAG, "悬浮球自定义头像不是有效图片（解不出尺寸），已忽略")
                 return null
             }
-            if (probe.outWidth.toLong() * probe.outHeight > MAX_AVATAR_PIXELS) {
+            if (probe.outWidth.toLong() * probe.outHeight > MAX_BUBBLE_IMAGE_PIXELS) {
                 Log.w(
                     TAG,
                     "悬浮球自定义头像尺寸过大（${probe.outWidth}x${probe.outHeight}），已忽略",

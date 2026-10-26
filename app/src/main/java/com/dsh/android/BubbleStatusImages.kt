@@ -73,7 +73,7 @@ object BubbleStatusImages {
      * 取 16 MP ≈ 4096×4096：状态图显示尺寸通常不到 200 dp，16 MP 已经远超需要；
      * 而 ARGB_8888 下 16 MP 占 64 MB，是「还能解、但再大就该拒」的边界。
      */
-    private const val MAX_DECODE_PIXELS = 16_000_000L
+    private const val MAX_STATUS_IMAGE_PIXELS = 16_000_000L
 
     /**
      * 磁盘上保留的图片数量上限。
@@ -138,11 +138,11 @@ object BubbleStatusImages {
         }
         // 顺带挡住「能解出尺寸但大到离谱」的图 —— 显示时也必然 OOM。
         // 与 [load] 里 inSampleSize 的判据同源，但这里直接拒绝入库。
-        if (probe.outWidth.toLong() * probe.outHeight > MAX_DECODE_PIXELS) {
+        if (probe.outWidth.toLong() * probe.outHeight > MAX_STATUS_IMAGE_PIXELS) {
             Log.w(
                 TAG,
                 "状态图尺寸过大（${probe.outWidth}x${probe.outHeight} > " +
-                    "$MAX_DECODE_PIXELS 像素），已放弃",
+                    "$MAX_STATUS_IMAGE_PIXELS 像素），已放弃",
             )
             return null
         }
