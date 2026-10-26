@@ -523,6 +523,12 @@ object LogStore {
         val w = appWriter ?: return
         try {
             lock.withLock {
+                /*
+                 * ⚠️ **锁内必须再核一次**：锁外取到的 `w` 可能已经在本线程
+                 *    取到它之后、拿到锁之前，被 [flushAndClose] 关掉了。
+                 *    核一次引用有没有变，没变才写 —— 这样"取引用→写"是原子的。
+                 */
+                if (w !== appWriter) return
                 w.write(line)
                 w.write("\n")
                 w.flush()
@@ -719,6 +725,19 @@ object LogStore {
         if (w == null) return false
         return try {
             lock.withLock {
+                /*
+                 * ⚠️ **锁内必须再核一次**：这个 `w` 是调用方在锁外通过
+                 *    [engineWriterOf] / [webWriterOf] 取到的，而从"取到"到
+                 *    "拿到锁"之间，[flushAndClose] 可能已经把它 close 并置空了。
+                 *
+                 * 对着已关闭的流写会抛 IOException，被下面的 catch 静默吞掉 ——
+                 * 不会崩，但**这一行日志就悄悄丢了**，而调用方拿到的 `false`
+                 * 会被当成"缓冲区暂时写不进去"，没人知道真发生了什么。
+                 *
+                 * 核一次引用有没有变，变了就说明这条流已经作废，直接放弃这一行。
+                 * 与 [writeApp] 里同样的守卫保持一致。
+                 */
+                if (w !== engineWriter && w !== webWriter) return false
                 w.write(line)
                 w.write("\n")
                 // 异步档**攒着不 flush**：靠 BufferedWriter 自己的缓冲 + 阈值触发。
@@ -904,12 +923,33 @@ object LogStore {
                 engineWriter?.close()
                 webWriter?.flush()
                 webWriter?.close()
+                /*
+                 * ⚠️ **置空必须在锁内**，不能像原来那样放到锁外。
+                 *
+                 * [writeApp] 的写法是「锁外取引用 → 锁内写」：
+                 *
+                 *     val w = appWriter ?: return      // ← 锁外读
+                 *     lock.withLock { w.write(line) }  // ← 锁内写
+                 *
+                 * 如果置空在锁外，就会出现：writeApp 刚取到非空引用 w，
+                 * 本函数拿到锁把这条流 close 掉、释放锁、然后才置空 ——
+                 * 紧接着 writeApp 拿到锁，对着**已关闭的流**写。
+                 *
+                 * 那个 IOException 会被外层 catch 住、不会崩，但它会喂给
+                 * [noteFailure] 计"连续写入失败" —— 攒到 3 次就把日志落盘
+                 * 整个关掉（`appWriter` 永久为 null 直到冷却期）。也就是说
+                 * **一次正常的"清空日志/退出关闭"操作，可能连带把日志系统关死。**
+                 *
+                 * 移进锁内后，writeApp 的「取引用」与「写」之间不会再插入 close。
+                 */
+                appWriter = null
+                engineWriter = null
+                webWriter = null
             }
         } catch (_: Throwable) {
+            // close 过程中抛了也要保证引用归零，否则下次写会对着坏流写。
+            runCatching { lock.withLock { appWriter = null; engineWriter = null; webWriter = null } }
         }
-        appWriter = null
-        engineWriter = null
-        webWriter = null
     }
 
     // ── 崩溃路径专用的加锁入口 ────────────────────────────────────────────────
