@@ -2009,6 +2009,13 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     fun destroy() {
         for (tab in tabs.toList()) releaseTab(tab)
         tabs.clear()
+        // ⚠️ `releaseTab` 里也会清 `pendingFileCallback`，但那只在 **tabs 非空**时
+        //   才会被调到。如果此刻 tabs 恰好为空、而页面之前发起过一次文件选择还没
+        //   回结果，这个回调就会一直挂在 AiBrowserView 上 ——
+        //   它强引用着 WebView 侧的 ValueCallback 链路，属于典型的 Activity 泄漏。
+        //   所以销毁路径上必须**无条件**再清一次（对已清过的情况是幂等的）。
+        pendingFileCallback?.onReceiveValue(null)
+        pendingFileCallback = null
         pageHost.removeAllViews()
     }
 
