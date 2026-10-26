@@ -9,6 +9,7 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import com.dsh.android.R
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -149,12 +150,24 @@ object BackupDialog {
             action.text = context.getString(R.string.backup_working)
 
             Thread({
-                val out = UserDataExporter.export(context, UserDataExporter.Options(ids)) { p ->
-                    view.post { progress.progress = (p * 100).toInt() }
-                }
+                // ⚠️ 失败原因必须带出去。手机上看不到 logcat，「导出失败」四个字
+                //   等于什么都没说 —— 用户除了反复重试没有别的办法。
+                //   最常见的是空间不足（附件目录可能几个 GB）。
+                var failure: String? = null
+                val out = UserDataExporter.export(
+                    context,
+                    UserDataExporter.Options(ids),
+                    onProgress = { p ->
+                        view.post { progress.progress = (p * 100).toInt() }
+                    },
+                    onError = { why -> failure = why },
+                )
                 view.post {
                     running.set(false)
                     dialog.dismiss()
+                    if (out == null && failure != null) {
+                        Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
+                    }
                     onDone?.invoke(out)
                 }
             }, "dsh-backup-export").start()

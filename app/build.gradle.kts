@@ -32,9 +32,17 @@ android {
         // 全部包（node / bash / dpkg / python）都装在 filesDir 下的 $PREFIX 里，
         // 一升到 29 就会全线 Permission denied。Termux 官方 App 同样停在 28。
         targetSdk = 28
-        // 62（本次）：桌宠状态点隐藏（改由头顶气泡表达）+ 兜底错误码显示真因
+        // 62：桌宠状态点隐藏（改由头顶气泡表达）+ 兜底错误码显示真因
         // + 输入框点击定位光标 + 思考正文行高重叠 + 导出补上附件目录。
-        versionCode = 62
+        // ⚠️ 63（本次）**正式发行版**：0.4.1-debug → 0.4.1。
+        //   去掉 `-debug` 后缀意味着这一版会被当成正式发布对待（进夸克「当前最新版」），
+        //   与 33 那批「调试包显式带 -debug、不进夸克」的约定相反 —— 这是有意为之：
+        //   用户要求发一个正式发行版。
+        //   versionCode 从 62 → 63 而不是回到 0.4.0 的 31：
+        //   versionCode 必须单调递增，否则已装 62 的设备**装不上**这个包
+        //   （INSTALL_FAILED_VERSION_DOWNGRADE），而卸载重装会清掉整个
+        //   Termux 环境与 $DSH_HOME。版本名是给人看的，versionCode 是给系统看的。
+        versionCode = 63
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
@@ -255,7 +263,7 @@ android {
         //   已全部撤回（见 git 记录）。今后调试包不改前两位版本号、不进夸克。
         //   本次改动：删掉 0.4.0 的右边缘「浏览」把手（它挡住了右侧栏内容），
         //   入口只剩官方右侧边栏那一项。
-        versionName = "0.4.1-debug"
+        versionName = "0.4.1"
 
         // 只支持 arm64-v8a：内置的引擎资产与 Termux bootstrap 都是 arm64 架构
         ndk {

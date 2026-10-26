@@ -189,22 +189,6 @@
                     android:textColor="#8FA3C0"
                     android:textSize="12.5sp" />
 
-                <TextView
-                    android:id="@+id/overlayBrowser"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="10dp"
-                    android:background="@drawable/log_chip_bg"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:letterSpacing="0.06"
-                    android:paddingStart="18dp"
-                    android:paddingTop="9dp"
-                    android:paddingEnd="18dp"
-                    android:paddingBottom="9dp"
-                    android:text="@string/overlay_browser_entry"
-                    android:textColor="#8FA3C0"
-                    android:textSize="12.5sp" />
             </LinearLayout>
 
             <TextView

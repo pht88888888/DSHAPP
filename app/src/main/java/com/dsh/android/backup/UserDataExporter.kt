@@ -151,12 +151,17 @@ object UserDataExporter {
      *
      * @param onProgress 进度回调（0..1），在**调用线程**上调用 —— 调用方自己
      *   决定要不要 post 到主线程。
-     * @return 写出的 zip 文件；失败返回 null（原因见日志 TAG `UserDataExport`）。
+     * @param onError 失败原因回调，在**调用线程**上调用。传给人看的短句
+     *   （「存储空间不足」这类），调用方负责显示到界面上。
+     *   ⚠️ 手机上看不到 logcat，失败原因**必须能上屏**，否则用户只会看到
+     *   「导出失败」四个字，除了反复重试没有别的办法 —— 这正是以前的状态。
+     * @return 写出的 zip 文件；失败返回 null。
      */
     fun export(
         context: Context,
         options: Options,
         onProgress: ((Float) -> Unit)? = null,
+        onError: ((String) -> Unit)? = null,
     ): File? {
         val selected = ITEMS.filter { it.id in options.ids && File(context.filesDir, it.path).exists() }
         if (selected.isEmpty()) {
@@ -176,6 +181,10 @@ object UserDataExporter {
         val tmp = File(outDir, ".$name.part")
 
         return try {
+            // ⚠️ 进度分母。这里会**再遍历一遍**所有选中目录（`sizeOf` 要 stat
+            //   每个文件）。加入 `attachments/` 之后这一步可能上万次系统调用，
+            //   所以放后台线程（调用方本来就开了线程）。分母只影响进度条百分比，
+            //   拿不准时偏大一点无害（进度会慢一点到 100%），偏小则会超过 100%。
             val totalBytes = selected.sumOf { sizeOf(context, it).bytes }.coerceAtLeast(1)
             var written = 0L
 
@@ -233,7 +242,27 @@ object UserDataExporter {
         } catch (t: Throwable) {
             Log.w(TAG, "导出失败: ${t.message}", t)
             runCatching { tmp.delete() }
+            onError?.invoke(describeFailure(t))
             null
+        }
+    }
+
+    /**
+     * 把异常翻成人能看懂的一句话。
+     *
+     * 导出失败最常见的就是**空间不足**（附件目录可以有几个 GB），而
+     * `IOException: write failed: ENOSPC` 这种文本对用户毫无意义，
+     * 所以单独认出来，其它情况退回异常自身的描述。
+     */
+    private fun describeFailure(t: Throwable): String {
+        val msg = (t.message ?: "").lowercase()
+        return when {
+            msg.contains("enospc") || msg.contains("no space") ->
+                "存储空间不足，换个位置或清理后重试（图片与附件通常最占空间）"
+            msg.contains("eacces") || msg.contains("permission denied") ->
+                "没有写入权限，请在系统设置里允许本应用访问存储"
+            msg.contains("erofs") -> "目标位置是只读的"
+            else -> t.message?.take(120)?.let { "导出失败：$it" } ?: "导出失败（未知原因）"
         }
     }
 

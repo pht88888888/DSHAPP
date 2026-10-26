@@ -831,13 +831,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // AI 浏览器 —— **临时测试入口**，跑通后会移到官方侧栏。
-        // ⚠️ 打开后启动层还在，会挡住浏览器；所以打开的同时把启动层收掉。
-        //    （正式版由侧栏按钮触发，不存在这个问题。）
-        binding.overlayBrowser.setOnClickListener {
-            hideOverlay()
-            openAiBrowser()
-        }
+        // ⚠️ 启动层上的「AI 浏览器」按钮**已删除**（0.4.1 正式版）。
+        //   它原本只是侧栏入口跑通前的临时测试入口，样式与其它三个 chip 不齐
+        //   （文字折成两行），用户明确说「太丑了」。
+        //   入口现在只有官方右侧边栏那一项（见 `dsh-android-browser-pane`），
+        //   那条路径已验证可用，不需要这个兜底。
+        //   注：`openAiBrowser()` 本身**保留** —— 侧栏插件经 `PageBridge` 调它。
 
         // 降级态常驻横幅（不变量 I4）。**入口必须在 onCreate 就装好**，不能等到
         // 引擎就绪 —— 救援态恰恰可能在引擎起来之前用户就想退出（比如他确信
