@@ -91,6 +91,15 @@ object LogStore {
     /** 单文件上限。到了就轮转。 */
     private const val MAX_FILE_BYTES = 1L * 1024L * 1024L
 
+    /**
+     * `app.log` 因连续写失败被关掉后，隔多久允许重开一次。
+     *
+     * 60 秒的依据：那三次失败通常是同一个瞬时原因造成的（磁盘满、只读抖动），
+     * 一分钟足以让它过去；而一分钟只多一次尝试，完全不会回到「每行都抛异常」
+     * 的老问题上。取得太短（几秒）意义不大 —— 磁盘满不会几秒就好。
+     */
+    private const val APP_REOPEN_COOLDOWN_MS = 60_000L
+
     /** 轮转代数：`x.log` + `x.log.1`，更老的不留。 */
     private const val KEEP_GENERATIONS = 1
 
@@ -130,6 +139,30 @@ object LogStore {
     private var appWriter: BufferedWriter? = null
     @Volatile
     private var appBytes = 0L
+
+    /**
+     * `app.log` 被 [noteFailure] 关掉之后，**允许重新尝试打开**的时刻
+     * （`SystemClock.elapsedRealtime()`；0 表示当前没在冷却期）。
+     *
+     * ## 为什么需要它
+     *
+     * [noteFailure] 连续 3 次写失败就把 `appWriter` 置 null，之后 [writeApp]
+     * 第一行 `?: return`，**连重开的机会都没有** —— 这个取舍本身是对的
+     * （反复抛 IOException + 栈展开会拖慢整个回合），但它有一个被忽视的后果：
+     * **本次进程内此后所有应用日志都不再落盘，哪怕磁盘早就恢复了。**
+     *
+     * 真机上完全可能发生：存储一时写满 / 被别的进程占满 / 只读挂载抖一下，
+     * 三次失败之后磁盘恢复正常，但用户的 app.log 永远停在那一刻 ——
+     * 而 App 是长期驻留的（前台服务 START_STICKY 保活），
+     * 可能几天都不会重启，等于**这几天一条应用日志都没有**。
+     * 等真出问题时去要日志，恰好缺的就是这一段。
+     *
+     * 所以加一个冷却期：关掉之后过 [APP_REOPEN_COOLDOWN_MS] 允许试着重开一次。
+     * 重开失败不会抛到调用方（[openApp] 外面有 try），下次再进冷却期，
+     * 不是每行都重试 —— 不会回到「反复抛异常拖慢回合」那个老问题。
+     */
+    @Volatile
+    private var appReopenAt = 0L
 
     /** `engine.log` / `web.log`：异步写。 */
     private val queue = ArrayBlockingQueue<QueuedLine>(4096)
@@ -465,6 +498,28 @@ object LogStore {
      * 恰恰是崩溃前发生的事。
      */
     private fun writeApp(line: String) {
+        // 句柄被 [noteFailure] 关掉过、且冷却期已到 → 试着重开一次。
+        // 见 [appReopenAt] 的说明：不这么做的话，磁盘恢复后本次进程会永远
+        // 丢掉全部应用日志。
+        if (appWriter == null) {
+            val at = appReopenAt
+            if (at == 0L || android.os.SystemClock.elapsedRealtime() < at) return
+            // 先清冷却标记再重开：重开若又失败，[noteFailure] 会重新设它，
+            // 不会因为这次尝试而陷入每行都重试。
+            appReopenAt = 0L
+            try {
+                lock.withLock {
+                    if (appWriter == null) {
+                        openApp(append = true)
+                        writeFailures = 0
+                        AndroidLog.i(TAG, "LogStore: app.log 已重新打开（磁盘恢复后自愈）")
+                    }
+                }
+            } catch (t: Throwable) {
+                noteFailure("app.log(重开)")
+                return
+            }
+        }
         val w = appWriter ?: return
         try {
             lock.withLock {
@@ -553,6 +608,8 @@ object LogStore {
             } catch (_: Throwable) {
             }
             appWriter = null
+            // 安排一次冷却期后的重开尝试（见 [appReopenAt]）。
+            appReopenAt = android.os.SystemClock.elapsedRealtime() + APP_REOPEN_COOLDOWN_MS
             AndroidLog.e(
                 TAG,
                 "LogStore: $what 连续写入失败 $writeFailures 次，已关闭 app.log 的写入" +
