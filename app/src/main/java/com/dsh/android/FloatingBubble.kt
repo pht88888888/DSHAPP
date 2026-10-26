@@ -2,7 +2,9 @@ package com.dsh.android
 
 import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
+import android.content.ComponentCallbacks
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
@@ -1593,6 +1595,25 @@ class FloatingBubble(private val context: Context) {
         try {
             wm.addView(view, params)
             attached = true
+            /*
+             * ⚠️ **屏幕尺寸变化后必须重新夹位置。**
+             *
+             * `AndroidManifest.xml` 给 Activity 声明了
+             * `configChanges="orientation|screenSize|…"`，所以旋转时 Activity
+             * **不会重建**，本类也就不会重新走一遍 `show()` —— 而 `curX/curY`
+             * 是竖屏时算出来的值（`displayMetrics` 取的是当前方向）。
+             *
+             * 后果：竖屏时球贴在右侧 `y≈0.42*2400=1008`，转到横屏后屏幕高度只有
+             * 1080，这个 y 仍然"在界内"看不出问题；但**从横屏转回竖屏、或折叠屏
+             * 展开/分屏**这类尺寸跳变下，`curY` 可能直接落到屏幕外 ——
+             * 球就这么消失了，用户只能重启 App。
+             *
+             * 用 `registerComponentCallbacks` 而**不是** Activity 的
+             * `onConfigurationChanged`：本类是独立于 Activity 生命周期的悬浮窗，
+             * 挂在 Application 上才拿得到配置变化。
+             */
+            registerConfigWatcher()
+
             // 只有球在场时才让无障碍服务兜底轮询键盘（见 ImeWindowState.keepPolling）。
             ImeWindowState.setKeepPolling(true)
             Log.i(TAG, "气泡已显示: ($curX, $curY) shape=${appearance.shape} size=${appearance.size}")
@@ -1717,6 +1738,7 @@ class FloatingBubble(private val context: Context) {
         workStatusText = ""
         statePoolAction = ""
         statusImagePath = ""
+        unregisterConfigWatcher()
         runCatching { wm.removeViewImmediate(v) }
         root = null
         circleView = null
@@ -1730,6 +1752,75 @@ class FloatingBubble(private val context: Context) {
         // 定时器都已经在上面 cancel 掉了，这里再把 host 引用放掉 ——
         // 否则 FloatingBubble 会一直强引用着那个已销毁的 View。
         timerHost = null
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 屏幕尺寸变化（旋转 / 分屏 / 折叠屏展开）
+    // ══════════════════════════════════════════════════════════════════
+
+    /** 已注册的配置变化回调；null = 当前没注册。成对使用，避免重复注册泄漏。 */
+    private var configWatcher: ComponentCallbacks? = null
+
+    /**
+     * 挂上配置变化监听。
+     *
+     * ⚠️ 必须挂在 **Application** 上：本类是独立于 Activity 的悬浮窗，
+     *   而 Activity 因为 `configChanges` 声明不会因旋转重建，也就没有
+     *   `onConfigurationChanged` 可用。
+     *
+     * ⚠️ 重复调用是安全的（先看 [configWatcher]），因为 [show] 可能被多次调用。
+     */
+    private fun registerConfigWatcher() {
+        if (configWatcher != null) return
+        val cb = object : ComponentCallbacks {
+            override fun onConfigurationChanged(newConfig: Configuration) {
+                /*
+                 * 屏幕尺寸变了 ⇒ 按**新的** displayMetrics 重新夹一次位置。
+                 *
+                 * `clampInto` 用的是 `context.resources.displayMetrics`，
+                 * 在配置变化回调里它已经更新成新尺寸了。
+                 *
+                 * ⚠️ 用 `root?.post`：本回调可能在非 UI 线程送达，
+                 *   而改 `layoutParams` + `updateViewLayout` 必须在主线程。
+                 */
+                val v = root ?: return
+                v.post {
+                    val r = root ?: return@post
+                    try {
+                        val (nx, ny) = clampInto(curX, curY)
+                        if (nx != curX || ny != curY) {
+                            Log.i(TAG, "屏幕尺寸变化，气泡位置重新夹回: ($curX,$curY) → ($nx,$ny)")
+                            curX = nx
+                            curY = ny
+                            val lp = r.layoutParams as? WindowManager.LayoutParams ?: return@post
+                            lp.x = nx
+                            lp.y = ny
+                            runCatching { wm.updateViewLayout(r, lp) }
+                        }
+                        /*
+                         * 状态横条也依赖屏幕宽度（见 `positionStatusBubble` 里
+                         * `centered.coerceIn(0, dm.widthPixels - labelW)`），
+                         * 尺寸变了要重摆，否则横条会歪出屏幕。
+                         * 只在它存在时动，避免凭空创建窗口。
+                         */
+                        if (statusRoot != null) runCatching { positionStatusBubble() }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "配置变化后重排气泡失败: ${t.message}")
+                    }
+                }
+            }
+
+            override fun onLowMemory() = Unit
+        }
+        configWatcher = cb
+        runCatching { context.applicationContext.registerComponentCallbacks(cb) }
+    }
+
+    /** 摘掉配置变化监听。必须在 [hide] 里调用，否则会一直持有本类实例。 */
+    private fun unregisterConfigWatcher() {
+        val cb = configWatcher ?: return
+        configWatcher = null
+        runCatching { context.applicationContext.unregisterComponentCallbacks(cb) }
     }
 
     // ══════════════════════════════════════════════════════════════════
