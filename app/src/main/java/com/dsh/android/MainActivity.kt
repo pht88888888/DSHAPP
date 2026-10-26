@@ -1975,6 +1975,26 @@ class MainActivity : AppCompatActivity() {
         override fun reloadWebUi() {
             Log.i(DshApplication.TAG, "页面菜单请求刷新界面（安全重载）")
             runOnUiThread {
+                // ⚠️ **三个前置检查都不能省**，否则这条桥方法会变成崩溃源：
+                //
+                // ① Activity 已销毁 / 正在销毁：`onDestroy` 里调了 `web.destroy()`
+                //    （见那里的注释），而 [reloadWithRetry] 第一句就读
+                //    `web.currentUrl` —— 对已 destroy 的 WebView 取 URL 会抛
+                //    IllegalStateException（"WebView.destroy() called but WebView
+                //    was used afterwards"），而这里在 UI 线程上、又在一个
+                //    @JavascriptInterface 里，异常会直接冒成崩溃。
+                //    页面在后台被系统回收时真的会走到这条路径。
+                // ② 还没初始化 Web 内核（引擎就绪前）：`::web.isInitialized` 为 false，
+                //    直接读 `web` 抛 UninitializedPropertyAccessException。
+                // ③ 已放弃自动恢复：重载没有意义，且会顶掉给用户的提示。
+                if (isFinishing || isDestroyed) {
+                    Log.i(DshApplication.TAG, "Activity 已销毁，忽略刷新请求")
+                    return@runOnUiThread
+                }
+                if (!::web.isInitialized) {
+                    Log.i(DshApplication.TAG, "Web 内核尚未初始化，忽略刷新请求")
+                    return@runOnUiThread
+                }
                 if (rendererGaveUp) {
                     Log.i(DshApplication.TAG, "已停止自动恢复，忽略本次刷新请求")
                     return@runOnUiThread
