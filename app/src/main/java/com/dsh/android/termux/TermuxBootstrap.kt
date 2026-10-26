@@ -234,10 +234,37 @@ class TermuxBootstrap(private val context: Context) {
                 var entry = zis.nextEntry
                 while (entry != null) {
                     val name = entry.name
+                    /*
+                     * ⚠️ **必须校验解包路径不越界（zip-slip）。**
+                     *
+                     * `File(prefixDir, name)` 对含 `..` 或绝对路径的 name
+                     * **不做任何限制**：
+                     *   · name = "../../../data/data/com.dsh.android/shared_prefs/x"
+                     *     会写到 prefix 之外；
+                     *   · name = "/data/local/tmp/x"（绝对路径）在 Java 侧虽然
+                     *     会被当成相对路径处理，但 `..` 一定会生效。
+                     *
+                     * 本项目的 bootstrap zip 是自己打包的，正常不会有这种条目；
+                     * 但这条路径解的是**应用资产里的压缩包**，一旦打包环节出问题、
+                     * 或将来换成可下载的 bootstrap，这就是一条写到沙箱任意位置的通道。
+                     * 校验成本只有一次 canonicalPath 比较，值得加。
+                     *
+                     * 与 `EngineManager.ensureMobileUi()` 里已有的同名校验保持一致的写法。
+                     */
+                    val outFile = File(prefixDir, name)
+                    val canonicalTarget = outFile.canonicalPath
+                    val canonicalRoot = prefixDir.canonicalPath
+                    if (!canonicalTarget.startsWith(canonicalRoot + File.separator) &&
+                        canonicalTarget != canonicalRoot
+                    ) {
+                        Log.w(TAG, "跳过越界的解包条目: $name")
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                        continue
+                    }
                     if (name == "SYMLINKS.txt") {
-                        File(prefixDir, name).outputStream().use { zis.copyTo(it) }
+                        outFile.outputStream().use { zis.copyTo(it) }
                     } else {
-                        val outFile = File(prefixDir, name)
                         if (entry.isDirectory) {
                             outFile.mkdirs()
                         } else {
@@ -381,8 +408,20 @@ class TermuxBootstrap(private val context: Context) {
                     var entry = zis.nextEntry
                     while (entry != null) {
                         val name = entry.name
+                        // ⚠️ 同 installLocked：解包路径必须校验不越界（zip-slip）。
+                        //   见那边更长的说明。这里多一层：连目录条目也一并跳过，
+                        //   否则一个 "../" 目录能在 prefix 外建出空目录树。
+                        val outCheck = File(prefixDir, name)
+                        val ct = outCheck.canonicalPath
+                        val cr = prefixDir.canonicalPath
+                        if (!ct.startsWith(cr + File.separator) && ct != cr) {
+                            Log.w(TAG, "跳过越界的 Node 运行时条目: $name")
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                            continue
+                        }
                         when {
-                            entry.isDirectory -> File(prefixDir, name).mkdirs()
+                            entry.isDirectory -> outCheck.mkdirs()
 
                             name == "LINKS.txt" -> {
                                 val text = zis.readBytes().toString(Charsets.UTF_8)
