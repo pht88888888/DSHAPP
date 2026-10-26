@@ -266,7 +266,17 @@ object RootAccess {
                 Result(State.DENIED, "su=$su 可执行但身份不是 root（id -u → ${uid.ifEmpty { "空" }}）")
             }
         } catch (t: Throwable) {
-            Result(State.DENIED, "执行 su 失败: ${t.message}")
+            // ⚠️ **必须标 tentative。** `catch` 到这里意味着「su 存在但这次没跑成」，
+            //   典型原因都是**瞬时的**：su 进程一时繁忙、SELinux 策略竞争、
+            //   内存紧张导致 fork 失败、或用户在授权框上点了"拒绝/稍后"。
+            //   这些都不是「这台设备没有 root」的定论。
+            //
+            //   不标的话会按 CACHE_TTL_MS（24 小时）缓存这个否定结论 ——
+            //   用户明明有 root，接下来一整天都会被判成"不可用"，
+            //   而设置页只会显示一句"执行 su 失败"，他不会想到要等一天。
+            //   标成 tentative 就只锁 TENTATIVE_CACHE_TTL_MS（60 秒），
+            //   一秒级的抖动不会留下长期后果。
+            Result(State.DENIED, "执行 su 失败: ${t.message}", tentative = true)
         }
     }
 }
