@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -131,6 +132,46 @@ class BubbleVideoLayer(
 
         w.addJavascriptInterface(Bridge(), "BubbleNative")
         w.webViewClient = object : WebViewClient() {
+            /**
+             * 渲染进程死了。**必须返回 true，否则整个应用进程会被系统杀掉。**
+             *
+             * 官方文档：`onRenderProcessGone` 默认实现返回 `false`，而返回 `false`
+             * 时**系统会终止整个应用进程** —— 用户看到的就是「App 突然自己退了」。
+             *
+             * ⚠️ 这是项目里**第三个**独立 WebView（另外两个是主 WebView 和
+             *   AI 浏览器），前两个都已覆写，唯独这里漏了。
+             *
+             * 而这一处的崩溃概率其实不低：它循环播放视频，
+             * `mediaPlaybackRequiresUserGesture = false` + 硬件解码器，
+             * 素材编码不规范（桌宠素材由用户/插件提供，来源很杂）时解码器崩溃
+             * 是常见情况。崩一次整个 App 就没了。
+             *
+             * 处理策略：这是**纯装饰层**，正确做法是彻底释放它并退化成静态首帧，
+             * 而不是让用户面对"桌宠一播视频 App 就退"。释放后 `videoLayer` 为 null，
+             * 上层逻辑本来就有「没有视频层就显示图片」的路径。
+             */
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?,
+            ): Boolean {
+                Log.w(
+                    TAG,
+                    "悬浮球视频层的渲染进程${if (detail?.didCrash() == true) "崩溃" else "被回收"}，" +
+                        "释放视频层、退回静态显示",
+                )
+                // 只摘掉这一个 WebView，不碰 container 的其它内容。
+                runCatching { (view?.parent as? android.view.ViewGroup)?.removeView(view) }
+                runCatching { view?.destroy() }
+                if (view === web) {
+                    web = null
+                    pageReady = false
+                    pending = null
+                    current = ""
+                }
+                // ⚠️ 必须 true：返回 false 会让系统终止整个应用进程。
+                return true
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageReady = true
                 // 补播：页面加载期间来的 play() 会丢，这里补上。
