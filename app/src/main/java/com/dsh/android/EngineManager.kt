@@ -8364,6 +8364,29 @@ class EngineManager private constructor(private val context: Context) {
         val triggerMb = (limitMb * heapRestartRatio()).toInt()
         val t = Thread {
             var warned = false
+            /*
+             * 上一次采样的（RSS, 时刻），用来算**增长速率**。
+             *
+             * ## 为什么必须记速率（真机取证，2026-10-27）
+             *
+             * 真机数据表明这是一个**线性**泄漏：10 次崩溃的运行时长是
+             * `11.1h / 7.8h / 7.7h / 7.8h / 7.8h / 7.7h / 7.8h`，
+             * 折算约 **130 MB/小时**。
+             *
+             * 但"约"这个字是问题所在：只看崩溃时的堆大小，无法区分
+             * 「恒定 130MB/h 线性涨」和「某几个操作各泄漏一大块」。而这两种
+             * 的修法完全不同 —— 前者要找常驻引用，后者要找特定触发点。
+             *
+             * 记下速率之后，`engine.heap` 事件里就有了一条**时间序列**：
+             * 速率忽高忽低 ⇒ 与操作相关（可以对着 events.jsonl 的时间点找
+             * 当时在干什么）；速率恒定 ⇒ 常驻引用，与用户操作无关。
+             *
+             * ⚠️ 采样**必须便宜**：这里只在每 [HEAP_WATCH_INTERVAL_MS] 记一行
+             *    I 级日志（3 分钟一条，一天 480 条，远小于 1 MB 的日志上限）。
+             *    不要改成每秒采样 —— 那会把日志冲爆，反而更难查。
+             */
+            var prevMb = -1
+            var prevAt = 0L
             while (!Thread.currentThread().isInterrupted) {
                 try {
                     Thread.sleep(HEAP_WATCH_INTERVAL_MS)
@@ -8374,6 +8397,21 @@ class EngineManager private constructor(private val context: Context) {
                 if (process !== proc || userStopped) return@Thread
                 val rssMb = readRssMb(proc)
                 if (rssMb <= 0) continue
+                // ── 速率采样（只在两次都有效时算）──
+                val nowMs = System.currentTimeMillis()
+                if (prevMb > 0 && prevAt > 0) {
+                    val hours = (nowMs - prevAt) / 3_600_000.0
+                    if (hours > 0.01) {
+                        val rate = (rssMb - prevMb) / hours
+                        Log.i(
+                            TAG,
+                            "引擎堆采样: ${rssMb}MB（较上次 ${if (rssMb >= prevMb) "+" else ""}${rssMb - prevMb}MB，" +
+                                "约 ${rate.toInt()}MB/小时，上限 $limitMb MB）",
+                        )
+                    }
+                }
+                prevMb = rssMb
+                prevAt = nowMs
                 if (rssMb >= triggerMb) {
                     /*
                      * 到水位了。**只重启一次，不要反复触发。**
