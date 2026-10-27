@@ -8384,19 +8384,45 @@ class EngineManager private constructor(private val context: Context) {
                      * `startHeapWatch` 会起一个新线程（旧的被 interrupt 掉）。
                      */
                     if (!warned) {
-                        warned = true
-                        Log.w(
-                            TAG,
-                            "引擎堆水位 ${rssMb}MB 已达上限的 " +
-                                "${(heapRestartRatio() * 100).toInt()}%（$triggerMb / $limitMb MB），" +
-                                "主动重启以免用户撞上 OOM 闪崩（真机实测约 130MB/小时线性增长）",
-                        )
-                        EventLog.record(
-                            "engine.heap-high",
-                            mapOf("rssMb" to rssMb.toString(), "triggerMb" to triggerMb.toString()),
-                        )
-                        // 在主线程之外发起重启是安全的：restart 内部自己切线程。
-                        runCatching { requestRestart("堆水位过高") }
+                        /*
+                         * ⚠️ **AI 正在跑就先别重启。**
+                         *
+                         * `requestRestart` 走 `State.Dead` ⇒ `MainActivity` 会
+                         * `web.loadUrl(...)` **重载整个页面**。对话内容在引擎侧
+                         * 不会丢，但用户输入框里**还没发出去的文字会没**，
+                         * 而且正在流式输出的回答会被打断。
+                         *
+                         * 所以：正在生成时只记一次日志、把 `warned` 留 false，
+                         * 下一轮（3 分钟后）再看。生成通常几十秒到几分钟，
+                         * 水位余量（15% of 3072 ≈ 460 MB ≈ 3.5 小时）
+                         * 足够等它跑完。
+                         *
+                         * 读不到状态（`currentStatus()` 为 null，比如引擎刚起来
+                         * 页面还没上报）时按**空闲**处理 —— 不能因为读不到就一直
+                         * 不重启，那会让监控形同虚设。
+                         */
+                        val busy = EngineService.currentStatus()?.running == true
+                        if (busy) {
+                            Log.i(
+                                TAG,
+                                "堆水位 ${rssMb}MB 已过 $triggerMb MB，但 AI 正在运行，" +
+                                    "等它跑完再重启（对话内容在引擎侧不会丢，但不能打断生成）",
+                            )
+                        } else {
+                            warned = true
+                            Log.w(
+                                TAG,
+                                "引擎堆水位 ${rssMb}MB 已达上限的 " +
+                                    "${(heapRestartRatio() * 100).toInt()}%（$triggerMb / $limitMb MB），" +
+                                    "主动重启以免用户撞上 OOM 闪崩（真机实测约 130MB/小时线性增长）",
+                            )
+                            EventLog.record(
+                                "engine.heap-high",
+                                mapOf("rssMb" to rssMb.toString(), "triggerMb" to triggerMb.toString()),
+                            )
+                            // 在主线程之外发起重启是安全的：restart 内部自己切线程。
+                            runCatching { requestRestart("堆水位过高") }
+                        }
                     }
                 } else if (rssMb < triggerMb / 2) {
                     // 掉回一半以下说明水位过去了（比如用户清空了长会话），允许再次触发。
