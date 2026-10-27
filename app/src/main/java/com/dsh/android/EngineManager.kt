@@ -8977,12 +8977,18 @@ class EngineManager private constructor(private val context: Context) {
          * @param id - 插件 id，与 overlay 里的 `- id:` 一致，例如 `bubble-tool`。
          */
         fun isBuiltinPluginEnabled(context: Context, id: String): Boolean =
-            context.getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)
+            // ⚠️ 用 `applicationContext`：这是**公开 API**，将来可能从 Activity 里调。
+            // SharedPreferences 本身不会因为持有 Activity 而泄漏，但 `getSharedPreferences`
+            // 会缓存它内部的 Context 引用 —— 传 Activity 进去等于把 Activity 钉在
+            // 单例里。一行 `applicationContext` 就把这条路堵死，没有成本。
+            context.applicationContext
+                .getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)
                 .getBoolean(id, true)
 
         /** 设置某个内置插件的开关。下次引擎启动时生效（overlay 是启动期参数）。 */
         fun setBuiltinPluginEnabled(context: Context, id: String, enabled: Boolean) {
-            context.getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)
+            context.applicationContext
+                .getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(id, enabled).apply()
             Log.i(TAG, "内置插件开关: $id = $enabled")
         }

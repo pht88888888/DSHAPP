@@ -1585,10 +1585,17 @@ class FloatingBubble(private val context: Context) {
         restorePanelSize()
         clampInto(curX, curY).let { curX = it.first; curY = it.second }
 
-        installTouch(circleView!!)
-        installEdgeTouch(edgeView!!)
-        installPanelDrag(panelHeader!!)
-        installPanelResize(panelResize!!)
+        // ⚠️ **不用 `!!`**：这 4 个都是 `findViewById` 的结果（可空），布局一改名、
+        // 或者某个 ROM 的替换布局少了控件，`!!` 就在**这里**抛 NPE ——
+        // 而此时悬浮球还没 `addView`，用户看到的是「开了开关但球不出现」，
+        // 日志里却是一行毫无意义的 `kotlin.KotlinNullPointerException`。
+        //
+        // 改成显式判空 + 跳过：缺哪个就少装哪个手势，球照常显示、照常能拖。
+        // 局部功能缺失远好过整个悬浮球消失。
+        circleView?.let { installTouch(it) } ?: Log.w(TAG, "悬浮球主体缺失，跳过拖拽手势")
+        edgeView?.let { installEdgeTouch(it) } ?: Log.w(TAG, "边缘条缺失，跳过边缘手势")
+        panelHeader?.let { installPanelDrag(it) } ?: Log.w(TAG, "面板标题栏缺失，跳过面板拖拽")
+        panelResize?.let { installPanelResize(it) } ?: Log.w(TAG, "面板缩放手柄缺失，跳过缩放")
         installPanelActions(view)
 
         val params = baseParams().apply { x = curX; y = curY }
