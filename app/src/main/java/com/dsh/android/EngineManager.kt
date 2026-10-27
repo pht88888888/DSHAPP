@@ -8087,6 +8087,71 @@ class EngineManager private constructor(private val context: Context) {
             //   ⚠️ 上面那段 gateway 检测已经 `return@withContext` 走了，
             //   所以走到这里就是**真·成功**，可以放心清。
             RescueBoot.clearFailure()
+            // ⚠️ **正常 profile 起来了 ⇒ 复位过期的降级层级。**（2026-10-27 修）
+            //
+            // ## 修的是什么
+            //
+            // 用户反馈（反馈站 `20261027-112156-019d73`）：「在应用冷启动的时候，
+            // 它会把正在加载的插件识别成加载失败」。截图里的现象是：
+            // 界面还停在「正在启动引擎…」，顶上已经挂着
+            // 「救援模式（2026-10-26 18:13:49.302 起）」的横幅 —— 而那是**昨天**。
+            //
+            // ## 根因
+            //
+            // `tier()` 读的是 `$DSH_HOME/rescue/state.json`，一旦写进 RESCUE，
+            // **只有两个地方会把它改回 NORMAL**：
+            //   ① 用户点横幅上的「退出并重试」；
+            //   ② AI 通过救援信箱发 `switch-back`。
+            //
+            // 「引擎这次正常起来了」这条路径**从来没有复位过它**（本函数上方
+            // 7382-7383 行的注释还把这个行为当成设计写下来了）。
+            // 后果：用户只要因为任何原因降级过一次，`state.json` 就永久停在
+            // RESCUE，此后**每一次冷启动**都会先弹出那条横幅，指着昨天的时刻
+            // 说「引擎没能正常启动」。用户看到的是「明明起来了却说我失败」，
+            // 于是合理地把它理解成「把正在加载的插件误判成加载失败」。
+            //
+            // ## 为什么在这里复位是安全的
+            //
+            // ① 走到这里 ⇒ 引擎用 `--profile web`（[PROFILE_NAME]，即**正常
+            //    profile、加载了全部第三方插件**）起来了并打印了 URL。
+            //    「降级」的唯一意义就是「这次别加载那些插件」，而这次明明加载
+            //    成功了 —— 层级描述的处境已经不成立，留着它就是假结论
+            //    （本项目已确认 28 例「结论与它描述的对象不符」，这是第 29 例）。
+            // ② 与 [RescueBoot.clearFailure] 同一个判据（`got && url != null`），
+            //    同样已经排除了 gateway 下线那条 `return@withContext`。
+            // ③ 只动 `state.json` 的层级，**不碰用户的插件配置**（I5 不变）。
+            //    `quarantinedNames` 由 [RescueBoot.setTier] 的默认参数原样带过去，
+            //    所以「已定向禁用哪些插件条目」这条结论**不会丢** ——
+            //    它是对文件内容的记录，不依赖层级。
+            //
+            // ## 为什么不能无条件复位
+            //
+            // 救援 profile 起来时**也会**走到 `State.Ready`。那种情况下层级必须
+            // 保持 RESCUE，否则横幅消失、用户以为插件都回来了（实际一个都没加载）。
+            // 判据就是本次启动用的 profile：`targetProfile == PROFILE_NAME`。
+            //
+            // ⚠️ `SAFE_MODE` 也不动：安全模式是用户显式选择的处境，
+            //   它由用户点「退出」来结束，不该被一次成功启动悄悄抹掉。
+            if (targetProfile == PROFILE_NAME) {
+                val staleTier = RescueBoot.tier().tier
+                if (staleTier == RescueBoot.Tier.RESCUE ||
+                    staleTier == RescueBoot.Tier.ISOLATED ||
+                    staleTier == RescueBoot.Tier.QUARANTINED
+                ) {
+                    RescueBoot.setTier(
+                        RescueBoot.Tier.NORMAL,
+                        "引擎已用正常 profile 成功启动（本次加载了全部第三方插件）⇒ 复位过期层级",
+                    )
+                    Log.i(
+                        TAG,
+                        "降级层级已复位：${staleTier.id} → normal（引擎本次正常启动，横幅不再显示旧状态）",
+                    )
+                    EventLog.record(
+                        "rescue.tier.reset",
+                        mapOf("from" to staleTier.id, "reason" to "normal-boot-ok"),
+                    )
+                }
+            }
             // 事件时间线里记一笔「从起进程到就绪花了多久」。
             // ⚠️ 这是「打开 App 慢」这类模糊反馈唯一能定量的地方：没有它，
             //   用户说「卡」，我们只能猜是引擎慢、解包慢还是网络慢。
