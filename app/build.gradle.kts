@@ -112,7 +112,21 @@ android {
         //        ⇒ 附件落盘失败 ⇒ 被兜底成 `session/agent-busy`。
         //        迷惑点：**纯文字完全正常**，因为只有图片才走附件落盘。
         //        现在 sync() 也加 EINVAL 兜底（其他错误照抛）。
-        versionCode = 70
+        //   v71（本次）：内置插件开关 + 前台唤醒 + WebView 垫片补缺。
+        //        ① **内置插件开关**（用户反馈：「bubble 和 ui 的描述极其巨大，
+        //           光一个 bubble 就占用几千 token，浪费免费 API 额度、挤占上下文」）。
+        //           实测属实：8 个内置插件共 71 条工具描述、8819 字符 ≈ 3000+ token，
+        //           每次请求都带上，bubble-tool 独占 3248 字符（29 个工具）。
+        //           新增 `isBuiltinPluginEnabled`，已接入 7 个插件，默认全开。
+        //        ② **悬浮窗收不到回复**（用户反馈：「悬浮窗没法对话，必须点开前台」）。
+        //           根因不是网络：切后台后系统冻结 JS 定时器，SSE 重连的 setTimeout
+        //           永不到期 ⇒ 后台期间电脑推来的事件全丢 ⇒ 切回来还要等满 15 秒退避。
+        //           新增 `notifyForeground()`，onStart 时 POST 插件的
+        //           `/api/dsh-remote/wake`，立刻唤醒退避中的流并补连。
+        //        ③ **WebView 垫片补缺**：`tools/audit-runtime-apis.mjs` 对 394 个
+        //           真实产物扫出缺口 `FinalizationRegistry`（Chrome 84，undici 6 处）。
+        //           补近似垫片后审计缺口归零（36 个受跟踪 API 全覆盖）。
+        versionCode = 71
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
