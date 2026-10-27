@@ -1017,6 +1017,44 @@
     })();
   }
 
+  // Chromium 84：FinalizationRegistry
+  //
+  // ⚠️ 与 WeakRef 同样的道理，这个降级**只能近似**：真正的「对象被回收时回调」
+  //    在旧内核上无法用 JS 复刻 —— 因为 JS 拿不到 GC 事件。这里注册时**什么都不做**，
+  //    `unregister` 也返回 false。语义上等价于「这个清理器永远不会触发」。
+  //
+  //    为什么这样可接受：`FinalizationRegistry` 在本项目产物里只被 undici
+  //    （`lib/web/fetch/body.js` 等 6 个文件）用来做**兜底的资源释放**。不触发
+  //    最坏结果是某个流对象晚一点被回收，不影响功能正确性；而缺了它整个
+  //    chunk 会在解析阶段抛 `ReferenceError`，界面直接白屏 —— 两害相权取其轻。
+  //
+  //    缺口是 `tools/audit-runtime-apis.mjs` 扫出来的（目标内核 chrome74），
+  //    不是拍脑袋加的。
+  if (typeof FinalizationRegistry === 'undefined') {
+    self.FinalizationRegistry = (function () {
+      function FinalizationRegistry(cleanupCallback) {
+        if (!(this instanceof FinalizationRegistry)) {
+          throw new TypeError("Constructor FinalizationRegistry requires 'new'");
+        }
+        if (typeof cleanupCallback !== 'function') {
+          throw new TypeError('FinalizationRegistry: cleanup callback must be a function');
+        }
+        // 故意不保存：反正永远不会被调用，存着只会让对象无法回收。
+      }
+      // 标准签名是 `register(target, heldValue, unregisterToken)` —— 三个参数
+      // 都接受但不使用，保持调用方代码不变。
+      FinalizationRegistry.prototype.register = function register() {
+        /* 空实现：见上方注释 */
+      };
+      // 标准返回值：找到并移除返回 true，否则 false。
+      // 我们从没存过任何登记项，所以恒为 false。
+      FinalizationRegistry.prototype.unregister = function unregister() {
+        return false;
+      };
+      return FinalizationRegistry;
+    })();
+  }
+
   // Chromium 134：显式资源管理符号
   if (typeof Symbol.dispose === 'undefined') {
     try {

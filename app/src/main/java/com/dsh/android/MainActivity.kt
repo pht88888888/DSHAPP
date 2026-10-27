@@ -4540,6 +4540,16 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         FloatingBubble.onAppForeground()
+        // 通知引擎「回来了」：远程插件据此立刻重连 SSE，不必干等退避到期。
+        //
+        // 用户反馈（两条）：「手机悬浮窗没法对话，必须点开前台消息才能发送出去
+        // 并收到回复」。根因是切后台时系统冻结了 JS 定时器，插件的重连等待
+        // 永远不会到期 ⇒ 后台期间电脑推来的消息全丢 ⇒ 切回来还要等最多 15 秒。
+        //
+        // ⚠️ `runCatching` 是必须的：这是附属功能，引擎没就绪/插件没装都属正常，
+        //    绝不能因为它让 `onStart` 抛异常。方法内部已把网络请求放到后台线程，
+        //    这里不会阻塞主线程。
+        runCatching { EngineManager.get(this).notifyForeground() }
     }
 
     /**

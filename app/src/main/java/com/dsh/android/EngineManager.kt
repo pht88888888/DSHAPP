@@ -124,6 +124,67 @@ class EngineManager private constructor(private val context: Context) {
     }
 
     /**
+     * 通知引擎「App 回到前台了」—— 让远程插件的 SSE 立刻重连。
+     *
+     * ## 为什么需要这一下（用户反馈：「悬浮窗没法对话，必须点开前台」）
+     *
+     * 切到后台后系统会冻结 JS 定时器（Doze / App Standby）。而远程插件的
+     * SSE 重连靠 `setTimeout` 退避 —— 被冻结后那个定时器**永远不会到期**，
+     * 于是后台期间电脑推来的事件全部丢失，用户切回前台还要干等最多 15 秒。
+     * 表现就是：在悬浮窗里发消息，消息能出去（主动 RPC），但**收不到回复**
+     *（回复走 SSE，还没连上），必须点开前台页面等一会儿才出现。
+     *
+     * 插件侧为此开了一个本机端点 `POST /api/dsh-remote/wake`，收到就把所有
+     * 退避中的等待立即结束、并补连已断开的流。
+     *
+     * ## 三个必须遵守的约束
+     *
+     * 1. **绝不阻塞主线程**：`onStart` 是 UI 关键路径，网络请求一律丢到
+     *    后台线程，失败静默。
+     * 2. **绝不抛异常**：这是锦上添花的功能，插件没装 / 引擎没起来 /
+     *    端口变了都属正常，不能因此影响 App 启动。
+     * 3. **超时要短**：本机回环正常是毫秒级，2 秒还没回就说明引擎没在听，
+     *    直接放弃，别挂着。
+     *
+     * 端口从 [State.Ready.url] 里取 —— 那是引擎自己打出来的真实 URL
+     *（`dsh web: http://127.0.0.1:<port>/?token=…`），冷启动可能不是 3080。
+     */
+    fun notifyForeground() {
+        val ready = _state.value as? State.Ready ?: return
+        val port = runCatching {
+            java.net.URI(ready.url).port
+        }.getOrNull()?.takeIf { it in 1..65535 } ?: return
+
+        Thread({
+            try {
+                val conn = (java.net.URL("http://127.0.0.1:$port/api/dsh-remote/wake")
+                    .openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 2_000
+                    readTimeout = 2_000
+                    doOutput = true
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.outputStream.close()
+                    val code = conn.responseCode
+                    if (code in 200..299) {
+                        Log.i(TAG, "已通知引擎回到前台（SSE 立即重连）")
+                    } else {
+                        // 404 = 插件没装或版本太老，属正常情况，只记一行。
+                        Log.d(TAG, "前台通知返回 $code（插件未安装时属正常）")
+                    }
+                } finally {
+                    runCatching { conn.disconnect() }
+                }
+            } catch (t: Throwable) {
+                // 引擎没起来 / 端口关了 —— 都是常态，不进日志噪音。
+                Log.d(TAG, "前台通知跳过: ${t.message}")
+            }
+        }, "dsh-foreground-notify").apply { isDaemon = true }.start()
+    }
+
+    /**
      * 把页面阶段退回 [UiStage.None]（引擎重启时用）。
      *
      * ## 为什么必须有这个「后退」
@@ -2221,6 +2282,7 @@ class EngineManager private constructor(private val context: Context) {
             appendLine("  name: '@deepseek-ai/dsh-api-workspace-controller'")
             appendLine("  config:")
             appendLine("    documentsDirectory: '${workspaceDir.absolutePath}'")
+
         }
         return try {
             if (!file.isFile || file.readText() != yaml) {
@@ -2652,6 +2714,13 @@ class EngineManager private constructor(private val context: Context) {
      */
     private fun writeBrowserPanePatch(): File? {
         val patch = File(dshHome, BROWSER_PANE_PATCH)
+        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
+        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
+        if (!isBuiltinPluginEnabled(context, "browser-pane")) {
+            if (patch.isFile) patch.delete()
+            Log.i(TAG, "侧栏浏览器入口已被用户关闭，跳过挂载")
+            return null
+        }
         val entry = File(dshHome, "$BROWSER_PANE_DIR/$BROWSER_PANE_PACKAGE/lib/index.js")
         if (!entry.isFile) {
             if (patch.isFile) patch.delete()
@@ -2833,6 +2902,13 @@ class EngineManager private constructor(private val context: Context) {
      */
     private fun writeAgnesMultimodalPatch(): File? {
         val patch = File(dshHome, AGNES_MM_PATCH)
+        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
+        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
+        if (!isBuiltinPluginEnabled(context, "agnes-multimodal")) {
+            if (patch.isFile) patch.delete()
+            Log.i(TAG, "Agnes 多模态插件已被用户关闭，跳过挂载")
+            return null
+        }
         val entry = File(dshHome, "$AGNES_MM_DIR/$AGNES_MM_PACKAGE/lib/index.js")
         if (!entry.isFile) {
             Log.w(TAG, "Agnes 多模态插件入口不存在，跳过挂载: ${entry.absolutePath}")
@@ -4342,6 +4418,13 @@ class EngineManager private constructor(private val context: Context) {
      */
     private fun writeBubbleToolPatch(): File? {
         val patch = File(dshHome, BUBBLE_TOOL_PATCH)
+        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
+        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
+        if (!isBuiltinPluginEnabled(context, "bubble-tool")) {
+            if (patch.isFile) patch.delete()
+            Log.i(TAG, "悬浮球控制工具已被用户关闭，跳过挂载")
+            return null
+        }
         val entry = File(dshHome, "$BUBBLE_TOOL_DIR/$BUBBLE_TOOL_PACKAGE/lib/index.js")
         if (!entry.isFile) {
             if (patch.isFile) patch.delete()
@@ -4414,6 +4497,13 @@ class EngineManager private constructor(private val context: Context) {
      */
     private fun writeStatusBarToolPatch(): File? {
         val patch = File(dshHome, STATUSBAR_TOOL_PATCH)
+        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
+        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
+        if (!isBuiltinPluginEnabled(context, "statusbar-tool")) {
+            if (patch.isFile) patch.delete()
+            Log.i(TAG, "系统栏配色工具已被用户关闭，跳过挂载")
+            return null
+        }
         val entry = File(dshHome, "$STATUSBAR_TOOL_DIR/$STATUSBAR_TOOL_PACKAGE/lib/index.js")
         if (!entry.isFile) {
             if (patch.isFile) patch.delete()
@@ -4489,6 +4579,13 @@ class EngineManager private constructor(private val context: Context) {
      */
     private fun writeUiToolPatch(): File? {
         val patch = File(dshHome, UI_TOOL_PATCH)
+        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
+        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
+        if (!isBuiltinPluginEnabled(context, "ui-tool")) {
+            if (patch.isFile) patch.delete()
+            Log.i(TAG, "UI 调试工具已被用户关闭，跳过挂载")
+            return null
+        }
         val entry = File(dshHome, "$UI_TOOL_DIR/$UI_TOOL_PACKAGE/lib/index.js")
         if (!entry.isFile) {
             if (patch.isFile) patch.delete()
@@ -4563,6 +4660,13 @@ class EngineManager private constructor(private val context: Context) {
      */
     private fun writeBrowserToolPatch(): File? {
         val patch = File(dshHome, BROWSER_TOOL_PATCH)
+        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
+        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
+        if (!isBuiltinPluginEnabled(context, "browser-tool")) {
+            if (patch.isFile) patch.delete()
+            Log.i(TAG, "浏览器工具已被用户关闭，跳过挂载")
+            return null
+        }
         val entry = File(dshHome, "$BROWSER_TOOL_DIR/$BROWSER_TOOL_PACKAGE/lib/index.js")
         if (!entry.isFile) {
             if (patch.isFile) patch.delete()
@@ -4642,6 +4746,13 @@ class EngineManager private constructor(private val context: Context) {
      */
     private fun writeLogsToolPatch(): File? {
         val patch = File(dshHome, LOGS_TOOL_PATCH)
+        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
+        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
+        if (!isBuiltinPluginEnabled(context, "logs-tool")) {
+            if (patch.isFile) patch.delete()
+            Log.i(TAG, "日志工具已被用户关闭，跳过挂载")
+            return null
+        }
         val entry = File(dshHome, "$LOGS_TOOL_DIR/$LOGS_TOOL_PACKAGE/lib/index.js")
         if (!entry.isFile) {
             if (patch.isFile) patch.delete()
@@ -8820,6 +8931,76 @@ class EngineManager private constructor(private val context: Context) {
 
     companion object {
         private const val TAG = "DSH"
+
+        /**
+         * 内置插件开关的存储位置。
+         *
+         * ## 为什么需要这个开关（用户 2026-10-27 反馈）
+         *
+         * 用户原话（荣耀 CRT-AN00）：
+         *
+         * > 当前 Android 客户端每次启动会自动挂载许多内置插件（如 bubble 悬浮球、
+         * > shell、statusbar、ui、logs、generate_image/video 等）。其中 bubble 和
+         * > ui 的描述极其巨大，光一个 bubble 就占用几千 token，不仅浪费免费 API
+         * > 额度，还严重挤占上下文空间。希望能在设置里加一个插件管理面板，允许
+         * > 用户按需开启/关闭这些内置插件。
+         *
+         * **这个数字是真的。** 实测各内置插件的工具 `description` 合计：
+         *
+         * | 插件 | 工具数 | 描述字符 |
+         * |---|---|---|
+         * | bubble-tool | 29 | 3248 |
+         * | agnes-multimodal | 16 | 2095 |
+         * | statusbar-tool | 10 | 1139 |
+         * | core-memory | 6 | 630 |
+         * | browser-tool | 6 | 612 |
+         * | uiagent-tool | 6 | 489 |
+         * | shell-tool | 4 | 397 |
+         * | root-tool | 2 | 209 |
+         *
+         * 合计 8819 字符 ≈ **3000+ token**，而且是**每一次请求**都要带上。
+         * 对用免费额度的用户，这不是小数目。
+         *
+         * ## 只有 `false` 才是关
+         *
+         * 默认值必须让所有插件保持现状（挂载），所以判据写成
+         * `getBoolean(key, true)` —— 用户没动过的插件行为与升级前完全一致。
+         * ⚠️ 只有显式存了 `false` 才跳过挂载，**不能反着写**，否则升级会把
+         * 用户本来能用的工具全部关掉。
+         */
+        private const val PLUGIN_PREFS = "dsh_builtin_plugins"
+
+        /**
+         * 某个内置插件是否启用。默认 `true`（见 [PLUGIN_PREFS] 的注释）。
+         *
+         * @param context - 任意 context（内部用 application context 的 prefs）。
+         * @param id - 插件 id，与 overlay 里的 `- id:` 一致，例如 `bubble-tool`。
+         */
+        fun isBuiltinPluginEnabled(context: Context, id: String): Boolean =
+            context.getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(id, true)
+
+        /** 设置某个内置插件的开关。下次引擎启动时生效（overlay 是启动期参数）。 */
+        fun setBuiltinPluginEnabled(context: Context, id: String, enabled: Boolean) {
+            context.getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(id, enabled).apply()
+            Log.i(TAG, "内置插件开关: $id = $enabled")
+        }
+
+        /**
+         * 所有可开关的内置插件，供设置页渲染。
+         *
+         * ⚠️ **顺序即设置页显示顺序**，先列开销最大的（用户最想关的）。
+         */
+        val TOGGLEABLE_PLUGINS: List<Pair<String, String>> = listOf(
+            "bubble-tool" to "悬浮球控制（29 个工具，3248 字符描述）",
+            "agnes-multimodal" to "多模态图片/视频生成（16 个工具，2095 字符描述）",
+            "statusbar-tool" to "状态栏配色（10 个工具，1139 字符描述）",
+            "ui-tool" to "UI 调试工具（6 个工具，489 字符描述）",
+            "browser-tool" to "浏览器工具（6 个工具，612 字符描述）",
+            "logs-tool" to "日志工具",
+            "browser-pane" to "右侧栏 AI 浏览器",
+        )
         // 注意：不能用 .tar.gz 作后缀 —— AGP 会把它当作 gzip 资源自动解压并改名为 .tar，
         // 导致运行时按原名找不到。用中性后缀避免 AGP 的格式推断。
         private const val ASSET_NAME = "engine.bin"
