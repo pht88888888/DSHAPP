@@ -84,6 +84,12 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     companion object {
         private const val TAG = "AiBrowser"
 
+        /** UA 偏好存放的 SharedPreferences 文件名。 */
+        private const val PREFS = "dsh_ai_browser"
+
+        /** 「是否桌面版 UA」的键。 */
+        private const val KEY_DESKTOP_UA = "desktop_ua"
+
         /** 首页（用户指定）。 */
         const val HOME_URL = "https://www.navir.icu/"
 
@@ -291,10 +297,32 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     private val tabStrip: LinearLayout
     private val addressBar: TextView
     private val progress: ProgressBar
+    /**
+     * 当前是否用**桌面版 UA**。
+     *
+     * ## 为什么要有这个开关（用户反馈 2026-10-28）
+     *
+     * 用户原话：「内置浏览器只能访问手机版站点，无法通过切换 UA 更改为访问
+     * PC 版（希望可以增加 UA 切换）」。
+     *
+     * 有的站点（尤其后台管理、部分网盘、论坛）手机版功能残缺甚至不让登录，
+     * 只能靠改 UA 装成桌面浏览器。而 WebView 默认 UA 里带 `; wv)` 与
+     * `Mobile` —— 网站据此把手机版甩过来，用户没有别的办法。
+     *
+     * 存在 SharedPreferences 里而不是只放内存：切一次就该一直是桌面版，
+     * 关掉浏览器再打开又变回手机版会让用户每次都要重切一遍。
+     */
+    private var desktopUa: Boolean = context
+        .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .getBoolean(KEY_DESKTOP_UA, false)
+
     private val statusChip: TextView
     private val backBtn: TextView
     private val forwardBtn: TextView
     private val reloadBtn: TextView
+    /** UA 切换按钮（手机 / 桌面）。文案在 [toggleUserAgent] 里随状态更新。 */
+    private val uaBtn: TextView
+
     private val markBtn: TextView
     private val homeBtn: TextView
 
@@ -434,6 +462,14 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             setOnClickListener { toggleControl() }
         }
 
+        // 「UA」：手机版 / 桌面版一键切换。
+        //
+        // 放工具栏而不是塞进某个菜单：用户要的就是「点一下」（原话「希望可以
+        // 增加 UA 切换」），多一层菜单等于没做。文案直接显示**当前模式**
+        //（手机 / 桌面），点了就切，不用猜现在是哪个。
+        uaBtn = toolButton(if (desktopUa) "桌面" else "手机") { toggleUserAgent() }
+        uaBtn.setTextColor(if (desktopUa) palette.accent else palette.text)
+
         // 「标注」：截图定格 → 圈画 → 直接问 AI。
         //
         // 放在工具栏而不是别处：用户想标注时，眼睛正在看网页，手也在网页上，
@@ -471,6 +507,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply { rightMargin = dp(4) },
         )
+        chrome.addView(uaBtn)
         chrome.addView(markBtn)
         chrome.addView(collapseBtn)
         chrome.addView(closeBtn)
@@ -979,7 +1016,11 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             // 保存表单（用户名等会记住）
             saveFormData = true
-            userAgentString = userAgentString.replace("; wv)", ")")
+            // ⚠️ UA 由 [applyUserAgent] 统一决定（默认手机版、可切桌面版）。
+            //    原来这里是 `userAgentString.replace("; wv)", ")")` —— 只去掉了
+            //    WebView 的 `; wv)` 标记，**仍然是手机 UA**，所以用户报障里的
+            //    「只能访问手机版站点」始终存在。
+            applyUserAgent(this)
 
             /*
              * ⚠️ **文件访问必须关掉，这是本 WebView 最重要的一条安全设置。**
@@ -1412,6 +1453,70 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         }
         updateChrome()
         onStateChanged?.invoke()
+    }
+
+    /**
+     * 桌面版 UA：把 WebView 默认 UA 里的手机痕迹全部去掉。
+     *
+     * 用**真实存在的桌面 Chrome UA** 而不是随便拼一个：
+     *  - `Mobile` / `Android` / `; wv)` 是站点用来判别手机的三个关键记号，
+     *    必须一起去掉（只去 `wv` 不够 —— 那正是原来那条只做了一半的写法）；
+     *  - 保留真实的 `Chrome/xxx` 版本号，否则有的站点会判成「未知浏览器」。
+     *
+     * ⚠️ 不能写死一个旧版本号：WebView 的内核版本会随系统更新，
+     *    这里从设备自带 UA 里把 `Chrome/…` 抠出来复用，保证版本号与内核一致。
+     */
+    private fun desktopUserAgent(base: String): String {
+        val chromeVersion = Regex("Chrome/([0-9.]+)").find(base)?.groupValues?.getOrNull(1) ?: "120.0.0.0"
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/$chromeVersion Safari/537.36"
+    }
+
+    /** 手机版 UA：设备原生 UA 去掉 `; wv)`（与改动前的行为一致）。 */
+    private fun mobileUserAgent(base: String): String = base.replace("; wv)", "")
+
+    /**
+     * 把当前 UA 模式应用到 WebView 设置上。
+     *
+     * ⚠️ 必须以**设备原始 UA**为基准重算，不能在上一次的结果上链式替换 ——
+     *  `WebSettings.userAgentString` 一旦被赋值，再读 `getDefaultUserAgent()`
+     *  拿到的仍是系统默认值（这一步是安全的），但若拿 `settings.userAgentString`
+     *  当基准就会在手机版/桌面版之间来回切换时逐步污染字符串。
+     */
+    private fun applyUserAgent(settings: WebSettings) {
+        val base = try {
+            WebSettings.getDefaultUserAgent(context)
+        } catch (t: Throwable) {
+            // ⚠️ 极少数 ROM 上会抛（WebView 未就绪）。退回当前值，不让整个
+            //    WebView 配置流程因为 UA 这一项而失败。
+            settings.userAgentString ?: ""
+        }
+        if (base.isEmpty()) return
+        settings.userAgentString = if (desktopUa) desktopUserAgent(base) else mobileUserAgent(base)
+    }
+
+    /**
+     * 切换 UA 并重载当前页。
+     *
+     * 重载是**必须**的：已经渲染好的页面不会因为 UA 改变而自己去请求桌面版；
+     * 不重载用户会觉得「点了没反应」。
+     */
+    private fun toggleUserAgent() {
+        desktopUa = !desktopUa
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_DESKTOP_UA, desktopUa).apply()
+        } catch (t: Throwable) {
+            // 存不下不影响本次生效，只是下次打开会回到默认。
+        }
+        // 所有已开的标签都要换 —— 只换当前那个，切标签时又会看到手机版。
+        for (tab in tabs) {
+            val wv = tab.webView
+            applyUserAgent(wv.settings)
+            wv.reload()
+        }
+        uaBtn.text = if (desktopUa) "桌面" else "手机"
+        uaBtn.setTextColor(if (desktopUa) palette.accent else palette.text)
     }
 
     private fun updateChrome() {

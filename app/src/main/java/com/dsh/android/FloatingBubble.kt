@@ -1153,6 +1153,13 @@ class FloatingBubble(private val context: Context) {
     private var timerHost: android.view.View? = null
 
     /** 当前 window 的左上角坐标（px）。拖动时以它为基准累加位移。 */
+    /**
+     * 是否已经真正调用过 `updateViewLayout`。
+     *
+     * 只用于 [moveTo] 的同坐标跳过判断 —— 见那里的注释（vivo 主线程卡死缓解）。
+     */
+    private var positioned = false
+
     private var curX = 0
     private var curY = 0
 
@@ -4230,6 +4237,39 @@ class FloatingBubble(private val context: Context) {
     }
 
     private fun moveTo(x: Int, y: Int) {
+        // ## ⚠️ 同坐标直接跳过（vivo 机型主线程卡死的缓解，非根治）
+        //
+        // 用户反馈（2026-10-28，vivo V2232A / Android 15）的诊断包里有一份
+        // `main-thread-stall`：主线程 **18917ms** 无响应，栈顶是
+        //
+        //     vivo.common.IVivoColorManager$Stub$Proxy.isWideColorGamutSupport
+        //       ← ViewRootImpl.updateColorModeIfNeeded(ViewRootImpl.java:7310)
+        //       ← ViewRootImpl.performTraversals
+        //
+        // 而那一刻的主线程队列里，正躺着一条
+        // `FloatingBubble$scheduleMove$r$1` → `ViewRootImpl$ViewRootHandler`。
+        //
+        // 也就是说：**每次窗口位置变化都会走一遍 performTraversals**，而 vivo 在这
+        // 条路径上同步 Binder 调它自己的私有色彩服务。那个服务一旦变慢，主线程
+        // 就跟着卡死。这是 ROM 的锅，App 侧**没有 API 能阻止它被调用**（那行在
+        // `ViewRootImpl` 内部，无开关）。
+        //
+        // 我们能做的只有一件事：**别在没必要时触发它**。走动撞边时会算出与当前
+        // 完全相同的坐标（`clampInto` 把它夹回边界），此时 `updateViewLayout` 是
+        // 白白多跑一次 traversal —— 顺手去掉这个浪费。
+        //
+        // ⚠️ 这不是「顺手优化」：它就是上面那条卡死链路的触发点和放大因素之一。
+        //   但它**只能降低概率，不能根治** —— 用户随便拖动一下悬浮球照样会触发。
+        //   真正要根治得让 App 少重绘，或等 vivo 修 ROM。
+        // ⚠️ 必须带上 `positioned`：`curX`/`curY` 的初始值是 0，若首次布局的目标
+        //    恰好是 (0,0)（左上角），只比对坐标会跳过 `updateViewLayout`，
+        //    悬浮球就永远不显示。用一次性标记把「还没真正布局过」区分出来。
+        if (positioned && x == curX && y == curY && root?.layoutParams != null) {
+            // 位置没变也要保证标签/徽标就位（首次布局时它们是错位的）。
+            positionStatusBubble()
+            positionBalanceBadge()
+            return
+        }
         curX = x
         curY = y
         val v = root ?: return
@@ -4237,6 +4277,7 @@ class FloatingBubble(private val context: Context) {
         p.x = x
         p.y = y
         runCatching { wm.updateViewLayout(v, p) }
+        positioned = true
         // 状态标签跟着球走 —— 漏了这行的话，拖动时球跑了、标签留在原地。
         positionStatusBubble()
         // 余额徽标同理。⚠️ 这里是**所有位置变化的唯一入口**（拖动、飞行、走动、
