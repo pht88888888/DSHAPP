@@ -333,10 +333,56 @@ class FloatingBubble(private val context: Context) {
             Log.i(TAG, "悬浮气泡开关: $enabled")
         }
 
-        /** 系统是否已授予「显示在其他应用上层」。 */
-        fun canDrawOverlays(context: Context): Boolean =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(context)
-            else true
+        /**
+         * 系统是否已授予「显示在其他应用上层」。
+         *
+         * ## ⚠️⚠️ 在国产 ROM 上**不能只信 `Settings.canDrawOverlays()`**
+         *
+         * 用户反馈（2026-10-28，两条独立反馈撞到同一个根因）：
+         *   · 华为 MatePad / 荣耀 200：「手机系统设置给了我们 APP 系统悬浮窗权限，
+         *     但是 APP 内识别不到」「权限和在应用上方显示已经开了，当前状态还是未开启」
+         *
+         * 查下来是 `Settings.canDrawOverlays()` 在 **EMUI / MagicOS** 上的老毛病：
+         * 系统里权限明明给了，这个接口仍然返回 `false`。
+         *
+         * 后果比"显示没开启"更严重 —— [onAppBackground] 和 [reconcileVisibility]
+         * 都拿它当前置判断，返回 false 就**直接 return**，悬浮球根本不尝试显示，
+         * 于是用户既看不到球、开关又显示关闭，无从下手。
+         *
+         * ## 判据改成「诚实 + 可自愈」
+         *
+         * 光把返回值取反是错的（真要没授权时 addView 会抛，反复试只会刷日志）。
+         * 这里用「**上次实际 addView 的结果**」来纠正系统谎报：
+         *
+         *   · [probeResult] 为 `true`  ⇒ 我们真的加成功过，一律算有权限；
+         *   · [probeResult] 为 `false` ⇒ 真的加失败过（BadTokenException），算没有；
+         *   · 都没试过（`null`）        ⇒ 退回系统接口的答案。
+         *
+         * `probeResult` 由 [show] 在 `wm.addView()` 成功/失败时写。这样：
+         *   · 华为那种「系统说没有、实际能显示」⇒ 第一次尝试成功后永久转真；
+         *   · 真正没授权 ⇒ addView 抛、记 false，不会无脑重试。
+         *
+         * @param context 任意 context（只用它的应用级信息）。
+         * @returns 是否**可以**显示悬浮窗。
+         */
+        fun canDrawOverlays(context: Context): Boolean {
+            // 实测过就以实测为准：ROM 的接口可能撒谎，addView 不会。
+            probeResult?.let { return it }
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else {
+                true
+            }
+        }
+
+        /**
+         * 上一次 `wm.addView()` 的真实结果。
+         *
+         * `null` = 本次进程还没试过；`true`/`false` = 试过且知道了。
+         * 见 [canDrawOverlays] 的注释说明它为什么必须存在。
+         */
+        @Volatile
+        private var probeResult: Boolean? = null
 
         /**
          * 由 `MainActivity.onCreate` 调用一次，把 application context 记下来。
@@ -359,8 +405,10 @@ class FloatingBubble(private val context: Context) {
         /** App 退到后台 → 显示气泡（前提：用户开了开关且已授权）。 */
         fun onAppBackground(context: Context) {
             if (!isEnabled(context)) return
-            if (!canDrawOverlays(context)) {
-                Log.i(TAG, "气泡开关已开但未授权悬浮窗，不显示")
+            // 同上：只在**实测失败过**时才提前放弃，避免 ROM 谎报把这条路堵死。
+            // 真正的判据交给 `show()` 里的 `addView`。
+            if (probeResult == false) {
+                Log.i(TAG, "气泡开关已开但实测无悬浮窗权限，不显示")
                 return
             }
             val ctx = context.applicationContext
@@ -798,7 +846,9 @@ class FloatingBubble(private val context: Context) {
          * 只在 [applyAppearance] 之后调 —— 它的语义是「配置变了，把窗口状态跟上去」。
          */
         private fun reconcileVisibility(ctx: Context, a: BubbleAppearance) {
-            if (!isEnabled(ctx) || !canDrawOverlays(ctx)) return
+            if (!isEnabled(ctx)) return
+            // 同理：`canDrawOverlays` 只在有实测结论时才有否决权。
+            if (probeResult == false) return
             when (a.state) {
                 BubbleAppearance.STATE_HIDDEN -> {
                     instance?.hide()
@@ -1546,8 +1596,27 @@ class FloatingBubble(private val context: Context) {
     @SuppressLint("InflateParams")
     fun show() {
         if (attached) return
-        if (!canDrawOverlays(context)) {
-            Log.w(TAG, "未授予悬浮窗权限，气泡不显示")
+        /*
+         * ## ⚠️⚠️ 这里**不再**用 `canDrawOverlays()` 当前置拦截
+         *
+         * 原来写的是 `if (!canDrawOverlays(context)) return`。问题在于：
+         * 华为/荣耀的 `Settings.canDrawOverlays()` 会谎报 false（见
+         * [canDrawOverlays] 的长注释），于是**根本走不到下面的 `wm.addView()`**，
+         * 「用实测结果纠正系统谎报」那套逻辑永远没机会执行 —— 死循环。
+         *
+         * 现在改成：**先试**。`addView` 是唯一诚实的判据：
+         *   · 成功了 ⇒ 权限在，球正常显示（顺手把 probeResult 记成 true）；
+         *   · 没权限 ⇒ 抛 `BadTokenException`，被下面的 catch 接住，
+         *     记 `probeResult = false`，日志照旧，不会崩溃也不会反复重试。
+         *
+         * 代价：真没授权时会多一次 `addView` 尝试（一次异常，微秒级）。
+         * 这个代价远小于「ROM 谎报一句就让用户永远看不到悬浮球」。
+         *
+         * 只在**已知没权限**（`probeResult == false`，即真的 addView 失败过）
+         * 时才提前返回，避免每次切后台都白抛一次异常刷日志。
+         */
+        if (probeResult == false) {
+            Log.w(TAG, "上次 addView 已确认无悬浮窗权限，跳过；请用户去系统设置开启")
             return
         }
 
@@ -1609,6 +1678,8 @@ class FloatingBubble(private val context: Context) {
         try {
             wm.addView(view, params)
             attached = true
+            // 加成功了 ⇒ 权限确实在。顺手纠正系统接口的谎报（见 canDrawOverlays 注释）。
+            probeResult = true
             /*
              * ⚠️ **屏幕尺寸变化后必须重新夹位置。**
              *
@@ -1661,6 +1732,19 @@ class FloatingBubble(private val context: Context) {
         } catch (t: Throwable) {
             // 最常见的是没权限（BadTokenException）。不致命，只是没气泡。
             Log.w(TAG, "添加气泡失败: ${t.message}")
+            /*
+             * 只有「权限类」失败才把 probeResult 记成 false。
+             *
+             * `addView` 之后的初始化也可能抛（见下面那段 ⚠️），那种情况下权限
+             * 其实是好的 —— 若一律记 false，用户改完别的问题回来，悬浮球还是
+             * 起不来，会被误判成"权限没给"。所以按异常类型分流。
+             */
+            if (t is WindowManager.BadTokenException ||
+                t is SecurityException ||
+                t is IllegalStateException && t.message?.contains("permission", true) == true
+            ) {
+                probeResult = false
+            }
             /*
              * ⚠️ **必须把 attached 也清回 false，并把已经跑起来的定时器/传感器停掉。**
              *
