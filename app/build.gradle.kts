@@ -172,7 +172,14 @@ android {
         //        只降概率不根治（ROM 的锅）。
         //     ④ 插件 mobile 1.2.26 修「启动 3 秒后必崩」（paired 跨作用域
         //        ReferenceError）—— 这是所有装了插件的机器都会中的。
-        versionCode = 75
+        //   75 → 76（2026-10-28）：华为/荣耀「系统给了悬浮窗权限，App 仍判定未开启」
+        //     （pht88888888@qq.com + 2872327540@qq.com 两条反馈同一根因）。
+        //     根因是 Settings.canDrawOverlays() 在 EMUI/MagicOS 上会谎报 false，
+        //     而它被当作 show() / onAppBackground() / reconcileVisibility()
+        //     三处的前置拦截 ⇒ addView 根本不执行，用户既看不到球、设置页又显示
+        //     未开启。改为以 addView 的实测结果为准（probeResult），系统接口
+        //     只在「还没试过」时有发言权。
+        versionCode = 76
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
