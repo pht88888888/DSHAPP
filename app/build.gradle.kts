@@ -126,7 +126,17 @@ android {
         //        ③ **WebView 垫片补缺**：`tools/audit-runtime-apis.mjs` 对 394 个
         //           真实产物扫出缺口 `FinalizationRegistry`（Chrome 84，undici 6 处）。
         //           补近似垫片后审计缺口归零（36 个受跟踪 API 全覆盖）。
-        versionCode = 71
+        //   v72（本次）：代码审查发现的健壮性缺陷（不改功能，只堵风险）。
+        //        ① 悬浮球 4 处 `!!` 改显式判空 —— findViewById 返回可空类型，
+        //           布局一改名就在调用处抛 NPE，而此时球还没 addView，
+        //           用户看到「开了开关但球不出现」，日志只有一行无意义的
+        //           KotlinNullPointerException。改成缺哪个就少装哪个手势。
+        //        ② 插件开关 API 改用 applicationContext —— 公开 API 可能从
+        //           Activity 调用，避免把 Activity 钉在单例里。
+        //        配套的插件侧修复（wake 端点限定 POST、补连上限、remotePaths
+        //        不覆盖、路径校验、空壳判据、listWorkspaces 上限与排序）
+        //        已随 dsh-jiuling-remote-mobile@1.2.22 / desktop@1.0.45 发布。
+        versionCode = 72
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
