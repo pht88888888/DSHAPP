@@ -467,7 +467,17 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         // 放工具栏而不是塞进某个菜单：用户要的就是「点一下」（原话「希望可以
         // 增加 UA 切换」），多一层菜单等于没做。文案直接显示**当前模式**
         //（手机 / 桌面），点了就切，不用猜现在是哪个。
-        uaBtn = toolButton(if (desktopUa) "桌面" else "手机") { toggleUserAgent() }
+        // ⚠️ **宽度必须显式给足**（真机踩过）。
+        //
+        // 这台机器只有 360dp 宽，工具栏已经有 ← → ⟳ ⌂ 地址栏 [你] ✎ ⌄ ✕
+        // 共 8 个 34dp 控件 = 272dp，剩 88dp 分给地址栏和「你」。UA 按钮
+        // 若也用默认 34dp，两个字根本挤不下 —— 真机截图里它被压成一条
+        // **灰色几乎看不见的细线**，用户根本不知道那是个按钮。
+        //
+        // 给 44dp + 10 号字：中文两个字在 44dp 里放得下，也不至于把地址栏
+        // 挤没（地址栏有 weight=1，会自动让出）。
+        uaBtn = toolButton(if (desktopUa) "桌面" else "手机", widthDp = 44) { toggleUserAgent() }
+        uaBtn.textSize = 10f
         uaBtn.setTextColor(if (desktopUa) palette.accent else palette.text)
 
         // 「标注」：截图定格 → 圈画 → 直接问 AI。
@@ -1516,6 +1526,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
             wv.reload()
         }
         uaBtn.text = if (desktopUa) "桌面" else "手机"
+        uaBtn.textSize = 10f
         uaBtn.setTextColor(if (desktopUa) palette.accent else palette.text)
     }
 
