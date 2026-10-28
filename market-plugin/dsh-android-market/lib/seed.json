@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-15T16:31:27.439Z",
+  "generatedAt": "2026-10-28T23:53:06.790Z",
   "registry": "https://registry.npmjs.org",
   "keywords": {
     "community": "dshapp-plugin",
@@ -9,14 +9,14 @@
   "truncated": false,
   "counts": {
     "featured": 7,
-    "community": 2,
-    "total": 9
+    "community": 4,
+    "total": 11
   },
   "plugins": [
     {
       "name": "@jiuling/dsh-mcp-manager",
-      "version": "1.0.2",
-      "description": "MCP 服务器管理器：在 DSH Web GUI 的设置界面中可视化新增 / 编辑 / 删除 / 启停 @deepseek-ai/dsh-mcp-client 配置行，直接读写当前 profile 的 cordis.patch.yml。",
+      "version": "1.0.3",
+      "description": "MCP 服务器管理器：在 DSH Web GUI 的设置界面中可视化新增 / 编辑 / 删除 / 启停 @deepseek-ai/dsh-mcp-client 配置行，直接读写当前 profile 的 cordis.patch.yml。1.0.3 起适配 DSH 0.2.1（官方删除 webRuntime 服务，信任校验改用 connection.requestRejection）。",
       "keywords": [
         "dsh",
         "dsh-plugin",
@@ -44,12 +44,12 @@
       },
       "installable": true,
       "risks": [],
-      "publishedAt": "2026-10-15T10:46:57.222Z",
+      "publishedAt": "2026-10-19T07:26:58.849Z",
       "featured": true
     },
     {
       "name": "dsh-app-pet",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "description": "把 DSH Android 的悬浮球变成 dsh-pet 风格的桌面宠物：24 段透明 webm 动画、随机动作链、点击回应、拖拽抛掷、七个运行状态联动。素材随包分发，装上即用。",
       "keywords": [
         "dsh",
@@ -80,13 +80,13 @@
       },
       "installable": true,
       "risks": [],
-      "publishedAt": "2026-10-15T08:42:12.312Z",
+      "publishedAt": "2026-10-22T03:28:46.605Z",
       "featured": true
     },
     {
       "name": "dsh-compaction-threshold",
-      "version": "1.0.4",
-      "description": "在上下文监控卡片内直接调节自动压缩的触发阈值。host 半在运行时替换 @deepseek-ai/dsh-compaction-basic 已挂载引擎的 thresholdRatio 并持久化，client 半把滑块画进卡片面板。",
+      "version": "1.1.1",
+      "description": "在上下文监控卡片内直接调节自动压缩的触发阈值。host 半在运行时替换 @deepseek-ai/dsh-compaction-basic 已挂载引擎的 thresholdRatio 并持久化，client 半把滑块画进卡片面板。1.1.0 起适配 DSH 0.2.1（官方删除 webRuntime 服务，信任校验改用 connection.requestRejection）。",
       "keywords": [
         "dsh",
         "dsh-plugin",
@@ -112,7 +112,7 @@
       },
       "installable": true,
       "risks": [],
-      "publishedAt": "2026-10-15T16:30:00.682Z",
+      "publishedAt": "2026-10-19T07:32:24.063Z",
       "featured": true
     },
     {
@@ -192,7 +192,7 @@
     },
     {
       "name": "dsh-preset-razor",
-      "version": "1.0.1",
+      "version": "1.0.3",
       "description": "DSH agent preset「快准狠模式（通用）」：一行 loader 声明，装完即出现在新会话的预设选择器里。",
       "keywords": [
         "dsh",
@@ -217,7 +217,7 @@
       },
       "installable": true,
       "risks": [],
-      "publishedAt": "2026-10-15T08:39:47.546Z",
+      "publishedAt": "2026-10-19T10:00:21.523Z",
       "featured": true
     },
     {
@@ -252,8 +252,8 @@
     },
     {
       "name": "dsh-jiuling-remote-desktop",
-      "version": "1.0.5",
-      "description": "DSH 远程目录（电脑端）：把本机 DSH 会话的事件流经 Cloudflare 隧道搬到手机，手机进入电脑目录并发起对话，公网只传文本。",
+      "version": "1.0.47",
+      "description": "DSH 远程目录（电脑端）：把本机 DSH 会话的事件流经 Cloudflare 隧道搬到手机，手机进入电脑目录并发起对话，公网只传文本。含激活码配对流程。",
       "keywords": [
         "dshapp-plugin",
         "dsh",
@@ -272,18 +272,18 @@
       },
       "dsh": {
         "bundle": true,
-        "client": false,
+        "client": true,
         "manifestVersion": null,
         "dshReleases": null
       },
       "installable": true,
       "risks": [],
-      "publishedAt": "2026-10-15T15:20:39.997Z",
+      "publishedAt": "2026-10-28T16:04:47.026Z",
       "featured": false
     },
     {
       "name": "dsh-jiuling-remote-mobile",
-      "version": "1.0.5",
+      "version": "1.2.76",
       "description": "DSH 远程目录（手机端）：在选文件夹流程里多出「电脑」页签，进入电脑目录、在电脑上发起对话，并把电脑的实时消息流同步到手机本地界面（只传文本，不映射桌面）。",
       "keywords": [
         "dshapp-plugin",
@@ -310,7 +310,71 @@
       },
       "installable": true,
       "risks": [],
-      "publishedAt": "2026-10-15T15:23:01.937Z",
+      "publishedAt": "2026-10-28T23:43:34.955Z",
+      "featured": false
+    },
+    {
+      "name": "dsh-zen-free",
+      "version": "2.1.2",
+      "description": "OpenCode Zen 免费池供应商：把 opencode-zen 注册进设置 → 模型的供应商列表，可增删改模型、配置图片输入与上下文；无需 API Key，请求强制直连（不走任何代理）。附带「Zen 免费池统计」设置页，按模型累计调用次数与输入/输出/缓存 token。2.1.1 修复 DSH 0.2.1 下统计接口不挂载（官方删除 webRuntime 服务，改用 connection.requestRejection）。",
+      "keywords": [
+        "dsh",
+        "dsh-plugin",
+        "dshapp-plugin",
+        "llm",
+        "provider",
+        "opencode-zen",
+        "free"
+      ],
+      "license": "MIT",
+      "author": null,
+      "publisher": "jiuling",
+      "homepage": null,
+      "repository": null,
+      "engines": {
+        "node": ">=18"
+      },
+      "dsh": {
+        "bundle": true,
+        "client": true,
+        "manifestVersion": null,
+        "dshReleases": null
+      },
+      "installable": true,
+      "risks": [],
+      "publishedAt": "2026-10-19T08:02:09.952Z",
+      "featured": false
+    },
+    {
+      "name": "jiuling-remote",
+      "version": "2.0.21",
+      "description": "DSH 远程目录（电脑端 + 手机端合一）：把电脑上 DSH 会话的事件流经 Cloudflare Quick Tunnel 搬到手机，手机进入电脑目录并发起对话，公网只传文本。含激活码配对与自动重连。安装这一个包，桌面与手机两端同时就位。",
+      "keywords": [
+        "dshapp-plugin",
+        "dsh",
+        "dsh-plugin",
+        "DeepSeek",
+        "remote",
+        "cloudflare-tunnel",
+        "quick-tunnel"
+      ],
+      "license": "MIT",
+      "author": null,
+      "publisher": "jiuling",
+      "homepage": null,
+      "repository": null,
+      "engines": {
+        "node": ">=20"
+      },
+      "dsh": {
+        "bundle": true,
+        "client": true,
+        "manifestVersion": null,
+        "dshReleases": null
+      },
+      "installable": true,
+      "risks": [],
+      "publishedAt": "2026-10-27T05:50:44.371Z",
       "featured": false
     }
   ]
