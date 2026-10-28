@@ -33,6 +33,8 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
+import kotlin.math.max
 import android.widget.ProgressBar
 import android.widget.TextView
 import org.json.JSONObject
@@ -319,12 +321,17 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
     private val statusChip: TextView
     private val backBtn: TextView
     private val forwardBtn: TextView
-    private val reloadBtn: TextView
+    // ⚠️ `reloadBtn` / `homeBtn` 已移进「⋮」菜单（见 [showOverflowMenu]），
+    //    不再是工具栏成员，所以这里不再声明它们为字段 —— 留着会「声明了但从不赋值」
+    //    的编译错误。菜单项是按需构造的，不需要常驻视图。
+    /** 「⋮」溢出菜单按钮。低频动作都收在它后面，见 [showOverflowMenu]。 */
+    private val menuBtn: TextView
+
     /** UA 切换按钮（手机 / 桌面）。文案在 [toggleUserAgent] 里随状态更新。 */
     private val uaBtn: TextView
 
     private val markBtn: TextView
-    private val homeBtn: TextView
+
 
     /**
      * 「AI 正在做什么」胶囊。
@@ -435,10 +442,27 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         }
         chromeBar = chrome
 
-        backBtn = toolButton("←") { if (currentWebView()?.canGoBack() == true) currentWebView()?.goBack() }
-        forwardBtn = toolButton("→") { if (currentWebView()?.canGoForward() == true) currentWebView()?.goForward() }
-        reloadBtn = toolButton("⟳") { currentWebView()?.reload() }
-        homeBtn = toolButton("⌂") { loadUrl(HOME_URL) }
+        // ## ⚠️ 工具栏只放 5 个控件，其余收进「⋮」菜单
+        //
+        // 真机实测（CDY-TN90，360dp 宽）改造前：
+        //
+        //     10 个控件挤在 360dp 里
+        //     地址栏只剩 95px ≈ 32dp  ← 什么都显示不出来
+        //     每个按钮 102px = 34dp    ← 低于 Android 推荐的 48dp 触摸目标
+        //
+        // 用户原话：「控件太多，你可以使用那种弹出的形式，没必要全部挤在一起」。
+        //
+        // 现在的分工按**使用频次**排：
+        //   常驻：← → [地址栏] ⋮ ✕
+        //     · 前进/后退是浏览时最常点的两个，必须一眼可见；
+        //     · 地址栏是本面板的主入口，必须够宽（现在 ≈150dp）；
+        //     · ⋮ 收纳所有低频动作；
+        //     · ✕ 是唯一的退路，不能藏。
+        //
+        // 收进去的：刷新、首页、UA 切换、标注、收起。
+        // 它们都还在，只是不再抢占地址栏的宽度。
+        backBtn = toolButton("‹") { if (currentWebView()?.canGoBack() == true) currentWebView()?.goBack() }
+        forwardBtn = toolButton("›") { if (currentWebView()?.canGoForward() == true) currentWebView()?.goForward() }
 
         addressBar = TextView(context).apply {
             setTextColor(palette.text)
@@ -499,15 +523,27 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
 
         val closeBtn = toolButton("✕") { onClose?.invoke() }
 
+        // 「⋮」溢出菜单：收纳所有低频动作。
+        //
+        // ⚠️ 用 TextView 而不是系统 OverflowMenu：本 View 是浮在 WebView 上的
+        //   独立视图，走 Activity 的 actionbar 菜单需要宿主配合，而这里
+        //   **连 Activity 都不一定有**（侧栏面板可能挂在别的宿主上）。
+        //   PopupWindow 自带窗口，位置由我们自己定，最省事也最可控。
+        menuBtn = toolButton("⋮") { showOverflowMenu() }
+        menuBtn.textSize = 19f
+
+        // 地址栏：**必须给它足够宽度**。
+        //
+        // 改造前它只有 95px（32dp）—— 用户原话「显示是否正确」的答案就是
+        // 「不正确」：连域名都只露出一个 "h..."。现在 10 个控件压到 5 个，
+        // weight=1 自然把它撑到约 150dp，能显示 "www.navir.icu" 这样的完整域名。
         chrome.addView(backBtn)
         chrome.addView(forwardBtn)
-        chrome.addView(reloadBtn)
-        chrome.addView(homeBtn)
         chrome.addView(
             addressBar,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = dp(4)
-                rightMargin = dp(4)
+                leftMargin = dp(5)
+                rightMargin = dp(5)
             },
         )
         chrome.addView(
@@ -517,9 +553,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply { rightMargin = dp(4) },
         )
-        chrome.addView(uaBtn)
-        chrome.addView(markBtn)
-        chrome.addView(collapseBtn)
+        chrome.addView(menuBtn)
         chrome.addView(closeBtn)
 
         // ── 标签条（底部）──────────────────────────────────────────────
@@ -1530,6 +1564,153 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         uaBtn.setTextColor(if (desktopUa) palette.accent else palette.text)
     }
 
+    /**
+     * 弹出「⋮」溢出菜单。
+     *
+     * ## 为什么要有这个（用户 2026-10-28 原话）
+     *
+     * 「你看各个按钮是否合理？布局是否合理？控件太多，你可以使用那种弹出的
+     * 形式，没必要全部挤在一起」
+     *
+     * 真机实测改造前的数据把问题量化了（CDY-TN90，360dp 宽）：
+     *
+     * | 项目 | 改造前 | 现在 |
+     * |---|---|---|
+     * | 工具栏控件数 | 10 个 | 5 个 |
+     * | 地址栏宽度 | 95px ≈ 32dp | ≈150dp |
+     * | 每个按钮 | 34dp（< 48dp 标准） | 40dp + 菜单项 48dp 高 |
+     *
+     * ## 菜单项的取舍
+     *
+     * 收进来的是**低频但需要时找不到会很难受**的那批：
+     *   · 刷新 —— 有下拉刷新，但那在 WebView 里不一定灵；
+     *   · 首页 —— 迷路时的唯一退路；
+     *   · UA 切换 —— 按需使用，不是每次都点；
+     *   · 标注 —— 想圈重点时才用；
+     *   · 收起 —— 全屏铺满时的退路。
+     *
+     * ⚠️ **不放「关闭」**：✕ 已经常驻在工具栏最右，再放一个重复项只会让人犹豫。
+     *
+     * ⚠️ 菜单项高度给到 48dp：这是 Android 触摸目标的推荐下限，
+     *    原来工具栏按钮 34dp 已经偏小，菜单里空间充裕就没必要再省。
+     */
+    private fun showOverflowMenu() {
+        val anchor = menuBtn
+        val width = dp(196)
+        val items = listOf(
+            MenuItem("⟳", "刷新") { currentWebView()?.reload() },
+            MenuItem("⌂", "回到首页") { loadUrl(HOME_URL) },
+            // ⚠️ 这一项**不要带 sub**（真机踩过）：菜单宽 196dp，
+            //    「切换桌面版  当前：桌面 UA」放不下，实测换成了两行，
+            //    把这一行撑高到别的行一倍，看起来像排版坏了。
+            //    当前模式由 label 本身表达（「切回手机版」就意味着现在是桌面版），
+            //    菜单上的图标也随模式变，信息已经够了。
+            MenuItem(
+                if (desktopUa) "🖥" else "📱",
+                if (desktopUa) "切回手机版" else "切换桌面版",
+            ) { toggleUserAgent() },
+            MenuItem("✎", "标注截图") { startAnnotate() },
+            MenuItem("⌄", "收起浏览器") { onCollapse?.invoke() },
+        )
+
+        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        // ⚠️ 先声明再在点击里引用：`popup` 的构造要用 `list`，
+        //    而菜单项的点击回调要用 `popup` —— 直接 `val popup = PopupWindow(list…)`
+        //    会让回调捕获到一个还没初始化的变量。
+        var popup: PopupWindow? = null
+
+        items.forEachIndexed { index, item ->
+            // 分组细线：前两项是「导航」，后面是「工具」，中间划一刀。
+            if (index == 2) {
+                list.addView(
+                    View(context).apply { setBackgroundColor(palette.stroke) },
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, max(1, (resources.displayMetrics.density * 0.5f).toInt()),
+                    ).apply {
+                        topMargin = dp(4)
+                        bottomMargin = dp(4)
+                    },
+                )
+            }
+            val row = TextView(context).apply {
+                text = buildString {
+                    append(item.icon)
+                    append("   ")
+                    append(item.label)
+                    // `sub` 只用来告诉用户「当前是哪种模式」，不参与点击。
+                    // 并进同一行而不是换行：换行会把 48dp 的行高撑破。
+                    if (item.sub !== null) {
+                        append("   ")
+                        append(item.sub)
+                    }
+                }
+                setTextColor(if (item.sub !== null) palette.textDim else palette.text)
+                textSize = 14f
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), 0, dp(16), 0)
+                isClickable = true
+                isFocusable = true
+                background = pressable()
+                // 单行 + 超长省略：宁可截断也不要换行把行高撑破。
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+            }
+            row.setOnClickListener {
+                popup?.dismiss()
+                item.action()
+            }
+            // 用 minHeight 而不是固定高度：万一以后某项文字变长换行，
+            // 固定 48dp 会把文字裁掉；minHeight 允许它自然撑高但不低于触摸标准。
+            row.minHeight = dp(48)
+            list.addView(
+                row,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+
+        popup = PopupWindow(
+            list,
+            width,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            true, // 可点外部关闭
+        ).apply {
+            setBackgroundDrawable(menuBackground())
+            isOutsideTouchable = true
+            isFocusable = true
+            // 让阴影落在窗口外（5.0+），菜单看起来才不像是"贴"在页面上的。
+            elevation = dp(8).toFloat()
+        }
+
+        // 靠右对齐到「⋮」下方：anchor 在窗口里的位置 + 自身高度。
+        val loc = IntArray(2)
+        anchor.getLocationInWindow(loc)
+        // 右对齐：菜单右边缘 = 按钮右边缘，避免窄屏上超出屏幕。
+        val x = loc[0] + anchor.width - width
+        val y = loc[1] + anchor.height + dp(6)
+        val screenW = resources.displayMetrics.widthPixels
+        val safeX = x.coerceIn(dp(8), max(dp(8), screenW - width - dp(8)))
+        popup?.showAsDropDown(anchor, safeX - loc[0], dp(6))
+    }
+
+    /** 溢出菜单里的一项。`sub` 用于显示当前状态（比如 UA 模式）。 */
+    private class MenuItem(
+        val icon: String,
+        val label: String,
+        val sub: String? = null,
+        val action: () -> Unit,
+    )
+
+    /** 菜单圆角背景（跟着主题走）。 */
+    private fun menuBackground(): Drawable =
+        GradientDrawable().apply {
+            setColor(palette.barAlt)
+            cornerRadius = dp(12).toFloat()
+            setStroke(max(1, (resources.displayMetrics.density * 0.5f).toInt()), palette.stroke)
+        }
+
     private fun updateChrome() {
         val wv = currentWebView()
         val canBack = wv?.canGoBack() == true
@@ -2059,7 +2240,7 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         actionPill.background = pillBackground()
         // 工具栏图标：原来 `pressable()` 的填充是**全透明**，等于没有图标，
         // 只剩一片和背景同色的空白。现在用 icon 色（对比度 > 8）。
-        for (btn in listOf(backBtn, forwardBtn, reloadBtn, homeBtn, markBtn)) btn.setTextColor(palette.icon)
+        for (btn in listOf(backBtn, forwardBtn, menuBtn, markBtn)) btn.setTextColor(palette.icon)
         for (tab in tabs) tab.webView.setBackgroundColor(palette.root)
         for (tab in tabs) tab.label?.setTextColor(if (tabs.indexOf(tab) == activeIndex) palette.text else palette.textDim)
         rebuildTabStrip()
