@@ -1,0 +1,45 @@
+{
+  "name": "dsh-jiuling-remote-mobile",
+  "version": "1.2.87",
+  "description": "DSH 远程目录（手机端）：在选文件夹流程里多出「电脑」页签，进入电脑目录、在电脑上发起对话，并把电脑的实时消息流同步到手机本地界面（只传文本，不映射桌面）。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "keywords": [
+    "dshapp-plugin",
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "remote",
+    "android",
+    "cloudflare-tunnel"
+  ],
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/sidebar.mjs && node test/sync.mjs && node test/splice.mjs",
+    "smoke": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}
