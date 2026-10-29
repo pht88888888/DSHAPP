@@ -9598,6 +9598,49 @@ window.__ModuleLoader__.load({
 		 * @param {object} ctx - 浏览器插件上下文。
 		 * @returns {Function} dispose 函数。
 		 */
+		/**
+		 * 诊断输出：同时写 `console` 和 `app.log`。
+		 *
+		 * ⚠️ 页面的 `console.log` **不进 `logs/app.log`**（只到 WebView 控制台），
+		 *   所以排查「余额不出数」这类问题时必须在真机上可读。
+		 *   `pageDiag` 是为此新加的原生桥（见 `PageBridge.pageDiag`）。
+		 *
+		 * ## ⚠️⚠️ 为什么必须在模块级（而不是某个函数内）
+		 *
+		 * 它原来定义在 `mpInstallBalanceBridge()` 里，但两个调用点在
+		 * **`apply()`** 的「选择器体检」里 —— 两个不同的函数，
+		 * 后者取不到前者的 `const`。真机日志实拍：
+		 *
+		 *     Uncaught ReferenceError: diag is not defined
+		 *     @http://127.0.0.1:3080/plugins/??…dsh-android-mobile/client.js…
+		 *
+		 * 涵盖的川普：
+		 *   · 选择器体检在 `setTimeout(…, 4000)` 里，所以**每次启动 4 秒后**
+		 *     必报一条；
+		 *   · 那代表体检的结论**从来没被输出过**（报错先于下一行），
+		 *     所以它想发现的「官方改类名」永远发现不了。
+		 */
+		/**
+		 * 本文件的构建指纹。
+		 *
+		 * ## 为什么需要它
+		 *
+		 * 真机日志里只写「dsh-android-mobile」时，**无法区分跑的是哪个版本**。
+		 * 一次「改了没生效」的排查由此变成猜谜：到底是代码写错了，还是
+		 * 设备上那份根本没换？两者需要完全相反的处理。
+		 *
+		 * 所以给每次构建一个可肉眼比对的短串。改了本文件就把它一起改掉，
+		 * 真机日志里出现它 ⇒ 新版真的上屏了；不出现 ⇒ 旧文件还在，去查解包。
+		 *
+		 * 2026-10-29-a：`diag` 提到模块级（修 ReferenceError），改名 `mpDiag`。
+		 */
+		const MP_BUILD = '2026-10-29-a';
+
+		const mpDiag = (msg) => {
+			try { console.log("[dsh-android-mobile@" + MP_BUILD + "] " + msg); } catch { /* ignore */ }
+			try { window.DSHAndroid?.pageDiag?.("[" + MP_BUILD + "] " + String(msg)); } catch { /* ignore */ }
+		};
+
 		function mpInstallBalanceBridge(ctx) {
 			let refreshFn = null;
 			let timer = null;
@@ -9652,17 +9695,10 @@ window.__ModuleLoader__.load({
 
 			refreshFn = (reason) => void mpRefreshBalance(remote, reason);
 
-			/**
-			 * 诊断输出：同时写 "console" 和 "app.log"。
-			 *
-			 * ⚠️ 页面的 "console.log" **不进 "logs/app.log"**（只到 WebView 控制台），
-			 *   所以排查"余额不出数"这类问题时必须在真机上可读。"pageDiag" 是为此
-			 *   新加的原生桥（见 "PageBridge.pageDiag"）。
-			 */
-			const diag = (msg) => {
-				try { console.log("[dsh-android-mobile] " + msg); } catch { /* ignore */ }
-				try { window.DSHAndroid?.pageDiag?.(String(msg)); } catch { /* ignore */ }
-			};
+			/* `diag` 已提到模块级（见文件上方）——
+			 * 原来定义在这里，而 `apply()` 里的「选择器体检」也调它，
+			 * 那是**另一个函数作用域**，每次启动 4 秒后必抛
+			 * `ReferenceError: diag is not defined`（真机日志实拍）。 */
 
 			// ── 定时刷新 ───────────────────────────────────────────
 			// 配置由原生下发（`bubbleBadgeConfig`）。0 = 不启用。
@@ -9680,7 +9716,7 @@ window.__ModuleLoader__.load({
 			// "没 inject 到" 还是 "注进来了但结构不同"。
 			try {
 				const acct = remote?.account;
-				diag(
+				mpDiag(
 					"余额桥已装: remote=" + (remote ? "有" : "无") +
 					" account=" + (acct ? "有" : "无") +
 					" getBalance=" + (typeof acct?.getBalance) +
@@ -9689,7 +9725,7 @@ window.__ModuleLoader__.load({
 					" 点击限流=" + (cfg.tapRefreshMinIntervalSec || "?") + "s",
 				);
 			} catch (e) {
-				diag("余额桥诊断失败: " + (e && e.message));
+				mpDiag("余额桥诊断失败: " + (e && e.message));
 			}
 
 			if (everySec > 0) {
@@ -9728,7 +9764,7 @@ window.__ModuleLoader__.load({
 						lastTapSeq = n;
 						const now = Date.now();
 						if (now - lastTapAt < tapMinGapMs) {
-							diag("点球刷新被限流: 距上次 " + Math.round((now - lastTapAt) / 1000) + "s < " + (tapMinGapMs / 1000) + "s");
+							mpDiag("点球刷新被限流: 距上次 " + Math.round((now - lastTapAt) / 1000) + "s < " + (tapMinGapMs / 1000) + "s");
 							return;
 						}
 						lastTapAt = now;
@@ -9788,6 +9824,13 @@ window.__ModuleLoader__.load({
 		}
 
 		function apply(ctx) {
+			/*
+			 * 启动自报：真机日志里必须能看到这一行。
+			 *
+			 * 它存在的唯一目的，是让「新版到底有没有上屏」变成一个**看得见的事实**。
+			 * 看不到这条 ⇒ 设备上跑的还是旧文件，不用再猜代码。
+			 */
+			mpDiag('插件已装配 build=' + MP_BUILD);
 			mpCtx = ctx;
 			mpSessionsCache = ctx.get("sessions") ?? null;
 			mpRegisterPrivilegedSection(ctx);
@@ -9892,12 +9935,12 @@ window.__ModuleLoader__.load({
 							}
 							if (n === 0) missing.push(label + '(' + cls + ')');
 						}
-						diag(missing.length === 0
+						mpDiag(missing.length === 0
 							? '选择器体检: 7 个关键锚点全部命中'
 							: '选择器体检: ' + missing.length + ' 个未命中 → ' +
 								missing.join('、') + ' ｜官方可能已改类名，相关 CSS 规则已静默失效');
 					} catch (e) {
-						diag('选择器体检失败: ' + (e && e.message));
+						mpDiag('选择器体检失败: ' + (e && e.message));
 					}
 				}, 4000);
 			} catch (e) { /* 体检绝不能影响激活 */ }

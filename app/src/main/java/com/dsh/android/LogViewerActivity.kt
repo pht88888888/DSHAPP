@@ -660,6 +660,16 @@ class LogViewerActivity : AppCompatActivity() {
             File(home, "bubble-tool/dsh-android-bubble/package.json"),
             File(home, "uiagent-tool/dsh-android-uiagent/package.json"),
             File(home, "logs-tool/dsh-android-logs/package.json"),
+            /*
+             * ⚠️ 这两个**曾经漏掉**，直接导致「内置 memory / 快准狠预设消失了」
+             * 那次排查多绕了很久：诊断包里根本没有它们的任何痕迹，
+             * 而 `files.json` 只采集清单内的文件 ⇒ 看不出「包在不在」。
+             *
+             * 它们都落在 `$DSH_HOME/node_modules/` 下（不是各工具的独立目录），
+             * 所以不在原来的视觉模式里，写清单时被忽略了。
+             */
+            File(home, "node_modules/dsh-core-memory/package.json"),
+            File(home, "node_modules/dsh-preset-razor/package.json"),
             File(home, "sandbox.patch.yml"),
             File(home, "profiles/web/package.json"),
             File(filesDir, "usr/bin/node"),

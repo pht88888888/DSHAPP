@@ -3300,6 +3300,46 @@ class EngineManager private constructor(private val context: Context) {
         File(dshHome, "node_modules/$PRESET_RAZOR_PACKAGE")
 
     /**
+     * 引擎起来之后**再补一次**内置 bundle 登记。
+     *
+     * ## 为什么需要这一步（2026-10-29 真机复现，用户报「内置 memory 和 razor 消失了」）
+     *
+     * [registerPresetRazorBundle] / [registerCoreMemoryBundle] 都在 [start] 里、
+     * **引擎启动之前**调用，而 `profiles/web/package.json` 是**引擎自己创建的**。
+     * 于是首次启动必然命中那个分支：
+     *
+     *     已安装内置预设 dsh-preset-razor 1.0.3-1 (21666 字节)
+     *     profile 清单尚不存在，内置预设的 bundle 登记推迟到下次启动
+     *
+     * 设计上「下次启动再补」，但用户的测试习惯是**卸载 → 重装 → 试一次**：
+     * 每次都是全新环境、每次都在第一启动，那个「下次」永远不会到来
+     * ⇒ 「快准狠模式」与「跨会话记忆」在插件列表里**完全消失**。
+     * 而包其实早就解好了（日志里字节数都对），纯粹是登记没发生。
+     *
+     * ## 为什么放在引擎就绪之后是安全的
+     *
+     * 两个 register 函数本身完全幂等（按 `bundles` 是否已含 + marker 文件双重判定，
+     * 只在真改动时 `writeText`）。引擎此时已经读完 profile，改文件不会影响本次运行，
+     * 但**下一次启动**就能正常解析到 bundle —— 而那时 profile 一定已存在。
+     *
+     * ## ⚠️ 为什么不干脆把主调用挪到这里
+     *
+     * 因为引擎**本次**启动就要读 profile：如果 bundle 只能在引擎起来后登记，
+     * 那本次运行仍然看不到这些插件（首次安装后连预设选择器都是空的）。
+     * 两处都调：启动前试一次（profile 已存在的老用户立刻生效），
+     * 就绪后再补一次（首次安装的用户下一次启动生效）。
+     */
+    private fun registerBuiltinBundlesAfterReady() {
+        try {
+            registerPresetRazorBundle()
+            registerCoreMemoryBundle()
+        } catch (t: Throwable) {
+            // 补登记失败绝不能影响引擎可用性：本次照常运行，下次启动会再试。
+            Log.w(TAG, "引擎就绪后补登记内置 bundle 失败: ${t.message}")
+        }
+    }
+
+    /**
      * 把 dsh-core-memory 登记成 profile 的一个 **bundle**，让它在「插件 → 已安装插件」
      * 列表里出现、并能被用户单独开关。
      *
@@ -8180,11 +8220,14 @@ class EngineManager private constructor(private val context: Context) {
                 _state.value = State.Ready(url)
                 Log.i(TAG, "引擎就绪: $url")
                 startHeapWatch(proc)
+                registerBuiltinBundlesAfterReady()
                 return@withContext
             }
             _state.value = State.Ready(url)
             Log.i(TAG, "引擎就绪: $url")
             startHeapWatch(proc)
+            // profile 如今一定已存在 ⇒ 补登记内置 bundle（见该函数的 KDoc）。
+            registerBuiltinBundlesAfterReady()
             // ⚠️ 引擎**真的起来了** ⇒ 清掉上次的失败记录。
             //
             //   见 RescueBoot 的类注释：这份记录是「上次为什么起不来」的唯一线索，
@@ -10517,7 +10560,7 @@ class EngineManager private constructor(private val context: Context) {
           *      本常量仍必须 bump：不然设备上的 `.mobile_ui_version` 不变，
           *      mobile-ui.zip 解包被整体跳过，三条修复一条都收不到。
           */
-        private const val MOBILE_UI_VERSION = "1.0.0-105"
+        private const val MOBILE_UI_VERSION = "1.0.0-109"
         private const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────

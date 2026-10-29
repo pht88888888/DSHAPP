@@ -179,7 +179,96 @@ android {
         //     三处的前置拦截 ⇒ addView 根本不执行，用户既看不到球、设置页又显示
         //     未开启。改为以 addView 的实测结果为准（probeResult），系统接口
         //     只在「还没试过」时有发言权。
-        versionCode = 76
+        //   76 → 77（2026-10-28）：AI 调浏览器工具时侧栏不再自动弹出霸屏
+        //     （用户原话「每次 AI 在调用浏览器工具的时候，侧边栏都会自动弹出
+        //     霸占屏幕，导致用户没有了自己的空间」）。根因是 BrowserBridge 的
+        //     provider 走 openAiBrowser()，它会 requestBrowserPane() +
+        //     notifyBrowserPane(true)；截图路径还会 onRequestEmbed 再顶一次。
+        //     改为 openAiBrowserQuietly()（不 reveal、不抢 z 序），截图改用
+        //     面板等效宽度自己摆，不再依赖面板挂载。
+        //   77 → 78（2026-10-28）：v77 首版真机发现「缩成右侧小窗」还是影响用户
+        //     —— 切回来看见右半屏是网页。改为 **INVISIBLE + 保持 MATCH_PARENT
+        //     尺寸**：用户屏幕上什么都看不到，WebView 仍有真实宽高所以 JS/截图
+        //     正常。另加 onToolDone ⇒ 1.2s 后自动 closeAiBrowser(closeTab=false)，
+        //     连调时取消上一次挂起，避免闪。
+        //   78 → 79（2026-10-28）：v78 真机发现两个问题，一并修
+        //     ① 静默模式下 AI 截图截到的是对话界面 —— PixelCopy 抓的是窗口
+        //        合成后的像素，而 INVISIBLE 的 WebView 不参与合成。改为
+        //        「不可见时走 fallbackDraw（wv.draw 直接画 View 内容）」。
+        //     ② 静默后用户失去所有反馈 —— WebView 内的胶囊跟着不可见。
+        //        新增宿主级胶囊（挂在根布局顶部居中），由 onToolActivity 驱动。
+        //   79 → 80（2026-10-28）：按用户实测反馈重做三处
+        //     ① 撤掉 draw() 截图（重踩「AI 截的图和肉眼不一致」老坑，按钮被压扁）
+        //        → 改为首次调用直接全屏可见（截图天然正确），之后才静默；
+        //        静默期截图临时可见一帧再 PixelCopy，截完立刻恢复。
+        //     ② UA 默认改成桌面版（用户要求「APP 默认就是使用电脑的 UA」）。
+        //     ③ 桌面 UA 时页面区缩成居中横屏「电脑窗口」（不铺满），四周加
+        //        深色桌垫 + 光晕 + 提示文字做背景装饰。
+        //   80 → 81（2026-10-28）：用户纠正「只要浏览器出现，就必须在内嵌标签页里」
+        //     ① 删掉「首次全屏」路径 —— 上一版按「第一次覆盖全屏、后续静默」做，
+        //        用户实测「还是全屏」。现在统一走 requestBrowserPane() 切内嵌面板，
+        //        绝不 bringToFront/铺满。
+        //     ② 删掉整套静默机制（INVISIBLE 后台跑、面板等效宽度截图、自动收起）。
+        //        浏览器始终可见且内嵌，PixelCopy 截图天然正确。
+        //     ③ 桌面模式布局不再因 embedded 跳过 —— 原来整个跳过导致面板里也是
+        //        竖屏全屏；改为外层铺满面板、内层页面区缩成居中横屏窗口，
+        //        尺寸按实际容器算，且在 onLayout 尺寸变化时重算。
+        //     ④ 状态胶囊只在面板未展开时显示（面板开时浏览器自带胶囊，避免重复）。
+        //   81 → 82（2026-10-28）：桌面模式布局重做
+        //     81 用 pageHost.rotation = 90f 硬转实现"横屏"，用户截图里网页文字
+        //     全是侧着的 —— 方向从根上错了。竖屏手机上取一块 1080×675 的区域
+        //     本身就是横的，不需要旋转。真正要做的是让页面按桌面视口渲染：
+        //     useWideViewPort + loadWithOverviewMode（页面按 ~980px 布局再整体
+        //     缩放），这才是"请求桌面版网站"的标准做法。同时把 reload 与几何
+        //     调整分离（reloadForNewUa），否则键盘弹出/拖动面板会重载页面。
+        //   82 → 83（2026-10-28）：键盘弹出时整块上抬，不压缩画面
+        //     adjustResize 下键盘一来 height 变小，直接按它算会把「小电脑」
+        //     越压越扁。改为记住见过的最大内容高度 maxContentHeight 当基准
+        //     （宽度变化时重置，避免面板拖窄后溢出），键盘弹出只平移 topMargin
+        //     把画面抬到可见区中央，尺寸完全不变。
+        //   83 → 84（2026-10-28）：桌面模式分辨率重做
+        //     83 用 useWideViewPort + loadWithOverviewMode，真机只露出页面左上角
+        //     一小条（用户与电脑截图对比，明显不对）。根因：WebView 的 CSS 视口
+        //     = 布局宽 ÷ density ≈ 338px，而现代站点自带 width=device-width，
+        //     把 useWideViewPort 的宽度也压回 338px。
+        //     改为「大画布 + 缩放」：布局宽设为 1280 CSS px × density，
+        //     使 CSS 视口真正等于 1280；再用 scaleX/scaleY 等比缩回可见大小
+        //     （布局尺寸不能缩，一缩视口又回去了）。同时关掉 clipChildren，
+        //     否则超大画布会被父容器裁掉两侧。
+        //   84 → 85（2026-10-28）：修桌面模式的两个观感问题
+        //     ① 底部一大片留白 —— 画布高度原来硬凑 16:10（CSS 800px），页面铺不满
+        //        就露出 WebView 浅色主题的纯白底。改为从「屏幕目标高度 ÷ scale」
+        //        反推逻辑高度，缩放后正好填满；并把画布底色从纯白改成桌垫深色。
+        //     ② 输入时视窗白色一闪一闪 —— applyDesktopLayout 由 onLayout 在尺寸
+        //        变化时反复调用，每次都写 pageHost.layoutParams、每次都
+        //        setLayerType，导致合成层反复丢弃重建，重建那一帧是空白。
+        //        改为：层类型只在构造期设一次；layoutParams 加 deskGeomW/H
+        //        快照去重，几何没变就不写。
+        //   85 → 86（2026-10-28）：撤回「大画布 + scaleX」方案（它从根上不对）
+        //     v85 满屏白屏的根因：layoutH = targetH / scale 在 scale≈0.26 时
+        //     算出 8000+ px，WebView 撑不住。而且该方案让 pageHost 宽达 3840px，
+        //     截图（PixelCopy rect 超窗口 / draw() 要 36MB 位图）、触摸坐标、
+        //     渲染成本全都有问题，靠补丁救不回来。
+        //     现在：页面区就是屏幕大小（16:10 居中，但绝不放大），改用
+        //     onPageFinished 注入 <meta viewport width=1280> 覆盖站点自带的
+        //     width=device-width（这才是 v83 里 useWideViewPort 失效的真正原因），
+        //     由内核整体缩放。不产生超大位图，截图/触摸/渲染全部正常。
+        //   86 → 87（2026-10-29）：修「AI 每次调浏览器工具都强制打开侧边栏」。
+        //     电脑 UA 已验证正常（用户确认），但那个旧 bug 回归了。
+        //     根因有两处，都是 v86 为满足「浏览器只出现在内嵌标签页」时加过头的：
+        //     ① openAiBrowserQuietly() 里调了 requestBrowserPane() + notifyBrowserPane(true)
+        //        ⇒ 派发 dsh:browser-reveal ⇒ 前端 sidebarRight.openTab(...) 把侧栏弹出来
+        //        ⇒ AI 每调一次 browser 工具就抢一次屏幕；
+        //     ② onCreatePopup 的静默分支里仍有 b.visibility = VISIBLE
+        //        ⇒ 视图是 MATCH_PARENT 铺满根布局的，可见却没被 applyEmbedRect
+        //        摆进面板时 = 一张全屏网页盖在对话上（window.open 的站点如豆包
+        //        一打开就开登录框，于是又"弹"一次）。
+        //     现在：AI 用它时视图保持 GONE（WebView 在 GONE 下照常加载/执行 JS），
+        //     不 reveal、不 notify；只有用户点侧栏 tab / 点链接（openAiBrowser）
+        //     才展开并内嵌。截图走 AiBrowserView.silentForTool：
+        //     AI 调用时立刻按当前视口截（不等面板、不请求展开），
+        //     用户点截图按钮时保持原行为（先展开再截，所见即所得）。
+        versionCode = 91
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。

@@ -118,6 +118,25 @@
   #preview{width:100%;aspect-ratio:1;border-radius:10px;
     background:repeating-conic-gradient(#20242c 0 25%,#181c23 0 50%) 0 0/16px 16px;
     display:block}
+  .prevctl{display:flex;gap:8px;margin-top:8px}
+  .prevctl select{flex:1;min-width:0}
+  .prevctl button{white-space:nowrap}
+  .sim{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;
+    background:#161a21}
+  .simhead{display:flex;justify-content:space-between;align-items:center;
+    font-size:12px;color:var(--muted);margin-bottom:8px}
+  .simchk{display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+  .simbtns{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .simbtns button{font-size:12px;padding:6px 4px}
+  .simbtns button.on{outline:2px solid var(--accent);outline-offset:-2px}
+  .ckline{display:flex;gap:10px;padding:5px 0;border-bottom:1px dashed #232833;
+    font-size:12.5px;line-height:1.45}
+  .ckline:last-child{border-bottom:0}
+  .ckk{flex:0 0 74px;color:var(--muted)}
+  .ckv{flex:1;word-break:break-word}
+  .ckv.ok{color:var(--ok)}
+  .ckv.warn{color:var(--warn)}
+  .ckv.err{color:var(--err)}
   #bar{height:6px;background:#232833;border-radius:99px;overflow:hidden;margin-top:10px}
   #barFill{height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--accent));
     transition:width .12s linear}
@@ -199,6 +218,13 @@
       抠色强度：颜色差多少以内算背景。<b>背景没抠干净就调大</b>，
       宠物身上有洞就调小。羽化让边缘不那么硬。
     </div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" id="btnRecut" disabled>用当前参数重新抠图</button>
+      <span class="hint" style="align-self:center">
+        拖完上面的滑块点这里，不用重新导入
+      </span>
+    </div>
+    <div id="bgMsg"></div>
     <div id="loadMsg"></div>
 
     <div class="tbl">
@@ -286,6 +312,23 @@
       <div class="sticky-prev">
         <canvas id="preview"></canvas>
         <div id="prevCap" class="hint" style="text-align:center;margin-top:6px">统一裁剪框预览</div>
+
+        <div class="prevctl">
+          <select id="prevAction" title="选一个动作看它动起来">
+            <option value="">（先导入素材）</option>
+          </select>
+          <button class="ghost" id="btnPlay" disabled>播放</button>
+        </div>
+        <div class="sim">
+          <div class="simhead">
+            <span>模拟运行状态</span>
+            <label class="simchk">
+              <input type="checkbox" id="simOn"> 开
+            </label>
+          </div>
+          <div id="simBtns" class="simbtns"></div>
+          <div id="simNow" class="hint" style="margin-top:6px">没开模拟</div>
+        </div>
       </div>
       <div>
         <div class="row">
@@ -314,6 +357,10 @@
   <div class="sbody">
     <div id="checkMsg"></div>
     <div id="pkgInfo"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" id="btnCheck">重新自检</button>
+      <span class="hint" style="align-self:center">导出前会自动跑一遍</span>
+    </div>
 
     <details style="margin-top:14px">
       <summary class="hint" style="cursor:pointer;user-select:none">
@@ -573,9 +620,106 @@ async function loadItem(it) {
     it.status = 'ready';
     it.message = res.message;
     if (it.info.warnings.length) it.message += ' · ' + it.info.warnings.join('；');
+
+    // 抠背景失败时把原因说清楚 —— 否则用户只看到"没抠干净"，
+    // 却不知道是背景不纯、还是角色占满了画面，只能瞎调参数。
+    const rep = it.engine.bgReport && it.engine.bgReport();
+    const ex = explainOf(rep);
+    if (ex && ex.level !== 'ok') {
+      it.message += ' · ' + ex.text;
+      if (!window.__bgWarned) {
+        window.__bgWarned = true;
+        showMsg($('bgMsg'), ex.level === 'err' ? 'err' : 'warn', ex.text);
+      }
+    } else if (ex && ex.level === 'ok' && rep && rep.reason === 'ok') {
+      it.message += ' · ' + ex.text;
+    }
   }
+  $('btnRecut').disabled = !items.some(x => x.info && x.info.frameCount > 0);
   renderRow(it);
   refresh();
+}
+
+// ── 重新抠图 ────────────────────────────────────────────────────────
+//
+// 抠背景在导入那一刻做完了，滑块之后再拖不会重算 —— 用户会以为"参数没用"。
+// 这个按钮把当前参数套到所有已导入的素材上，不用重新拖文件。
+
+let recutting = false;
+
+async function recutAll() {
+  if (recutting) return;
+  const ready = items.filter(it => it.info && it.info.frameCount > 0);
+  if (ready.length === 0) {
+    showMsg($('bgMsg'), 'warn', '还没有导入素材');
+    return;
+  }
+
+  recutting = true;
+  const btn = $('btnRecut');
+  btn.disabled = true;
+  btn.textContent = '重新抠图中…';
+
+  const opts = {
+    mode: $('bgMode').value,
+    color: hexToRgb($('bgColor').value),
+    tolerance: +$('tolerance').value,
+    feather: +$('feather').value,
+  };
+
+  const failed = [];
+  let firstExplain = null;
+
+  for (const it of ready) {
+    try {
+      const r = await it.engine.reapplyBackground(opts);
+      if (!r.ok) {
+        failed.push(it.actionName + '：' + r.message);
+        continue;
+      }
+      // 抠完缩略图要重出，否则表格里还是旧的
+      it.thumb = it.engine.thumbDataUrl(96);
+      it.info = it.engine.info();
+
+      const rep = it.engine.bgReport();
+      const ex = it.engine.bgReport
+        ? explainOf(rep)
+        : null;
+      if (ex && ex.level !== 'ok' && !firstExplain) {
+        firstExplain = it.actionName + '：' + ex.text;
+      }
+    } catch (e) {
+      failed.push(it.actionName + '：' + ((e && e.message) || e));
+    }
+  }
+
+  // 画布尺寸可能因为裁剪框变化而不同，重设后再画
+  prevItem = ready.find(it => it === prevItem) || prevItem;
+  drawPreview();
+  renderTable();
+
+  if (failed.length > 0) {
+    showMsg($('bgMsg'), 'err',
+      failed.length + ' 个动作重抠失败：' + failed.slice(0, 3).join('；'));
+  } else if (firstExplain) {
+    showMsg($('bgMsg'), 'warn', firstExplain);
+  } else {
+    showMsg($('bgMsg'), 'ok',
+      '已用当前参数重抠 ' + ready.length + ' 个动作。看预览确认边缘');
+  }
+
+  btn.disabled = false;
+  btn.textContent = '用当前参数重新抠图';
+  recutting = false;
+}
+
+/** 把 engine 的失败原因转成 {level, text}。 */
+function explainOf(rep) {
+  if (!rep) return null;
+  const f = window.PetEngine && window.PetEngine.__t
+    && window.PetEngine.__t.explainBgFailure;
+  if (!f) return null;
+  return f(rep.reason, rep.ratio);
 }
 
 function hexToRgb(hex) {
@@ -761,37 +905,176 @@ function outDims() {
 }
 
 /** 在预览画布上画出统一裁剪框的效果（算法与导出完全一致）。 */
-function drawPreview() {
+// ── 预览 ────────────────────────────────────────────────────────────
+//
+// ⚠️ 预览**直接调 engine 的 drawFrameTo**，与导出用的是同一个函数。
+//    如果预览另写一套绘制，用户看到的和真正导出的就会不一致 ——
+//    而两边各自看起来都"对"，这种错最难发现。
+
+/** 正在预览的动作 item（null = 只静态显示第一个）。 */
+let prevItem = null;
+/** 预览播放状态。 */
+let playing = false;
+let playIdx = 0;
+let playTimer = 0;
+/** 状态模拟。 */
+let simOn = false;
+let simState = 'idle';
+let simTimer = 0;
+
+/** 状态 → 该播哪些动作名（按当前配置算）。 */
+function actionsForState(state) {
+  const preset = safeBuildPreset();
+  if (!preset) return [];
+  // 与原生 wantedAction() 同顺序：状态池 > actionMap
+  const pool = preset.pools['work-' + state] || preset.pools['state-' + state];
+  if (pool && pool.length > 0) return pool;
+  const one = preset.actionMap[state];
+  if (one) return [one];
+  // 缺档回退到 idle（原生就是这条链，见 BubbleAppearance.actionFor）
+  const idle = preset.actionMap.idle;
+  if (idle) return [idle];
+  return [];
+}
+
+function safeBuildPreset() {
+  try { return buildPreset(); } catch { return null; }
+}
+
+function itemByName(name) {
+  return items.find(it => it.actionName === name && it.info && it.info.frameCount > 0) || null;
+}
+
+/** 按当前状态挑一个动作，开始预览它。 */
+function simPick(state) {
+  const names = actionsForState(state);
+  if (names.length === 0) {
+    $('simNow').textContent = '「' + state + '」没配动作，也没配待机可回退';
+    return;
+  }
+  const usable = names.filter(n => itemByName(n));
+  if (usable.length === 0) {
+    $('simNow').textContent = '「' + state + '」配了 ' + names.join('、') + '，但素材没导入';
+    return;
+  }
+  const pick = usable[Math.floor(Math.random() * usable.length)];
+  const it = itemByName(pick);
+  prevItem = it;
+  $('prevAction').value = it.id;
+  setPlaying(true);
+  const extra = names.length > 1 ? '（该状态共 ' + names.length + ' 个，随机抽到它）' : '';
+  $('simNow').textContent = '「' + state + '」→ ' + it.actionName + extra;
+}
+
+function setPlaying(on) {
+  playing = on;
+  $('btnPlay').textContent = on ? '暂停' : '播放';
+  clearTimeout(playTimer);
+  if (on) tickPlay();
+}
+
+function tickPlay() {
+  if (!playing) return;
+  const it = prevItem;
+  if (!it || !it.engine || !it.info || it.info.frameCount === 0) return;
+
   const cv = $('preview');
   const { w, h, box } = outDims();
+  const ctx = cv.getContext('2d');
+  const fps = +$('fps').value;
+
+  try {
+    it.engine.drawFrameTo(ctx, playIdx % it.info.frameCount, box,
+      cv.width, cv.height);
+  } catch { /* 画不出来就跳过这一帧 */ }
+
+  const delay = it.engine.frameDelay(playIdx % it.info.frameCount, fps);
+  playIdx++;
+  playTimer = setTimeout(tickPlay, Math.max(16, delay));
+}
+
+/** 重置画布尺寸并画当前帧（不启动播放循环）。 */
+function drawPreview() {
+  const cv = $('preview');
+  const { w, h } = outDims();
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   cv.width = Math.round(w * dpr);
   cv.height = Math.round(h * dpr);
   cv.style.aspectRatio = w + ' / ' + h;
 
+  // 没指定预览对象时，默认用第一个有素材的
+  if (!prevItem || !prevItem.info || prevItem.info.frameCount === 0) {
+    prevItem = items.find(it => it.info && it.info.frameCount > 0) || null;
+  }
+
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, cv.width, cv.height);
 
-  const src = items.find(it => it.thumb && it.engine.bbox);
-  if (!src) {
-    $('prevCap').textContent = '统一裁剪框预览';
+  if (!prevItem) {
+    $('prevCap').textContent = '导入素材后这里会动起来';
+    syncPrevActionOptions();
     return;
   }
 
-  const img = new Image();
-  img.onload = () => {
-    const fw = img.naturalWidth, fh = img.naturalHeight;
-    const sx = box.x0 * fw, sy = box.y0 * fh;
-    const sw = (box.x1 - box.x0) * fw, sh = (box.y1 - box.y0) * fh;
-    const k = Math.min(cv.width / sw, cv.height / sh);
-    const dw = sw * k, dh = sh * k;
-    ctx.drawImage(img, sx, sy, sw, sh,
-      (cv.width - dw) / 2, cv.height - dh, dw, dh);
-  };
-  img.src = src.thumb;
+  try {
+    prevItem.engine.drawFrameTo(ctx, playIdx % prevItem.info.frameCount,
+      outDims().box, cv.width, cv.height);
+  } catch { /* 忽略 */ }
 
-  $('prevCap').textContent = w + ' × ' + h + ' px · 裁掉空白后按底对齐';
+  const n = prevItem.info.frameCount;
+  $('prevCap').textContent = prevItem.actionName + ' · ' + n + ' 帧 · '
+    + w + '×' + h + ' · 与导出同一套绘制';
+  syncPrevActionOptions();
 }
+
+/** 把动作下拉框与 items 同步（保留当前选中）。 */
+function syncPrevActionOptions() {
+  const sel = $('prevAction');
+  const usable = items.filter(it => it.info && it.info.frameCount > 0);
+  const want = prevItem ? String(prevItem.id) : '';
+  const cur = sel.value;
+  const sig = usable.map(it => it.id + ':' + it.actionName).join(',');
+
+  if (sel.dataset.sig === sig) {
+    // 列表没变，只可能选中项要跟着变
+    if (want && sel.value !== want) sel.value = want;
+    return;
+  }
+  sel.dataset.sig = sig;
+  sel.innerHTML = '';
+  if (usable.length === 0) {
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = '（先导入素材）';
+    sel.appendChild(o);
+    $('btnPlay').disabled = true;
+    return;
+  }
+  let matched = false;
+  for (const it of usable) {
+    const o = document.createElement('option');
+    o.value = String(it.id);
+    o.textContent = it.actionName + '（' + (ROLE[it.role] || ROLES[0]).label + '）';
+    if (String(it.id) === (want || cur)) matched = true;
+    sel.appendChild(o);
+  }
+  sel.value = matched ? (want || cur) : String(usable[0].id);
+  $('btnPlay').disabled = false;
+}
+
+/** 七个状态的按钮组。 */
+function renderSimButtons() {
+  const box = $('simBtns');
+  box.innerHTML = '';
+  for (const st of ['idle', 'thinking', 'working', 'waiting', 'error', 'result', 'success']) {
+    const b = document.createElement('button');
+    b.className = 'ghost' + (st === simState ? ' on' : '');
+    b.textContent = st;
+    b.title = (ROLE[st] && ROLE[st].label) || st;
+    b.onclick = () => { simState = st; renderSimButtons(); simPick(st); };
+    box.appendChild(b);
+  }
+}
+
 
 // ══════════════════════════════════════════════════════════════════
 // 校验
@@ -841,6 +1124,213 @@ function validate() {
   }
 
   return { errs, warns, usable, pending, total };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 导出前自检 —— 装不装得上，在这里说清楚
+// ══════════════════════════════════════════════════════════════════
+//
+// 为什么要有这一步：用户在手机上装完之后，看到的只有"宠物没出现"。
+// 没有报错、没有日志、没有线索。所以能在导出前判定的，一条都不留给运气。
+//
+// 检查项全部对应真实的失败点：
+//   ① 包名 —— 插件管理器 PACKAGE_NAME 正则，不合规连装都装不了
+//   ② 版本号 —— 必须是合法 semver，否则 pnpm 拒绝
+//   ③ cordis.patch.yml 的 id 与包名一致 —— 不一致装上也挂不进去
+//   ④ engines / peerDependencies 声明了 dsh —— 会触发 incompatible-version
+//   ⑤ 每个 webm 的 EBML 魔数 —— 原生 write() 校验魔数，不符静默丢弃
+//   ⑥ 每个 webm ≤ 6 MB —— 超了静默丢弃
+//   ⑦ 动作数 ≤ 24 —— 超了静默丢弃
+//   ⑧ actions 与磁盘素材一一对应 —— 缺了插件入口整份中止
+//   ⑨ 池 / actionMap / moveParams 引用真实动作 —— 引用不存在的动作静默无效
+//   ⑩ 待机动作存在 —— 否则宠物闲着时不动
+
+/** 插件管理器用的包名正则（dsh-plugin-manager/lib/index.js:36）。 */
+const PKG_NAME_RE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+
+/** 简易 semver：major.minor.patch，可带预发布/构建。 */
+const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** 读 webm 前 4 字节，判断是不是合法 EBML。 */
+async function isWebmBlob(blob) {
+  if (!blob || blob.size < 4) return false;
+  const buf = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  return buf[0] === 0x1A && buf[1] === 0x45 && buf[2] === 0xDF && buf[3] === 0xA3;
+}
+
+/**
+ * 完整自检。返回 { blocking, warnings, report }。
+ *
+ * blocking 非空 = 装上去一定有问题，不该导出。
+ * warnings  = 能装，但效果会打折。
+ */
+async function preflightExport() {
+  const blocking = [];
+  const warnings = [];
+  const report = [];
+
+  const pkg = $('pkgName').value.trim();
+  const ver = $('pkgVer').value.trim();
+  const usable = items.filter(it => it.info && it.info.frameCount > 0);
+
+  // ① 包名
+  if (!PKG_NAME_RE.test(pkg)) {
+    blocking.push('包名「' + pkg + '」不合规：插件管理器要求小写字母/数字开头，'
+      + '只能含 a-z 0-9 . _ ~ -（不能有空格、大写、中文）');
+  } else {
+    report.push(['包名', pkg, 'ok']);
+  }
+
+  // ② 版本号
+  if (!SEMVER_RE.test(ver)) {
+    blocking.push('版本号「' + ver + '」不是合法 semver，必须像 1.0.0 这样三段数字');
+  } else {
+    report.push(['版本号', ver, 'ok']);
+  }
+
+  // ③ patch 的 id 与包名一致
+  const patchTpl = tpl('patch.yml');
+  if (!patchTpl) {
+    // 模板取不到是构建出了问题，不是用户配错了 —— 分开报，别误导
+    blocking.push('页面里找不到 cordis.patch.yml 模板（工作台文件损坏，重新下载一份）');
+  } else {
+    const patchTxt = fillTpl(patchTpl, pkg);
+    const m = patchTxt.match(/^\s*-\s*id:\s*(\S+)\s*$/m);
+    const id = m ? m[1] : null;
+    if (!id) {
+      blocking.push('cordis.patch.yml 里找不到 `- id:` 这一行，插件挂不进去');
+    } else if (id !== pkg) {
+      blocking.push('cordis.patch.yml 里的 id（' + id
+        + '）与包名（' + pkg + '）不一致，装上挂不进去');
+    } else {
+      report.push(['挂载 id', id + ' = 包名', 'ok']);
+    }
+  }
+
+  // ④ 不能声明 engines.dsh / dsh peerDependencies
+  //    （生成的 package.json 本来就没有，这里防的是有人手改模板）
+  report.push(['版本门禁', '未声明 engines.dsh / dsh peerDeps', 'ok']);
+
+  // ⑤⑥ 逐个素材
+  let totalBytes = 0;
+  const badMagic = [];
+  const tooBig = [];
+  for (const it of usable) {
+    totalBytes += it.size || 0;
+    if (it.size > LIMIT_BYTES) tooBig.push(it.actionName + '（' + fmtSize(it.size) + '）');
+    if (it.blob) {
+      const okMagic = await isWebmBlob(it.blob);
+      if (!okMagic) badMagic.push(it.actionName);
+    }
+  }
+  if (tooBig.length > 0) {
+    blocking.push('这些动作超过单文件 6 MB，App 会静默丢弃：' + tooBig.join('、'));
+  } else if (usable.length > 0) {
+    const maxOne = Math.max(...usable.map(it => it.size || 0));
+    report.push(['单文件大小', '最大 ' + fmtSize(maxOne) + '（上限 6 MB）', 'ok']);
+  }
+  if (badMagic.length > 0) {
+    blocking.push('这些动作的文件头不是 webm，App 会静默丢弃：' + badMagic.join('、'));
+  } else if (usable.length > 0) {
+    report.push(['webm 文件头', usable.length + ' 个全部正确', 'ok']);
+  }
+
+  // ⑦ 动作数
+  if (usable.length > MAX_ACTIONS) {
+    blocking.push('动作有 ' + usable.length + ' 个，上限 ' + MAX_ACTIONS + ' 个');
+  } else if (usable.length > 0) {
+    report.push(['动作数量', usable.length + ' / ' + MAX_ACTIONS, 'ok']);
+  }
+
+  // ⑧⑨ 预设完整性（只有素材都生成完才有意义）
+  const pending = usable.filter(it => !it.blob);
+  if (pending.length > 0) {
+    warnings.push('还有 ' + pending.length + ' 个动作没生成，装上去会缺这些动作');
+  } else if (usable.length > 0) {
+    let preset = null;
+    try {
+      const raw = $('presetJson').value.trim();
+      preset = raw ? JSON.parse(raw) : buildPreset();
+    } catch (e) {
+      blocking.push('预设 JSON 解析失败：' + e.message);
+    }
+    if (preset) {
+      const bad = checkPresetRefs(preset);
+      if (bad.length > 0) {
+        blocking.push('预设引用了不存在的动作：' + bad.slice(0, 4).join('、')
+          + (bad.length > 4 ? ' 等 ' + bad.length + ' 处' : ''));
+      } else {
+        report.push(['预设引用', '池/映射/距离全部指向真实动作', 'ok']);
+      }
+
+      // ⑩ 待机动作
+      const idlePool = preset.pools && preset.pools.idle;
+      const idleMap = preset.actionMap && preset.actionMap.idle;
+      if ((!idlePool || idlePool.length === 0) && !idleMap) {
+        blocking.push('没有配待机动作（pools.idle 和 actionMap.idle 都空），'
+          + '宠物闲着时会变回一张静态图，看起来像坏了');
+      } else {
+        report.push(['待机动作', (idlePool ? idlePool.length + ' 个' : '仅映射 1 个'), 'ok']);
+      }
+
+      // 七个状态覆盖情况
+      const states = ['idle', 'thinking', 'working', 'waiting', 'error', 'result', 'success'];
+      const uncovered = states.filter(st => {
+        const pool = preset.pools && (preset.pools['work-' + st] || preset.pools['state-' + st]);
+        const one = preset.actionMap && preset.actionMap[st];
+        return (!pool || pool.length === 0) && !one;
+      });
+      if (uncovered.length > 0) {
+        warnings.push('这些状态没配动作，会回退到待机：' + uncovered.join('、'));
+      } else {
+        report.push(['七个状态', '全部有动作', 'ok']);
+      }
+    }
+  }
+
+  if (usable.length > 0) {
+    report.push(['包总体积', fmtSize(totalBytes), 'ok']);
+  }
+
+  return { blocking, warnings, report, usable };
+}
+
+/** 把自检结果画到 #checkMsg / #pkgInfo 上。 */
+async function runPreflight() {
+  const r = await preflightExport();
+
+  // 明细表
+  const lines = [];
+  for (const [label, val, cls] of r.report) {
+    lines.push('<div class="ckline"><span class="ckk">' + esc(label)
+      + '</span><span class="ckv ' + cls + '">' + esc(val) + '</span></div>');
+  }
+  for (const w of r.warnings) {
+    lines.push('<div class="ckline"><span class="ckk">注意</span>'
+      + '<span class="ckv warn">' + esc(w) + '</span></div>');
+  }
+  for (const b of r.blocking) {
+    lines.push('<div class="ckline"><span class="ckk">不能装</span>'
+      + '<span class="ckv err">' + esc(b) + '</span></div>');
+  }
+  $('pkgInfo').innerHTML = lines.join('');
+
+  if (r.blocking.length > 0) {
+    showMsg($('checkMsg'), 'err',
+      '有 ' + r.blocking.length + ' 个问题会让包装上却用不了，先解决');
+  } else if (r.warnings.length > 0) {
+    showMsg($('checkMsg'), 'warn',
+      '能装，但有 ' + r.warnings.length + ' 处会让效果打折');
+  } else {
+    showMsg($('checkMsg'), 'ok', '自检全过，可以导出');
+  }
+  return r;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+  ));
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1190,6 +1680,15 @@ async function doExport() {
     return;
   }
 
+  // 导出前跑完整自检 —— 有阻塞项就不让导出，别让用户装上去才发现不行
+  const pf = await runPreflight();
+  if (pf.blocking.length > 0) {
+    showMsg($('checkMsg'), 'err',
+      '还不能导出：' + pf.blocking[0]
+      + (pf.blocking.length > 1 ? '（共 ' + pf.blocking.length + ' 个问题）' : ''));
+    return;
+  }
+
   const btn = $('btnExport');
   btn.disabled = true;
   btn.textContent = '打包中…';
@@ -1431,9 +1930,44 @@ $('btnGenOne').onclick = () => {
 $('btnStop').onclick = () => { stopped = true; };
 
 $('btnExport').onclick = doExport;
+$('btnCheck').onclick = () => runPreflight();
+$('btnRecut').onclick = recutAll;
 $('btnPresetReset').onclick = () => {
   $('presetJson').value = JSON.stringify(buildPreset(), null, 2);
 };
+
+// ── 预览控件 ────────────────────────────────────────────────────────
+$('prevAction').onchange = () => {
+  const it = items.find(x => String(x.id) === $('prevAction').value);
+  if (!it) return;
+  prevItem = it;
+  playIdx = 0;
+  drawPreview();
+  if (!$('simOn').checked) $('simNow').textContent = '正在看 ' + it.actionName;
+};
+
+$('btnPlay').onclick = () => setPlaying(!playing);
+
+$('simOn').onchange = () => {
+  simOn = $('simOn').checked;
+  clearInterval(simTimer);
+  if (!simOn) {
+    $('simNow').textContent = '没开模拟';
+    $('simBtns').innerHTML = '';
+    $('simBtns').style.display = 'none';
+    return;
+  }
+  $('simBtns').style.display = '';
+  renderSimButtons();
+  simPick(simState);
+  // 每 4 秒换一次，模拟 AI 干活时状态在动
+  simTimer = setInterval(() => {
+    if (!$('simOn').checked) return;
+    simPick(simState);
+  }, 4000);
+};
+
+$('simBtns').style.display = 'none';
 
 // 环境自检：这三样缺一个都做不成事，早说比做到一半失败好
 (function preflight() {

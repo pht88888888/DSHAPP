@@ -92,11 +92,58 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         /** 「是否桌面版 UA」的键。 */
         private const val KEY_DESKTOP_UA = "desktop_ua"
 
+        /**
+         * 桌面模式下的 CSS 视口宽度（见 [applyDesktopLayout]）。
+         *
+         * 取 1280：笔记本屏幕最主流的逻辑宽度，绝大多数桌面站点在这个宽度下走
+         * 完整桌面版式（三栏、侧边导航、多列网格）。比 980（`loadWithOverviewMode`
+         * 的老默认值）宽，能触发现代站点的 `lg`/`xl` 断点，排版更接近电脑所见。
+         */
+        private const val DESKTOP_VIEWPORT_W = 1280
+
+        /**
+         * 桌面模式下改写页面 viewport 的脚本（见 `onPageFinished`）。
+         *
+         * 做三件事：
+         *   1. 把已有的 `<meta name="viewport">` 改成桌面宽度；
+         *   2. 没有这个 meta 就补一个；
+         *   3. 触发一次重排 —— 只改 meta 属性，浏览器不会自动重新应用，
+         *      必须动一下根元素的样式才生效。
+         *
+         * 幂等：重复执行只会覆盖成同一个值，不会累积副作用。
+         */
+        private val DESKTOP_VIEWPORT_JS = """(function(){
+            try {
+                var W = $DESKTOP_VIEWPORT_W;
+                var h = document.head || document.getElementsByTagName('head')[0];
+                if (!h) return;
+                var m = document.querySelector('meta[name="viewport"]');
+                if (!m) {
+                    m = document.createElement('meta');
+                    m.setAttribute('name', 'viewport');
+                    h.appendChild(m);
+                }
+                m.setAttribute('content', 'width=' + W);
+                // 改完 meta 不会自己重排，动一下根元素强制生效。
+                var d = document.documentElement;
+                d.style.width = W + 'px';
+                void d.offsetWidth;
+            } catch (e) {}
+        })();"""
+
         /** 首页（用户指定）。 */
         const val HOME_URL = "https://www.navir.icu/"
 
         /** 截图前等面板把本 View 收进去的上限（毫秒）。 */
         private const val EMBED_WAIT_MS = 1200L
+
+        /**
+         * 拿不到面板真实宽度时的兜底比例（屏幕宽度的百分比）。
+         *
+         * 官方侧栏面板在 360dp 屏上约占屏幕宽度的 78%（实测），取 0.8 让截图
+         * 视口与面板基本一致；真差一点也只影响排版密度，不影响 AI 读内容。
+         */
+        private const val PANEL_WIDTH_RATIO = 0.8f
 
 
         /** 判断画面静止时，两次截图之间的间隔（毫秒）。 */
@@ -294,7 +341,61 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
 
     // ── 子视图 ──────────────────────────────────────────────────────────
 
-    private val pageHost = FrameLayout(context)
+    private val pageHost = FrameLayout(context).apply {
+        /*
+         * ⚠️ 层类型在这里定一次，不要放进 applyDesktopLayout。
+         *
+         * 那个方法会被 `onLayout` 在每次尺寸变化时调用，反复 `setLayerType`
+         * 会让 View 丢弃并重建合成层；重建的那一帧还没有内容，屏幕上就是
+         * 「白色一闪一闪」（用户反馈的原话）。
+         *
+         * `LAYER_TYPE_NONE`：桌面模式下靠父级 `scaleX/scaleY` 统一缩放，
+         * 子层保持常规绘制路径即可，避免两层缩放叠加引起的层重建。
+         */
+        setLayerType(View.LAYER_TYPE_NONE, null)
+    }
+
+    /** 桌面模式下的背景装饰层（见 [showDeskBackdrop]）。null = 未启用。 */
+    private var deskBackdrop: ViewGroup? = null
+
+
+    /**
+     * 首次布局完成后应用一次桌面几何。
+     *
+     * 默认 UA 已经是桌面版（见 [desktopUa]），所以**第一次打开就应该**是
+     * 那块居中的电脑窗口，不能等用户手动切一次。
+     *
+     * 必须等布局完成：`applyDesktopLayout` 要读 `layoutParams` 并改
+     * `pageHost` 的尺寸，视图还没挂载时这些都没意义。
+     */
+    private var desktopLayoutApplied = false
+
+    private var lastLayoutW = 0
+    private var lastLayoutH = 0
+
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (width <= 0 || height <= 0) return
+        /*
+         * 首次进来必须应用一次（默认就是桌面 UA）。
+         *
+         * 之后**尺寸变化也要重算**：这个 View 的尺寸不是固定的 ——
+         * 侧栏面板展开时 `applyEmbedRect` 会把它摆成面板大小，收起后又变回
+         * 整屏。而 [applyDesktopLayout] 是根据容器尺寸算「能塞多大的小电脑」的，
+         * 不重算就会用「整屏」算出来的尺寸去塞一个小面板，直接溢出。
+         *
+         * 用尺寸是否变化做判据而不是无条件重算：`onLayout` 会被频繁调用
+         * （滚动、键盘、拖拽面板都会），每次都改 pageHost 的 layoutParams
+         * 会引发反复测量，画面会抖。
+         */
+        if (!desktopLayoutApplied || width != lastLayoutW || height != lastLayoutH) {
+            desktopLayoutApplied = true
+            lastLayoutW = width
+            lastLayoutH = height
+            applyDesktopLayout()
+        }
+    }
     private val tabBar: LinearLayout
     private val tabStrip: LinearLayout
     private val addressBar: TextView
@@ -314,9 +415,22 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
      * 存在 SharedPreferences 里而不是只放内存：切一次就该一直是桌面版，
      * 关掉浏览器再打开又变回手机版会让用户每次都要重切一遍。
      */
+    /**
+     * 是否使用桌面 UA。
+     *
+     * ## ⚠️ 默认值改成 `true`（2026-10-28，用户要求）
+     *
+     * 用户原话：「APP 默认就是使用电脑的 UA」。
+     *
+     * 原因也说得通：这个浏览器主要是给 AI 干活用的，而大量站点（豆包、各类
+     * 控制台、文档站）在桌面 UA 下功能完整、小屏 UA 下会砍功能或跳 App。
+     * 默认桌面版能让 AI 一次做对，少走弯路。
+     *
+     * 用户仍可在工具栏切回「手机」，选择会记在 SharedPreferences 里。
+     */
     private var desktopUa: Boolean = context
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        .getBoolean(KEY_DESKTOP_UA, false)
+        .getBoolean(KEY_DESKTOP_UA, true)
 
     private val statusChip: TextView
     private val backBtn: TextView
@@ -1166,6 +1280,25 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
                 // ⚠️ 每次加载完成都 flush —— 否则登录 Cookie 可能只在
                 //    WebView 内存里，App 被系统杀掉就丢了。
                 CookieManager.getInstance().flush()
+                /*
+                 * 桌面模式下**改写页面的 viewport**。
+                 *
+                 * 这是让现代站点走桌面版式的关键一步。绝大多数站点自带
+                 * `<meta name="viewport" content="width=device-width">`，
+                 * 它把 CSS 视口钉死在控件宽度（约 338 CSS px），
+                 * 于是 `useWideViewPort` 也失效 —— 桌面站点在 338px 下只能
+                 * 把元素放大撑满，看起来像"放大了的手机截图"（v83 的现象）。
+                 *
+                 * 改成 `width=1280` 之后，站点按 1280 CSS px 排版（真正桌面），
+                 * 内核再把它整体缩放到控件宽度 —— 版式是桌面的、尺寸是手机的。
+                 *
+                 * ⚠️ 只在 `desktopUa` 时注入；切回手机版由 reload 自然清除。
+                 * ⚠️ 用 `evaluateJavascript` 而不用 `loadDataWithBaseURL`：
+                 *    后者会丢失 POST 请求体与会话来源，登录流程直接坏掉。
+                 */
+                if (desktopUa) {
+                    view?.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
+                }
                 // ⚠️ **再补一次延迟 flush**，这条是给 AJAX 登录用的。
                 //    提交登录表单后页面**不跳转**，JS 拿到 token 才写 Cookie /
                 //    localStorage，那一刻 `onPageFinished` 早就跑完了。
@@ -1545,6 +1678,291 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
      * 重载是**必须**的：已经渲染好的页面不会因为 UA 改变而自己去请求桌面版；
      * 不重载用户会觉得「点了没反应」。
      */
+    /**
+     * 桌面 UA 模式下，整个浏览器视图改按**横屏桌面比例**布局。
+     *
+     * ## 为什么需要
+     *
+     * 用户反馈（2026-10-28）：「当用户切换到电脑版的 UA 的时候，我希望整个
+     * 界面浏览器整个界面变成一个横屏的电脑的比例，不然的话，以手机的比例去
+     * 打开电脑的 UA 是很别扭的」。
+     *
+     * 说得对：UA 说自己是 Windows 桌面浏览器，但视口还是 360dp 竖屏，
+     * 网站按桌面布局渲染（三栏、侧边导航、宽表格）塞进窄竖屏 ⇒ 又挤又乱，
+     * 和真正「以电脑方式打开」的观感差很远。
+     *
+     * ## 怎么改
+     *
+     * 把视图按**旋转 90° 的横屏矩形**摆放：
+     *   · 宽 = 屏幕高度，高 = 屏幕宽度（即把横屏画面转回来）
+     *   · 再把整个视图旋转 90°，于是用户看到的是一块横屏桌面
+     *
+     * 这是手机上呈现「桌面站点」的常见做法（Chrome 桌面版模式同理）。
+     * 退出桌面 UA 时把所有几何量还原。
+     *
+     * ⚠️ 旋转后触摸坐标由系统自动跟随（View 的 rotation 会参与
+     *    dispatchTouchEvent 的坐标变换），不需要额外换算。
+     */
+    /**
+     * 桌面 UA 模式下，把**页面区域**摆成一块居中的横屏「电脑窗口」。
+     *
+     * ## 用户的要求
+     *
+     * 「当用户切换到电脑版的 UA 的时候，我希望整个界面浏览器整个界面变成一个
+     * 横屏的电脑的比例，不然的话，以手机的比例去打开电脑的 UA 是很别扭的」
+     * 接着又补充：
+     * 「你不必铺满屏幕呀，你就正常的竖屏，然后中间出现一个小小的电脑横屏界面
+     * 就好了。然后空出来的方你可以想一下，添加点有趣的东西呀」。
+     *
+     * ## 所以这里做的是
+     *
+     *   · 外层（本 View + 工具栏）保持**竖屏原样**，工具栏该在哪还在哪；
+     *   · 只把 [pageHost]（装网页的那层）旋转 90° 并缩成一块 16:10 的横屏矩形，
+     *     居中摆放 —— 看起来就像竖屏里嵌了一块电脑屏幕；
+     *   · 四周空出来的地方由 [deskBackdrop] 装饰（见 `buildDeskBackdrop`）。
+     *
+     * 为什么只转 `pageHost` 而不转整个 View：转整个 View 会把工具栏也转倒，
+     * 用户还得歪着头看后退键。
+     *
+     * ## ⚠️ 面板模式下**同样生效**（2026-10-28 更正）
+     *
+     * 第一版这里写了 `if (embedded) return`，理由是「面板有自己的矩形」。
+     * 真机一看完全不对：AI 浏览器本来就是**在侧栏面板里**打开的（用户截图里
+     * 顶部有「AI 浏览器」标签栏），`embedded` 为 true ⇒ 桌面布局被整段跳过
+     * ⇒ 用户看到「还是全屏」。
+     *
+     * 关键是想清楚**谁管什么**：
+     *   · `applyEmbedRect` 管的是**外层 View**（这个 View 自己）贴到面板上的
+     *     位置和大小 —— 那是「浏览器这块 UI 放在屏幕哪里」，不该被 UA 影响；
+     *   · 桌面布局管的是**里面页面区**（`pageHost`）的朝向和比例 ——
+     *     「网页内容以什么形态呈现」，这件事和面板没关系。
+     *
+     * 两者不冲突：外层照旧铺满面板，内层页面区缩成居中的横屏窗口。
+     * 所以这里**不能**因为 embedded 就跳过。
+     *
+     * 尺寸基准也要跟着变：嵌入面板时以面板的可用区域为准，而不是整块屏幕，
+     * 否则算出来的「小电脑」会比面板还大、被裁掉。
+     */
+    private fun applyDesktopLayout(reloadForNewUa: Boolean = false) {
+        val dm = resources.displayMetrics
+        /*
+         * `clipChildren` 保持默认（true）。
+         *
+         * v84/v85 用「大画布 + scaleX」时这里写过 `clipChildren = false`，
+         * 因为那时 pageHost 宽达 3840px、远超屏幕，不关裁剪两侧会被切掉。
+         *
+         * 现在页面区**就是屏幕大小**（不再放大），没有溢出，就不该关裁剪 ——
+         * 关掉反而会让 WebView 的内容画到自己的边界之外，盖住桌垫和工具栏。
+         */
+        clipChildren = true
+        /*
+         * ⚠️ `pageHost` 的层类型**只设一次**（构造期，见 init 里的调用）。
+         *
+         * 之前写在这里，而本方法会被 `onLayout` 在每次尺寸变化时调用 ——
+         * 反复 `setLayerType` 会让 View 反复丢弃/重建合成层，重建的那一帧
+         * 还没有内容，屏幕上就是**白色一闪一闪**（用户反馈「视窗内一直会有
+         * 白色的一闪一闪的」）。
+         *
+         * 层类型是稳定属性，设一次就够，不该跟着布局走。
+         */
+        val hostLp = pageHost.layoutParams as? LayoutParams ?: return
+
+        if (desktopUa) {
+            /*
+             * ## 桌面模式：**页面区保持屏幕尺寸**，用视口缩放让站点走桌面版式
+             *
+             * ### 我前几版错在哪
+             *
+             * · v81：`pageHost.rotation = 90f` 硬转 ⇒ 网页文字侧着。
+             * · v83：`useWideViewPort + loadWithOverviewMode` ⇒ 只露左上角一小条，
+             *   因为站点自带的 `width=device-width` 把宽度压回 338 CSS px。
+             * · v84/v85：「大画布（1280×density）+ scaleX/scaleY 缩回」⇒
+             *   画布 3840px 宽，页面铺不满露出白底、合成层反复重建导致白闪，
+             *   而且 `layoutH` 一度算到 8000+ px 直接白屏。
+             *
+             * 大画布这条路**根本不该走**：它让 WebView 的物理尺寸远大于屏幕，
+             * 截图（PixelCopy 的 rect 超出窗口 / draw() 要 36MB 位图）、
+             * 触摸坐标、渲染成本全都跟着出问题。
+             *
+             * ### 现在的做法
+             *
+             * 页面区**就是屏幕大小**（不做任何放大），宽度按桌面比例留白，
+             * 再用 `settings.loadWithOverviewMode` + 注入 viewport 让站点
+             * 按桌面宽度排版后整体缩小。缩小由 WebView 内核完成，
+             * 不产生超大位图，截图和触摸全部正常。
+             *
+             * 具体：
+             *   · 页面区宽度 = 容器宽度（桌面模式下略窄一点，左右露出桌垫）；
+             *   · 高度 = 按 16:10 算，居中摆放；
+             *   · `useWideViewPort = true` + `loadWithOverviewMode = true`：
+             *     内核按页面自身的 viewport 宽度排版后整体缩放到控件宽度；
+             *   · 对自带 `width=device-width` 的站点，由 [DESKTOP_VIEWPORT_JS]
+             *     在 `onPageFinished` 时把 viewport 改成桌面宽度并重排。
+             */
+            val baseW = if (width > 0) width else dm.widthPixels
+            val baseH = if (height > 0) height else dm.heightPixels
+            // 左右留 3%，让"小电脑"和面板边缘有呼吸感。
+            val screenW = (baseW * 0.94f).toInt().coerceAtLeast(1)
+            // 16:10 —— 常见笔记本屏幕比例。
+            val screenH = (screenW * 10 / 16).coerceAtLeast(1)
+
+            val contentTop = dp(BAR_H_DP)
+            val availH = (height - contentTop).coerceAtLeast(1)
+
+            /*
+             * 垂直摆放：
+             *   · 放得下 ⇒ 垂直居中，四周露出桌垫；
+             *   · 放不下（键盘弹出）⇒ **整块上抬**到可见区中央，尺寸不变。
+             *     用户要求：「电脑 UA 的情况下点输入框，直接让整个画面上抬
+             *     不就行了吗，因为电脑 UA 有很多空白的地方」。
+             */
+            val liftNeeded = availH < screenH
+            val newGravity = if (liftNeeded) Gravity.TOP or Gravity.CENTER_HORIZONTAL else Gravity.CENTER
+            val newTopMargin = if (liftNeeded) {
+                ((availH - screenH) / 2).coerceAtMost(0) + contentTop
+            } else {
+                0
+            }
+
+            /*
+             * ⚠️ 几何一次性写全（width/height/gravity/margin）。
+             *    v85 用 deskGeomW/H 去重时只写 width/height，后面键盘避让又拿
+             *    同一个 hostLp 赋值，把刚跳过的旧值写回去 ⇒ 高度 0 ⇒ 白屏。
+             */
+            if (hostLp.width != screenW || hostLp.height != screenH ||
+                hostLp.gravity != newGravity || hostLp.topMargin != newTopMargin ||
+                hostLp.leftMargin != 0
+            ) {
+                hostLp.width = screenW
+                hostLp.height = screenH
+                hostLp.leftMargin = 0
+                hostLp.topMargin = newTopMargin
+                hostLp.gravity = newGravity
+                pageHost.layoutParams = hostLp
+            }
+
+            // 上一版的缩放/旋转残留必须清零，否则画面被缩得只剩一角。
+            pageHost.scaleX = 1f
+            pageHost.scaleY = 1f
+            pageHost.rotation = 0f
+            // 还原成主题底色：页面区就是屏幕大小，不再需要"遮白边"。
+            pageHost.setBackgroundColor(palette.root)
+
+            showDeskBackdrop(true)
+            for (tab in tabs) {
+                tab.webView.settings.apply {
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
+                }
+            }
+            if (reloadForNewUa) {
+                for (tab in tabs) tab.webView.reload()
+            }
+        } else {
+            // 还原成铺满：手机模式。
+            hostLp.width = LayoutParams.MATCH_PARENT
+            hostLp.height = LayoutParams.MATCH_PARENT
+            hostLp.topMargin = dp(BAR_H_DP)
+            hostLp.leftMargin = 0
+            hostLp.gravity = Gravity.TOP or Gravity.START
+            pageHost.layoutParams = hostLp
+            // 桌面模式的缩放/旋转残留必须全部还原，否则手机版里画面是歪的/缩的。
+            pageHost.scaleX = 1f
+            pageHost.scaleY = 1f
+            pageHost.rotation = 0f
+            showDeskBackdrop(false)
+            // 还原成主题底色（桌面模式把它改成了深色桌垫色）。
+            pageHost.setBackgroundColor(palette.root)
+            for (tab in tabs) {
+                tab.webView.settings.apply {
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
+                }
+            }
+            if (reloadForNewUa) {
+                for (tab in tabs) tab.webView.reload()
+            }
+        }
+        pageHost.requestLayout()
+    }
+
+    /**
+     * 桌面模式下的背景装饰（页面四周空出来的区域）。
+     *
+     * 按用户说的「空出来的地方添加点有趣的东西」，这里放一张**深色桌垫**
+     * + 右下角一团极淡的暖色光晕 + 底部一行小字，做出「桌面上摆着一台小电脑」
+     * 的感觉。刻意做得克制：它是背景，不能抢网页内容的注意力。
+     *
+     * 纯代码绘制，不引入图片资源：少 100KB 包体，也不用为各 dpi 备多套图。
+     */
+    private fun showDeskBackdrop(show: Boolean) {
+        val existing = deskBackdrop
+        if (!show) {
+            existing?.let { removeView(it) }
+            deskBackdrop = null
+            return
+        }
+        if (existing != null) {
+            // 已经建好了。只在**顺序真的错了**时才调整 z 序 ——
+            // 这个方法会被 onLayout 在尺寸变化时反复调用，无条件 bringToFront
+            // 会让每次键盘弹出/面板拖动都触发一轮重排，画面会抖。
+            if (indexOfChild(pageHost) < indexOfChild(existing)) {
+                pageHost.bringToFront()
+            }
+            return
+        }
+        val d = resources.displayMetrics.density
+        fun dp2(v: Int) = (v * d).toInt()
+
+        val back = FrameLayout(context)
+        back.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0xFF10141A.toInt(), 0xFF171C24.toInt(), 0xFF0D1117.toInt()),
+        )
+        // 右下角一枚极淡的光晕，给画面一点「屏幕在发光」的暗示。
+        val glow = View(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                gradientType = GradientDrawable.RADIAL_GRADIENT
+                colors = intArrayOf(0x33E0A33A, 0x00E0A33A)
+                gradientRadius = dp2(200).toFloat()
+            }
+        }
+        back.addView(
+            glow,
+            FrameLayout.LayoutParams(dp2(400), dp2(400)).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                rightMargin = -dp2(110)
+                bottomMargin = -dp2(110)
+            },
+        )
+        val hint = TextView(context).apply {
+            text = "桌面模式 · 点上方「桌面」切回手机版"
+            setTextColor(0x66FFFFFF)
+            textSize = 11f
+            includeFontPadding = false
+        }
+        back.addView(
+            hint,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp2(26)
+            },
+        )
+
+        // 插在 pageHost 之前：FrameLayout 里先加的在下、后加的盖在上。
+        val index = indexOfChild(pageHost).coerceAtLeast(0)
+        addView(back, index, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
+            topMargin = dp(BAR_H_DP)
+        })
+        deskBackdrop = back
+        // 保证页面层在装饰层之上。
+        pageHost.bringToFront()
+    }
+
     private fun toggleUserAgent() {
         desktopUa = !desktopUa
         try {
@@ -1562,6 +1980,9 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         uaBtn.text = if (desktopUa) "桌面" else "手机"
         uaBtn.textSize = 10f
         uaBtn.setTextColor(if (desktopUa) palette.accent else palette.text)
+        // 桌面 UA ⇒ 页面区缩成居中横屏「小电脑」；切回手机 ⇒ 铺满。
+        // 传 true：UA 变了，站点必须重新请求一次才会给出对应版本。
+        applyDesktopLayout(reloadForNewUa = true)
     }
 
     /**
@@ -1858,6 +2279,41 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
      * 拿不到时（极少数机型/时机）退回 `draw()`，保证至少有一张图。
      */
     private fun captureVisible(wv: WebView, onBitmap: (Bitmap?) -> Unit) {
+        /*
+         * ## ⚠️ 静默模式下先临时可见一帧，截完立刻恢复
+         *
+         * `PixelCopy` 复制的是**窗口合成后**的像素。视图 `INVISIBLE` 时不参与
+         * 合成 ⇒ 截到的只有它下面的对话界面。真机实测（v78）就是这个现象：
+         * 「他执行浏览器截图工具，截图没有截到浏览器的内容，只截到了对话界面」。
+         *
+         * 不能退回 `wv.draw()`（我试过，用户当场指出问题：「那两个标签本来是
+         * 挺大的两个按钮，被压缩成这样子了」）—— `draw()` 拍不到独立合成层，
+         * 排版也和真实上屏结果不一致，正是本项目早已记录过的老坑。
+         *
+         * 所以：**借一帧**。把可见性临时改成 VISIBLE，等一帧让系统真的合成
+         * 一次，再 PixelCopy 抓那块像素，最后恢复原状。这样抓到的一定等于
+         * 用户（或 AI 打开侧栏时）看到的画面。
+         *
+         * 一帧 ≈ 16ms，用户几乎感知不到；而且此刻侧栏没展开，WebView 是
+         * 铺在对话之上的整屏视图，短暂出现不会被察觉。
+         */
+        val wasVisibility = visibility
+        if (wasVisibility != View.VISIBLE) {
+            visibility = View.VISIBLE
+            wv.postOnAnimation {
+                doCaptureVisible(wv) { bmp ->
+                    // 无论成败都恢复，绝不把用户界面留在「浏览器突然冒出来」的状态。
+                    visibility = wasVisibility
+                    onBitmap(bmp)
+                }
+            }
+            return
+        }
+        doCaptureVisible(wv, onBitmap)
+    }
+
+    /** [captureVisible] 的主体（此时视图已确保可见）。 */
+    private fun doCaptureVisible(wv: WebView, onBitmap: (Bitmap?) -> Unit) {
         // ⚠️ **截图前必须把胶囊藏掉。**
         //
         // `actionPill`（「AI 正在操作页面」那条浮层）是 [AiBrowserView] 的子
@@ -1895,6 +2351,31 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         } else {
             null
         }
+        /*
+         * ## ⚠️⚠️ INVISIBLE 时**必须**走 fallbackDraw，不能用 PixelCopy
+         *
+         * 真机实测（2026-10-28，AI 静默模式第一版）：
+         *   「让他打开豆包网页版，确实没有弹出满屏界面，但从思考过程看，他执行
+         *     browser 截图时只截到了对话界面，没截到浏览器内容。……我打开侧边栏
+         *     点 AI 浏览器，里面确实已经打开了豆包；紧接着让他点击登录按钮，
+         *     这次截图就能正确截到豆包界面了。」
+         *
+         * 现象和原因完全对得上：
+         *   · `PixelCopy.request(window, rect, ...)` 抓的是**窗口合成后**的像素；
+         *   · 静默模式下 WebView 是 `INVISIBLE`（见 openAiBrowserQuietly），
+         *     **不参与合成** ⇒ 那块矩形里画的是它下面的对话界面；
+         *   · 用户打开侧栏后 WebView 变 VISIBLE ⇒ 再截就正常了。
+         *
+         * 也就是说：`PixelCopy` 成功返回（result == SUCCESS），但**内容是错的**。
+         * 这比失败更糟 —— 它不会走进兜底分支，我们也没有任何信号能察觉。
+         *
+         * `fallbackDraw` 走的是 `wv.draw(Canvas)`，**直接让 View 自己画**，
+         * 完全不经过窗口合成，所以对 INVISIBLE 的 WebView 同样有效。
+         *
+         * 为什么平时仍然优先用 PixelCopy：因为 `wv.draw()` 拍不到某些由
+         * 独立合成层渲染的内容（视频、WebGL canvas 等），而 PixelCopy 能。
+         * 所以只在**不可见**这个不得已的情况下才退到 draw()。
+         */
         val canPixelCopy = win != null && activity != null &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             x >= 0 && y >= 0 && w > 0 && h > 0 && bmp != null
@@ -2142,13 +2623,51 @@ class AiBrowserView(context: Context) : FrameLayout(context) {
         return total > 0 && diff * 100 / total <= 2
     }
 
-    /** 等 [embedded] 变 true，超时后照样继续（不能卡住 AI 的工具调用）。 */
+    /**
+     * AI 工具调用期间为 `true`：截图**不请求展开侧栏**（见 [awaitEmbedded]）。
+     *
+     * 由宿主在把本实例交给 [com.dsh.android.browser.BrowserBridge] 时置真
+     * （见 `MainActivity.browserOrNull()`）。
+     * 用户从侧栏主动打开浏览器那条路径不会碰它，所以手动截图行为不变。
+     *
+     * ## 为什么必须有它（用户 2026-10-29 报障回归）
+     *
+     * 上一轮把侧栏内嵌改成"必须在内嵌标签页里"之后，`awaitEmbedded` 变成了
+     * 无条件 `onRequestEmbed()`。结果 AI 每调一次 `screenshot` 工具，
+     * 侧栏就被强制展开一次 —— 用户原话：
+     *
+     *   「AI 每次它调用浏览器工具都会强制打开侧边栏的浏览器」
+     *
+     * 这个标志位就是那条分界线：AI 调用时不展开（按当前视口截），
+     * 用户自己点截图按钮时才展开（他要看着截）。
+     */
+    @Volatile
+    var silentForTool: Boolean = false
+
     private fun awaitEmbedded(then: () -> Unit) {
         if (embedded) {
             then()
             return
         }
-        // 请宿主把侧栏切到浏览器面板：面板一挂载就会上报矩形。
+        /*
+         * ## AI 调用期间：立刻按当前视口截，**不等也不展开**
+         *
+         * 两个点都不能少：
+         *
+         *   · 不能 `onRequestEmbed()` —— 那是"把侧栏弹出来"，AI 每截一次图
+         *     弹一次，用户原话「强制打开侧边栏的浏览器」；
+         *   · 也不能只是跳过它然后继续往下轮询 —— 面板没人去展开，
+         *     `embedded` 永远不会变 true，会死等满 `EMBED_WAIT_MS`，
+         *     每次截图白耗几秒，把 AI 的工具调用硬生生拖慢。
+         *
+         * 代价：截出来是当前视口（面板没展开时即全屏宽度），
+         * 与用户后来在面板里看到的窄视口比例不同。这是有意的取舍 ——
+         * 用户第一诉求是"AI 干活时不要抢我的屏幕"。
+         */
+        if (silentForTool) {
+            then()
+            return
+        }
         onRequestEmbed?.invoke()
         val deadline = android.os.SystemClock.elapsedRealtime() + EMBED_WAIT_MS
         val poll = object : Runnable {

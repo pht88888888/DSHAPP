@@ -19,6 +19,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import com.dsh.android.log.DshLog as Log
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -1295,14 +1296,51 @@ class MainActivity : AppCompatActivity() {
                 onCreatePopup = {
                     if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
                         ensureAiBrowser()?.let { b ->
-                            // 登录弹窗走同一条路：先把侧栏切过来，让授权页落在
-                            // 面板里，而不是整屏糊上来。
-                            requestBrowserPane()
-                            b.visibility = View.VISIBLE
-                            syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
-                            b.bringToFront()
-                            notifyBrowserPane(visible = true)
-                            b.createPopupTarget()
+                            /*
+                             * ## ⚠️⚠️ AI 操作期间**不许抢屏**
+                             *
+                             * 用户反馈（2026-10-28）：「我刚让他打开豆包网页版，
+                             * 然后他执行 open 命令的时候，侧边栏会自动弹出；然后
+                             * 我让他点击某个按键执行 click 指令的时候，它又弹出来」。
+                             *
+                             * 这就是那个"又弹出来"的来源：豆包这类站点一打开就会
+                             * `window.open`（登录框、引导页、统计埋点），而这里原来
+                             * 无条件 `requestBrowserPane()` + `bringToFront()` ——
+                             * 于是 AI 每 open 一次、每点一个会开新窗口的按钮，
+                             * 侧栏就被顶到面前一次。
+                             *
+                             * 现在按 [aiBrowserQuiet] 分流：
+                             *   · AI 正在用（静默） ⇒ 只建窗口、不 reveal、不抬 z 序，
+                             *     弹窗页仍然可以加载和操作，用户完全无感；
+                             *   · 用户主动打开浏览器（aiBrowserQuiet == false） ⇒
+                             *     保持原行为，登录授权页该切过来还是切过来。
+                             */
+                            if (aiBrowserQuiet) {
+                                /*
+                                 * ⚠️ **这里也不能设 VISIBLE**（2026-10-29 再修）。
+                                 *
+                                 * 上一版把 `requestBrowserPane()` 拿掉了，但留下了
+                                 * `b.visibility = View.VISIBLE` —— 而本视图是
+                                 * `MATCH_PARENT` 铺满根布局的，可见却没被
+                                 * `applyEmbedRect` 摆进面板时，它就是一张**全屏
+                                 * 网页**盖在对话上面。用户说的"霸占屏幕"，
+                                 * 一半来自侧栏弹出，另一半就来自这里。
+                                 *
+                                 * `createPopupTarget()` 只负责建一个新的
+                                 * WebView 标签并交给内核（`onCreateWindow`
+                                 * 要求返回一个真实 WebView），**不依赖父视图可见**。
+                                 */
+                                b.createPopupTarget()
+                            } else {
+                                // 登录弹窗走同一条路：先把侧栏切过来，让授权页落在
+                                // 面板里，而不是整屏糊上来。
+                                requestBrowserPane()
+                                b.visibility = View.VISIBLE
+                                syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
+                                b.bringToFront()
+                                notifyBrowserPane(visible = true)
+                                b.createPopupTarget()
+                            }
                         }
                     } else {
                         // onCreateWindow 理论上就在主线程，真走到这里说明内核
@@ -1334,6 +1372,161 @@ class MainActivity : AppCompatActivity() {
      *   所以 Cookie 是共享的 —— 目前可接受，见 [AiBrowserView] 的类注释。
      */
     private var aiBrowser: com.dsh.android.browser.AiBrowserView? = null
+
+    // ══════════════════════════════════════════════════════════════════
+    // AI 操作状态胶囊（对话页）
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * 对话页顶部那个「AI 正在操作浏览器」的胶囊。
+     *
+     * 与 [com.dsh.android.browser.AiBrowserView] 内部那个胶囊**视觉一致**，
+     * 但挂在 Activity 根布局上，所以即使 WebView 不可见也能显示。
+     */
+    private var activityPill: android.widget.LinearLayout? = null
+    private var activityPillText: android.widget.TextView? = null
+    private var activityPillHideTask: Runnable? = null
+
+    /** 胶囊至少停留这么久（毫秒），避免高速连调时闪个不停。 */
+    private val ACTIVITY_PILL_MIN_MS = 1400L
+
+    /**
+     * 显示 / 更新 AI 操作状态胶囊。**主线程**。
+     *
+     * @param text 模型的 `describe`；空串表示立刻收起。
+     */
+    private fun showActivityPill(text: String) {
+        /*
+         * 只在侧栏**没展开**时显示。
+         *
+         * 面板展开时 WebView 就在用户眼前，它内部自带那条胶囊（AI 正在做什么
+         * 实时显示在浏览器上方居中），这里再飘一个就重复了、还挡内容。
+         * 面板收起/在后台时，用户在对话页，这里补上反馈 —— 正是用户要的：
+         * 「我们在对话界面，它在后台运行，那么我们又少了一些反馈」。
+         */
+        if (isBrowserPaneOpen()) return
+        val t = text.trim()
+        if (t.isEmpty()) {
+            hideActivityPillSoon()
+            return
+        }
+        runOnUiThread {
+            val pill = ensureActivityPill() ?: return@runOnUiThread
+            activityPillText?.text = t
+            // 连调时只是换文案，不重播入场动画，避免整块区域来回跳。
+            if (pill.visibility != View.VISIBLE) {
+                pill.alpha = 0f
+                pill.visibility = View.VISIBLE
+                pill.scaleX = 0.92f
+                pill.scaleY = 0.92f
+                pill.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(160L).start()
+            }
+            // 每次新动作都重置「自动收起」计时，保证用户至少能看清最后一句。
+            activityPillHideTask?.let { mainHandler.removeCallbacks(it) }
+            val task = Runnable { hideActivityPill() }
+            activityPillHideTask = task
+            mainHandler.postDelayed(task, ACTIVITY_PILL_MIN_MS + 1200L)
+        }
+    }
+
+    private fun hideActivityPillSoon() {
+        runOnUiThread {
+            activityPillHideTask?.let { mainHandler.removeCallbacks(it) }
+            val task = Runnable { hideActivityPill() }
+            activityPillHideTask = task
+            mainHandler.postDelayed(task, 900L)
+        }
+    }
+
+    private fun hideActivityPill() {
+        val pill = activityPill ?: return
+        if (pill.visibility != View.VISIBLE) return
+        pill.animate().alpha(0f).setDuration(180L)
+            .withEndAction { if (activityPill?.visibility == View.VISIBLE) activityPill?.visibility = View.GONE }
+            .start()
+    }
+
+    /**
+     * 建一次胶囊并挂到根布局。之后只改文字。
+     *
+     * 样式照抄 [com.dsh.android.browser.AiBrowserView] 里那个胶囊（同样的
+     * 圆角、同样的小圆点、同样的字号），让用户在两处看到的是同一种东西。
+     */
+    private fun ensureActivityPill(): android.widget.LinearLayout? {
+        activityPill?.let { return it }
+        if (isFinishing || isDestroyed) return null
+
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+
+        val dot = View(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(0xFFE0A33A.toInt())
+            }
+        }
+        val label = android.widget.TextView(this).apply {
+            setTextColor(0xFFF2F4F7.toInt())
+            textSize = 12.5f
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        val pill = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(13), dp(9), dp(17), dp(9))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(0xE620242B.toInt())
+            }
+            elevation = dp(8).toFloat()
+            alpha = 0f
+            visibility = View.GONE
+        }
+        pill.addView(
+            dot,
+            android.widget.LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(9) },
+        )
+        pill.addView(label)
+
+        // 挂在根布局、状态栏下方居中：不挡输入框，也不跟顶部工具栏打架。
+        binding.root.addView(
+            pill,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                topMargin = statusBarHeightPx() + dp(10)
+            },
+        )
+        activityPill = pill
+        activityPillText = label
+        return pill
+    }
+
+    /**
+     * 这台浏览器当前是不是**由 AI 驱动**的。
+     *
+     * `true` ⇒ AI 正在用它（经 BrowserBridge 调用工具）：
+     *   · [openAiBrowserQuietly] 走内嵌面板，浏览器只出现在侧栏标签页里；
+     *   · [onCreatePopup]（网页里的 `window.open`）**不**抢焦点 ——
+     *     豆包这类站点一打开就弹登录框，若每次都把面板顶到前面，用户会被
+     *     反复打断（真实反馈）。弹窗页照样能加载和操作，只是不抢屏；
+     *   · 对话页会补一条状态胶囊（面板没展开时）。
+     *
+     * `false` ⇒ 用户自己打开的：登录授权页该切过来就切过来，一切照旧。
+     *
+     * 用户从侧栏点开「AI 浏览器」tab 时由 [openAiBrowser] 复位成 `false`。
+     */
+    @Volatile
+    private var aiBrowserQuiet = false
+
+
+
+    /** 状态胶囊的延时收起等用途的主线程 Handler。 */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * 拿到（必要时创建）AI 浏览器实例。**必须在主线程调用。**
@@ -1367,8 +1560,16 @@ class MainActivity : AppCompatActivity() {
         v.onCollapse = { closeAiBrowser(closeTab = false) }
         // ✎ = 截图定格后进标注画布。
         v.onAnnotate = { showAnnotate() }
-        // AI 调 screenshot 前，要先把浏览器收进侧栏面板再截 —— 否则截到的是
-        // 全屏视口，和用户所见不是同一个画面。这里复用同一条展开通道。
+        /*
+         * 请求把浏览器收进侧栏面板 —— **只有用户主动路径会走到**。
+         *
+         * 用途：用户点工具栏截图按钮时，他想截的是"面板里那个画面"，
+         * 所以先请前端把面板展开、`applyEmbedRect` 摆好，再截才一致。
+         *
+         * ⚠️ AI 调 screenshot **不走这里**：`AiBrowserView.silentForTool`
+         *   为真时 `awaitEmbedded` 直接跳过 `onRequestEmbed`（见那边的注释）。
+         *   否则 AI 每截一次图就把侧栏弹出来一次，正是用户 2026-10-29 报障。
+         */
         v.onRequestEmbed = { requestBrowserPane() }
         // 截图落在 workspace 下的隐藏目录，模型可以直接 read 那张图。
         v.shotDir = java.io.File(workspaceDir(), ".browser-shots")
@@ -1387,7 +1588,17 @@ class MainActivity : AppCompatActivity() {
 
     /** 打开 AI 浏览器（覆盖在官方界面之上）。 */
     fun openAiBrowser(url: String? = null) {
+        // 用户主动打开 ⇒ 退出静默，侧栏该切过来就切（与 AI 后台用区分开）。
+        aiBrowserQuiet = false
         val view = ensureAiBrowser() ?: return
+        /*
+         * 用户主动打开 ⇒ 复位「AI 静默」标志。
+         *
+         * 不复位的话它会一直保持 true（AI 上一次工具调用置的），
+         * 导致用户自己点工具栏截图按钮时也不再请求展开面板 ——
+         * 截出来的是全屏视口，和他在面板里看到的不一致。
+         */
+        view.silentForTool = false
         view.visibility = View.VISIBLE
         syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc：必须同步镜像
         view.bringToFront()
@@ -1404,6 +1615,90 @@ class MainActivity : AppCompatActivity() {
         requestBrowserPane()
         notifyBrowserPane(visible = true)
         Log.i(DshApplication.TAG, "AI 浏览器已打开: ${view.currentUrl()}")
+    }
+
+    /**
+     * AI 自己用浏览器时走这条路 —— **不抢用户的屏幕。**
+     *
+     * ## 为什么不复用 [openAiBrowser]
+     *
+     * `openAiBrowser()` 里有两句是给「用户主动打开浏览器」用的：
+     *
+     *     requestBrowserPane()          // 发 `dsh:browser-reveal` 让侧栏切过来
+     *     notifyBrowserPane(visible=true)
+     *
+     * 用户点链接、点侧栏 tab 时这是对的 —— 他要看，就得把面板切出来。
+     *
+     * 但 AI 每调一次 browser 工具就会走到这里（见 [installBrowserBridge] 的
+     * provider）。也就是说 **AI 每动一下浏览器，侧栏就整个弹出来霸占屏幕**。
+     * 用户的原话：「每次 AI 在调用浏览器工具的时候，侧边栏都会自动弹出霸占
+     * 屏幕，导致用户没有了自己的空间」。
+     *
+     * ## 现在的语义
+     *
+     * · WebView 照常建出来、照常加载、照常可被 AI 操作；
+     * · 视图设为可见（不可见会让 `PixelCopy` 截到错误内容）；
+     * · 发 reveal 事件把侧栏切到「AI 浏览器」标签 —— 浏览器**只出现在
+     *   内嵌面板里**，绝不铺满整屏。
+     *
+     * ## ⚠️ 现在的形态：内嵌侧栏面板，不再有「静默不可见」
+     *
+     * 历史沿革（别被方法名误导）：这个方法最初是「AI 用浏览器时不弹侧栏」，
+     * 试过缩成右侧小窗、试过 `INVISIBLE` 后台跑，都被用户否掉了 ——
+     * 前者挡屏幕，后者的截图拿到的是错误内容（`PixelCopy` 抓不到不可见视图）。
+     *
+     * 用户最终明确要求：「只要浏览器出现，就必须在我们这个内嵌的标签页里」。
+     * 所以现在这里做的是：**可见 + 切到内嵌面板**，浏览器只存在于侧栏标签页。
+     * 方法名为了少改调用点而保留，语义已经是「AI 主动启用浏览器」。
+     */
+    private fun openAiBrowserQuietly() {
+        aiBrowserQuiet = true
+        val view = ensureAiBrowser() ?: return
+
+        /*
+         * ## 浏览器在 AI 使用时：**后台准备，绝不抢屏幕**
+         *
+         * 用户明确要求（2026-10-28）：
+         * 「反正我的理想状态就是，只要浏览器出现，就必须在我们这个内嵌的
+         *   标签页里」；
+         * 又在 2026-10-29 报障：
+         * 「AI 每次它调用浏览器工具都会强制打开侧边栏的浏览器」。
+         *
+         * 两条要求合起来的正确形态就是这个方法现在做的 —— **什么都不显示**：
+         *
+         *   1. 视图已经建出来、WebView 就绪。`GONE` 状态下 WebView
+         *      **照常加载页面、照常执行 JS**（`GONE` 只影响布局与合成，
+         *      不影响 WebView 自身的渲染流水线），AI 的 click / type /
+         *      read 全部正常；
+         *   2. **不设 `VISIBLE`**。这个视图是 `MATCH_PARENT` 铺满根布局的，
+         *      一旦可见却没被 `applyEmbedRect` 摆进面板，它就是一张全屏
+         *      网页盖在对话上面 —— 正是用户说的「霸占屏幕」；
+         *   3. **不调 `requestBrowserPane()`**。它会派发 `dsh:browser-reveal`，
+         *      前端 `dsh-android-browser-pane` 的 `onReveal` 收到就
+         *      `sidebarRight.openTab(...)` 把侧栏弹出来并切到浏览器标签。
+         *      上一版就是漏了这一条，导致旧 bug 回归。
+         *
+         * ## 那用户什么时候能看到浏览器
+         *
+         * 两种都是**他主动**的动作：
+         *   · 点侧栏里的「AI 浏览器」tab；
+         *   · 点对话/登录界面里的链接。
+         *
+         * 两条都走 [openAiBrowser]，那里才 reveal + `bringToFront`。
+         * 面板一挂载就上报矩形，`applyEmbedRect` 把浏览器摆进面板内容区 ——
+         * 它**只在那里出现**，不会铺满整屏。
+         *
+         * ## 截图怎么办
+         *
+         * `captureVisible()` 里有"借一帧"通道：临时 `VISIBLE` → 等一帧让系统
+         * 真合成一次 → `PixelCopy` → 立刻恢复。这是项目里既有且已修过真机
+         * bug（v78「截到的是对话界面」）的路径，AI 在后台也能截到正确画面。
+         */
+        syncAiBrowserVisible()
+        if (view.currentUrl().isEmpty()) {
+            view.loadUrl(com.dsh.android.browser.AiBrowserView.HOME_URL)
+        }
+        Log.i(DshApplication.TAG, "AI 浏览器已就绪（后台，不占屏）: ${view.currentUrl()}")
     }
 
     /** 当前 workspace 目录（截图等落盘用）。 */
@@ -1436,6 +1731,21 @@ class MainActivity : AppCompatActivity() {
      *
      * ⚠️ 事件名 `dsh:browser-state` 与插件 `lib/client.js` 里的常量必须一致。
      */
+    /**
+     * 侧栏的「AI 浏览器」面板此刻是否**真的在用户眼前**。
+     *
+     * 用来决定「对话页要不要补一条状态胶囊」：面板开着时，浏览器自己上方就有
+     * 实时胶囊，宿主再飘一个既重复又挡内容。
+     *
+     * 判据取 [aiBrowserVisible] 与视图可见性的交集 —— 单看哪一个都不准：
+     *   · 只有 `aiBrowserVisible` 为真、但视图是 INVISIBLE（面板被收起）⇒
+     *     用户其实看不到，这时**应该**显示宿主胶囊；
+     *   · 只有视图可见、但 `aiBrowserVisible` 为假（尚未同步）⇒ 同样当作不可见，
+     *     宁可多显示一条反馈，也不要让用户以为 AI 卡住了。
+     */
+    private fun isBrowserPaneOpen(): Boolean =
+        aiBrowserVisible && aiBrowser?.visibility == View.VISIBLE && aiBrowserQuiet
+
     private fun notifyBrowserPane(visible: Boolean, userClosed: Boolean = false) {
         if (!::web.isInitialized) return
         val script = "window.dispatchEvent(new CustomEvent('dsh:browser-state'," +
@@ -4394,15 +4704,64 @@ class MainActivity : AppCompatActivity() {
                 // ⚠️ 未初始化时返回 null 而不是抛 —— 轮询线程抛异常会直接死掉
                 if (isFinishing || isDestroyed) null else object : com.dsh.android.browser.BrowserBridge.BrowserHost {
                     override fun browserOrNull(): com.dsh.android.browser.AiBrowserView? {
-                        // ⚠️ 走 `openAiBrowser()` 而不是 `ensureAiBrowser()`：
-                        //   后者只创建、`visibility = GONE`，模型操作了用户却**什么都
-                        //   看不见** —— 那正好违背「用户可以旁观」这个前提。
-                        //   `openAiBrowser` 会显示 + bringToFront + 收起把手。
-                        openAiBrowser()
+                        // ⚠️ **AI 调工具时只静默准备，不抢用户的屏幕。**
+                        //
+                        // 这里原来调 `openAiBrowser()`，它会 `requestBrowserPane()`
+                        // + `notifyBrowserPane(true)` ⇒ 每调一次 browser 工具，
+                        // 侧栏就整个弹出来盖住对话。用户原话：「每次 AI 在调用
+                        // 浏览器工具的时候，侧边栏都会自动弹出霸占屏幕，导致用户
+                        // 没有了自己的空间」。
+                        //
+                        // 换成 `openAiBrowserQuietly()`：视图照常可用（AI 要操作），
+                        // 但不发 reveal、不抢 z 序。用户想看时点侧栏 tab 即可，
+                        // 那条路仍走 `openAiBrowser()`。
+                        openAiBrowserQuietly()
+                        /*
+                         * 告诉视图「现在是 AI 在用」—— 它据此在截图时
+                         * **不请求展开侧栏**（见 `AiBrowserView.silentForTool`）。
+                         *
+                         * 不置真的话，AI 每调一次 `screenshot` 工具，
+                         * `awaitEmbedded` 就会 `onRequestEmbed()` 把侧栏弹出来。
+                         */
+                        aiBrowser?.silentForTool = true
                         return aiBrowser
                     }
 
                     override fun isBrowserVisible(): Boolean = isAiBrowserVisible()
+
+                    /**
+                     * AI 的一次工具调用结束 ⇒ 安排把静默浏览器收走。
+                     *
+                     * 不收的话那个 WebView 会一直挂在屏幕上（真机实测过），
+                     * 用户切回来看到的还是「右半屏是网页」。
+                     */
+                    override fun onToolDone() {
+                        /*
+                         * ⚠️ 这里**不再自动收起浏览器**。
+                         *
+                         * 之前「AI 用完就隐藏」是因为浏览器曾以独立窗/不可见形态
+                         * 存在，留着会挡屏幕。现在浏览器始终内嵌在侧栏面板里
+                         * （用户要求），面板什么时候关由用户决定 —— 自动把它
+                         * 收掉反而会让用户正看着的页面突然消失。
+                         *
+                         * 只负责收掉状态胶囊。
+                         */
+                        hideActivityPillSoon()
+                    }
+
+                    /**
+                     * AI 正在操作浏览器 ⇒ 在对话页顶部显示状态胶囊。
+                     *
+                     * 为什么需要这个：静默模式下 WebView 是 INVISIBLE，
+                     * [com.dsh.android.browser.AiBrowserView] 内部那个胶囊是
+                     * WebView 的子 View，跟着一起看不见了 ⇒ 用户在对话页
+                     * **完全没有任何反馈**，只能干等。
+                     *
+                     * 用户原话：「现在我们的浏览器不是在后台默默运行吗……
+                     * 那我们又少了一些反馈，我觉得可以把浏览器内的那个实时
+                     * 显示操作状态的悬浮气泡，在我们对话界面也实时显示一下」。
+                     */
+                    override fun onToolActivity(text: String) = showActivityPill(text)
                 }
             },
         )

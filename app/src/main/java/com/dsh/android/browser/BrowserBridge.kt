@@ -71,6 +71,26 @@ object BrowserBridge {
 
         /** 浏览器此刻是否可见（不可见时 AI 操作会自动把它调出来）。 */
         fun isBrowserVisible(): Boolean
+
+        /**
+         * AI 正在做什么（模型的 `describe`，或退化文案）。
+         *
+         * 宿主据此在**它自己的界面**（对话页）上显示同样的状态胶囊 ——
+         * [AiBrowserView] 内部那个胶囊是 WebView 的子 View，静默模式下
+         * 整个 WebView 不可见，于是用户看不到任何反馈。
+         *
+         * 默认实现为空。
+         */
+        fun onToolActivity(text: String) {}
+
+        /**
+         * AI 的一次工具调用做完了。
+         *
+         * 宿主据此安排「把静默浏览器收起来」—— AI 用浏览器时不该长期占着
+         * 用户的屏幕（用户原话：「默认就是 AI 自己在操作侧边栏里面的浏览器，
+         * 不要影响用户」）。默认实现为空，方便其他实现不关心这件事。
+         */
+        fun onToolDone() {}
     }
 
     // ⚠️ 这两个字段**主线程写、轮询线程读**。没有 `@Volatile` 的话，
@@ -341,12 +361,25 @@ object BrowserBridge {
                 // 把模型的 describe 显示成胶囊，让用户知道 AI 在做什么。
                 // 模型没传就退化成「AI 正在操作页面」，至少表明它还活着。
                 view.showAction(pill)
+                // 宿主的对话页也显示同一句话：静默模式下 WebView 不可见，
+                // 光靠 view 内部的胶囊用户什么也看不到。
+                host.onToolActivity(pill)
                 op(view) { r ->
                     // ⚠️ **必须归还控制权**：AI 操作期间 `applyControl()` 给
                     //   WebView 挂了吞触摸的监听器，不还回去用户就永远拖不动
                     //   光标、点不动输入框（真实用户反馈过）。成功/失败都要还。
                     view.releaseAiControl()
                     view.hideActionSoon()
+                    // 告诉宿主「这次调用结束了」：它会安排把静默浏览器收走，
+                    // 不让 AI 用完的窗口长期占着用户屏幕。
+                    //
+                    // ⚠️ **不能写 `provider?.invoke()?.onToolDone()`**：
+                    //    `provider` 的实现里先调 `openAiBrowserQuietly()`（会创建
+                    //    并显示视图）再返回实例 —— 在这里再 invoke 一次，等于
+                    //    「刚说要收起，又把它打开了一次」，白忙。
+                    //    宿主侧 `onToolDone` 本来就不需要视图实例，直接通知即可。
+                    //    用上面已经取到的局部 `host`，不再 invoke 一次 provider。
+                    host.onToolDone()
                     // 登录成功后 Cookie 刚写进内存，这时候落盘最稳妥：
                     // AI 的 click/type 很可能就是提交登录表单，操作一结束
                     // 就把 Cookie 刷到磁盘，别等 App 被系统杀掉。
