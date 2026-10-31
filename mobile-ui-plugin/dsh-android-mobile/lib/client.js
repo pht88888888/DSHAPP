@@ -2880,8 +2880,51 @@ window.__ModuleLoader__.load({
 		 * ⚠️ 只在移动端生效。桌面端没有原生启动层，上报是空操作（桥不存在）。
 		 */
 		function mpSignalUiReady() {
-			const bridge = window.DSHAndroid;
-			if (!bridge || typeof bridge.onUiReady !== "function") return;   // 桌面端 / 桥不可用
+			/*
+			 * ⚠️⚠️ 桥不在时**不能直接 return**（§2026-10-31）。
+			 *
+			 * 原实现在这里写 `if (!bridge) return;`，理由是「桌面端没有原生桥」。
+			 * 但**「桥还没注入」与「没有桥」看起来完全一样**：
+			 *
+			 *   · gecko flavor（`com.dsh.webview`）的桥是 WebExtension 在文档
+			 *     `document_start` 之后注入的，比本插件（5.5MB 的 client.js）
+			 *     早还是晚**取决于握手时序，不保证**；
+			 *   · 而 `mo.observe` / 轮询都还没建立时，`apply()` 一执行到这里就
+			 *     return ⇒ 之后桥就算注入进来，**再也没有人去看一眼** ⇒
+			 *     `onUiReady` 永不上报 ⇒ 启动层永远盖着。
+			 *
+			 * 真机现场（20261031-053321，vivo V2231A / gecko 92）：
+			 * `engine.ready ms=8537` 后 27 秒 `onUiReady` 依然没来，
+			 * 页面**零报错**。这正是「桥后到」的形态。
+			 *
+			 * 所以改成：桥不在就**轮询等它**，最多等 [BRIDGE_WAIT_MS]；
+			 * 等到了照常按判据上报，等不到就什么都不做（真正的桌面端场景，
+			 * 那里本来也没有原生启动层需要收）。
+			 */
+			const hasBridge = () => {
+				const b = window.DSHAndroid;
+				return b && typeof b.onUiReady === "function" ? b : null;
+			};
+
+			let bridge = hasBridge();
+			if (!bridge) {
+				// 桥可能只是还没到：短轮询等它，到了就正常走下面的判据。
+				const BRIDGE_WAIT_MS = 15000;   // 与原生看门狗同量级，避免白等
+				const t0 = Date.now();
+				const wait = window.setInterval(() => {
+					bridge = hasBridge();
+					if (bridge) {
+						window.clearInterval(wait);
+						arm();
+					} else if (Date.now() - t0 > BRIDGE_WAIT_MS) {
+						window.clearInterval(wait);   // 真的没有桥：桌面端，安静退出
+					}
+				}, 200);
+				return;
+			}
+			arm();
+
+			function arm() {
 
 			let reported = false;
 			let timer = 0;
@@ -2925,11 +2968,42 @@ window.__ModuleLoader__.load({
 			 */
 			const pageLoaded = () => document.readyState === "complete";
 
-			const ready = () =>
+			/*
+			 * ⚠️ `readyState === "complete"` 可能**永远等不到**（§2026-10-31）。
+			 *
+			 * 只要页面上还有任何一个资源没结束（挂住的图片、没超时的 fetch、
+			 * 视频 preload），甚至渲染进程被 Gecko 回收后重新挂载，
+			 * `readyState` 就会一直停在 `"interactive"` —— 那时 `ready()`
+			 * 永远返回 false，`onUiReady` 永远不报，启动层永远盖着。
+			 *
+			 * 真机现场（20261031-053321，vivo V2231A / gecko 92）：
+			 * `engine.ready` 之后 27 秒 `onUiReady` 依然没来，而页面**没有任何
+			 * 报错**（`页面错误: 无`）—— 正是这个形态。
+			 *
+			 * 所以给 `pageLoaded()` 加一个**宽限**：`data-mobile` 与外壳按钮都已
+			 * 就位之后，最多再等 [PAGE_LOAD_GRACE_MS] 就认为页面可以交付。
+			 * 判据仍然是「本插件的挂载是否完成」，只是不再让一个不可控的
+			 * 全局资源状态把整个界面扣住。
+			 *
+			 * ⚠️ 宽限只放宽 `readyState` 这一条，**不放宽** `data-mobile` 与
+			 *   `.mp-nav-btn`：那两条才是「移动端适配真的挂好了」的证据，
+			 *   少了它们收起启动层只会露出错乱布局。
+			 */
+			const PAGE_LOAD_GRACE_MS = 2500;
+			let shellReadyAt = 0;   // 外壳就位（data-mobile + nav 按钮）的时刻
+
+			const shellReady = () =>
 				document.documentElement.hasAttribute("data-mobile") &&
-				document.querySelector(".mp-nav-btn") !== null &&
-				pageLoaded() &&
-				!officialBootVisible();
+				document.querySelector(".mp-nav-btn") !== null;
+
+			const ready = () => {
+				if (!shellReady()) { shellReadyAt = 0; return false; }
+				if (!shellReadyAt) shellReadyAt = Date.now();
+				if (officialBootVisible()) return false;
+				if (pageLoaded()) return true;
+				// 外壳早就位，但页面 load 迟迟不结束 ⇒ 宽限到点就交付。
+				return Date.now() - shellReadyAt >= PAGE_LOAD_GRACE_MS;
+			};
 
 			// 先立刻查一次：apply() 之前可能已经由上一轮 observer 打好属性
 			if (ready()) { report("立即"); return; }
@@ -2955,6 +3029,7 @@ window.__ModuleLoader__.load({
 					report("超时兜底 [polls=" + polls + " bootSeen=" + bootSeen + "]");
 				}
 			}, 50);
+			}
 		}
 
 		function mpSyncMobileAttr() {				// ⚠️ 修复 40：改由 mpIsMobile()（窄屏 且 非鼠标设备）决定 data-mobile，
@@ -9633,8 +9708,11 @@ window.__ModuleLoader__.load({
 		 * 真机日志里出现它 ⇒ 新版真的上屏了；不出现 ⇒ 旧文件还在，去查解包。
 		 *
 		 * 2026-10-29-a：`diag` 提到模块级（修 ReferenceError），改名 `mpDiag`。
+		 *
+		 * 2026-10-31-a：修 `onUiReady` 可能永不上报的三处根因（见 `mpSignalUiReady`
+		 *   与 `apply()` 开头的注释）：守候提到最前 + 桥后到轮询 + pageLoaded 宽限。
 		 */
-		const MP_BUILD = '2026-10-29-a';
+		const MP_BUILD = '2026-10-31-a';
 
 		const mpDiag = (msg) => {
 			try { console.log("[dsh-android-mobile@" + MP_BUILD + "] " + msg); } catch { /* ignore */ }
@@ -9831,6 +9909,35 @@ window.__ModuleLoader__.load({
 			 * 看不到这条 ⇒ 设备上跑的还是旧文件，不用再猜代码。
 			 */
 			mpDiag('插件已装配 build=' + MP_BUILD);
+
+			/*
+			 * ## ⚠️⚠️ `onUiReady` 必须**立刻**开始守，不能等后面那几十个初始化 (§2026-10-31)
+			 *
+			 * 它原来排在 `apply()` 的**末尾**，前面有 30 多个初始化调用
+			 *（`mpBuildShell` / `mpSyncDrawer` / `setupImePrejudge` /
+			 * `mpInstallBalanceBridge` / `mo.observe` …），**全程没有 try/catch**。
+			 * 任何一个抛异常，`apply()` 就地中断 ⇒ `mpSignalUiReady()` 永不执行
+			 * ⇒ 原生侧的 `onUiReady` 永远不来 ⇒ **启动层永远盖着，界面一片空白**。
+			 *
+			 * 真机取证（20261031-053321，vivo V2231A / gecko 92）：
+			 *
+			 *     05:29:46  engine.ready ms=8537 port=3080   ← 引擎好好的
+			 *     05:29:58  界面就绪回调超时（内核140，页面错误: 无）
+			 *     05:30:13  界面就绪回调超时                 ← 27 秒都没来
+			 *
+			 * 那条日志里**没有** `插件已装配 build=` 之外的任何一行 —— 说明插件
+			 * 起来了但中途断了。用户看到的红字是我加的 27 秒兜底，也就是说
+			 * **兜底正确地报了「真起不来」，但没人能救**。
+			 *
+			 * 所以把它提到第一件事：**先挂上守候，再去干别的**。
+			 * 这样后续任何一步崩掉，只影响对应功能，不会再让整个界面卡在启动层。
+			 */
+			try {
+				mpSignalUiReady();
+			} catch (e) {
+				mpDiag('onUiReady 守候安装失败: ' + (e && e.message));
+			}
+
 			mpCtx = ctx;
 			mpSessionsCache = ctx.get("sessions") ?? null;
 			mpRegisterPrivilegedSection(ctx);
@@ -9883,16 +9990,11 @@ window.__ModuleLoader__.load({
 			}, 120);
 			// 审批徽章可能在侧栏抽屉渲染完成前不存在：轮询兜底（低频）
 			const t = window.setInterval(watchApproval, 5000);
-			/* 启动动画收尾信号：告诉原生「界面真的能用了」。
-			 *
-			 * ⚠️ 不能在这里直接报 —— apply() 返回时 React 还没挂载，"data-mobile"
-			 *   属性与外壳按钮都还不存在，此刻报等于骗原生提前收起启动页，
-			 *   用户会看到一块空白的 WebView。
-			 *   真机实测：apply() 之后约 1.4~1.7s 界面才真正可用。
-			 *
-			 * 判据用「data-mobile 已打上 且 外壳已建」，与 CSS 生效条件同源：
-			 * 这两件事成立就说明本插件的移动端适配已经挂好，界面可以交付了。 */
-			mpSignalUiReady();
+			/* ⚠️ `mpSignalUiReady()` 已经提到 `apply()` 开头了（见那里的一大段注释）：
+			 * 它原来排在这里 —— `apply()` 的末尾，前面 30 多个初始化全无 try/catch，
+			 * 任何一个抛异常都会让它永不执行，界面就永远卡在启动层。
+			 * 现在它在最前面挂上守候，这里不再重复调用（函数内部有 reported 幂等保护，
+			 * 重复调用本身不会出错，但没必要留两条路径去猜谁生效）。 */
 
 			/* ── 哈希类名体检（只上报，不改变任何界面）────────────────────
 			 *

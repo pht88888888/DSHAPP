@@ -190,7 +190,15 @@ class MainActivity : AppCompatActivity() {
     /** [overlayTimeoutRunnable] 被排定时所属的 [overlayWaitGeneration]。 */
     private var overlayTimeoutArmedAt = 0
 
-    private val overlayTimeoutRunnable = Runnable {
+    /*
+     * ⚠️ 这里**必须**写显式类型 `Runnable`。
+     *
+     * 第一轮提示之后要把自己再排一次（见下面的分级处理），于是初始化器里
+     * 出现了对自身的引用。省略类型时 Kotlin 无法推导（报
+     * `Type checking has run into a recursive problem`），
+     * 写全 `Runnable` 就好了。
+     */
+    private val overlayTimeoutRunnable: Runnable = Runnable {
         if (overlayDismissed) return@Runnable
         // ⚠️ 旧轮次的计时器必须**静默作废**：它描述的是上一轮那次等待，
         //   对当前这一轮没有任何意义（见 [overlayWaitGeneration]）。
@@ -225,14 +233,54 @@ class MainActivity : AppCompatActivity() {
         //   `State.Failed` 两条路各自负责提示。
         if (webError.isNotEmpty()) {
             showOverlay("界面加载失败", hint = "$webError（点一下这里可继续）", isError = true)
-        } else {
-            showOverlay(
-                "界面加载较慢",
-                hint = "已等 ${UI_READY_TIMEOUT_MS / 1000} 秒仍未就绪，页面可能还在解析。" +
-                    "稍等一下；点一下这里可继续",
-                isError = true,
-            )
+            return@Runnable
         }
+        /*
+         * ## ⚠️⚠️ 第一轮到点**不是错误态**（2026-10-30 修）
+         *
+         * 原实现到这里直接 `isError = true`，而 `showOverlay` 在错误态下会：
+         *   ① 把标题染成红色；② 挂上「点一下收起」的点击出口；
+         *   ③ **把「进入安全模式」按钮摆出来**。
+         *
+         * 但上面那段真机取证（8 个真实用户、6 家厂商）已经证明：每一条超时之后
+         * **0.4~9.3 秒内** `onUiReady` 都会到，红层随后自己就收了 —— 也就是说
+         * 绝大多数情况下**什么都没坏**，只是「解析 5.5MB 前端 + 挂载 React」
+         * 比 12 秒慢。
+         *
+         * 两个用户因此反复报障（20261029-072906、20261029-212648）：
+         *
+         *   「冷启动时间太短。每次都拉横幅，每次都要修」
+         *   「打开软件时界面加载不出来」（截图里正是这条红字）
+         *
+         * 而且危害不只是「难看」：红字旁边就是「进入安全模式」按钮，用户以为
+         * App 坏了就去点 —— 那会推开他的插件配置并重解包 15 秒，**把一次正常
+         * 的慢启动变成真的需要修复的事故**。「每次都要修」就是这么做出来的。
+         *
+         * 所以分两级：
+         *   · 第一轮到点 ⇒ 中性提示（不染红、不给出口、不露安全模式按钮），
+         *     并再等一轮（[UI_READY_SOFT_EXTRA_MS]）；
+         *   · 第二轮仍未就绪 ⇒ 这时才真的是「起不来」，给红色提示 + 出口 +
+         *     安全模式按钮（沿用原行为）。
+         *
+         * 保留第二轮是必须的：只去掉红字而不给出路的话，万一前端真的挂死，
+         * 用户会永远看着一句「还在解析」而没有点击出口 —— 比误报更糟。
+         */
+        if (!overlaySoftNoticed) {
+            overlaySoftNoticed = true
+            showOverlay(
+                "界面加载中",
+                hint = "页面还在解析，通常再等几秒就好，不用做任何操作。",
+                isError = false,
+            )
+            overlayHandler.postDelayed(overlayTimeoutRunnable, UI_READY_SOFT_EXTRA_MS)
+            return@Runnable
+        }
+        showOverlay(
+            "界面加载较慢",
+            hint = "已等 ${(UI_READY_TIMEOUT_MS + UI_READY_SOFT_EXTRA_MS) / 1000} 秒仍未就绪，" +
+                "页面可能还在解析。稍等一下；点一下这里可继续",
+            isError = true,
+        )
     }
 
     /**
@@ -242,6 +290,14 @@ class MainActivity : AppCompatActivity() {
      *   重新盖住用户正在用的界面。
      */
     private var overlayDismissed = false
+
+    /**
+     * 第一轮超时是否已经提示过（见 [overlayTimeoutRunnable] 的两级处理）。
+     *
+     * 每轮加载开始时由 [armOverlayTimeout] 清零 —— 否则第二轮加载一上来
+     * 就会直接走「真的起不来」那个分支，等于把分级提示废掉。
+     */
+    private var overlaySoftNoticed = false
 
     /** 当前 WebView 内核的主版本号；0 = 读不到（此时不做版本拦截）。 */
     private var webViewMajor = 0
@@ -4563,6 +4619,10 @@ class MainActivity : AppCompatActivity() {
         //   Runnable 的既有排期（只会再加一条），不撤销就会攒出多个计时器，
         //   到点各报一次（见 [overlayWaitGeneration]）。
         overlayHandler.removeCallbacks(overlayTimeoutRunnable)
+        // ⚠️ 分级提示的标记必须**每轮清零**：不清零的话，第二轮加载一上来
+        //   就会直接走「真的起不来」那个红字分支，分级形同虚设
+        //   （见 [overlaySoftNoticed] 与 [overlayTimeoutRunnable]）。
+        overlaySoftNoticed = false
         overlayTimeoutArmedAt = overlayWaitGeneration
         overlayHandler.postDelayed(overlayTimeoutRunnable, UI_READY_TIMEOUT_MS)
     }
@@ -5025,6 +5085,19 @@ class MainActivity : AppCompatActivity() {
          * 目的是避免启动层永久盖住界面。
          */
         const val UI_READY_TIMEOUT_MS = 12000L
+
+        /**
+         * 第一次到点之后**再给**的宽限（ms）。见 [overlayTimeoutRunnable] 的两级处理。
+         *
+         * 真机取证里超时后 `onUiReady` 在 **0.4~9.3 秒**内到达（最慢 9.3s），
+         * 取 15 秒（> 9.3s 的最大值，留一倍余量）：
+         * 这之内到达的属于「正常慢启动」，不该被当成故障。
+         *
+         * ⚠️ 总时长因此是 12 + 15 = 27 秒才走到红色提示。这**不是**把阈值调松
+         *   到 27 秒就完事 —— 12 秒那一档仍然会给用户一句中性提示（说明还在解析、
+         *   不用操作），只是不再吓人、也不再摆出「进入安全模式」。
+         */
+        const val UI_READY_SOFT_EXTRA_MS = 15000L
 
         /**
          * WebView 内核的最低主版本号。

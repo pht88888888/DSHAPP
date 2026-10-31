@@ -10560,7 +10560,32 @@ class EngineManager private constructor(private val context: Context) {
           *      本常量仍必须 bump：不然设备上的 `.mobile_ui_version` 不变，
           *      mobile-ui.zip 解包被整体跳过，三条修复一条都收不到。
           */
-        private const val MOBILE_UI_VERSION = "1.0.0-109"
+        /*
+         * ## 110（2026-10-31）：`onUiReady` 可能永远不来 ⇒ 启动层永久盖住界面
+         *
+         * 真机现场（20261031-053321，vivo V2231A / gecko 92）：
+         *
+         *     05:29:46  engine.ready ms=8537 port=3080     ← 引擎完全正常
+         *     05:29:58  界面就绪回调超时（内核140，页面错误: 无）
+         *     05:30:13  界面就绪回调超时                  ← 27 秒仍未就绪
+         *
+         * 三处根因，都改在 `mobile-ui-plugin/dsh-android-mobile/lib/client.js`：
+         *
+         *   ① `mpSignalUiReady()` 原排在 `apply()` **末尾**，前面 30 多个初始化
+         *      全无 try/catch。任何一个抛异常 ⇒ 它永不执行 ⇒ `onUiReady` 永不上报。
+         *      ⇒ 现已提到 `apply()` 最前面并 try 包裹。
+         *   ② 桥不在时 `if (!bridge) return;` 直接退出。而 gecko 的桥由
+         *      WebExtension 注入，**早于还是晚于本插件不保证** ⇒ 晚到时永久丢失。
+         *      ⇒ 改为轮询等桥（15 秒），等到就照常按判据上报。
+         *   ③ `ready()` 要求 `readyState === "complete"`。页面只要有一个资源
+         *      挂住（或渲染进程被回收重挂），就永远停在 `interactive`。
+         *      ⇒ 外壳（`data-mobile` + `.mp-nav-btn`）就位后再宽限 2.5 秒即交付。
+         *
+         * ⚠️ 本版**只动了 client.js**（Kotlin 未改），但常量**必须** bump：
+         *   否则 `.mobile_ui_version` 不变，新 zip 解包被整体跳过 —— 这个失败是
+         *   完全静默的（见 AGENTS.md 三条最容易违反的规矩之一）。
+         */
+        private const val MOBILE_UI_VERSION = "1.0.0-110"
         private const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────
