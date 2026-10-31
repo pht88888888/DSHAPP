@@ -61,6 +61,65 @@ adb logcat -c ; adb shell am start -n com.dsh.android/.MainActivity
 adb logcat -d -s DSH:I     # 引擎就绪 / 界面加载完成 / 各 ensureXxx 的落盘行
 ```
 
+## 代码组织（2026-10-31 重整）
+
+根包曾经有 39 个文件平铺，现在按职责分目录。**新增文件请放进对应目录，不要再往根包扔。**
+
+| 目录 | 放什么 |
+|---|---|
+| `core/` | `DshApplication` |
+| `engine/` | 引擎装配与生命周期：`EngineManager`、`EngineService`、资产解包、上传器 |
+| `ui/` | Activity 与界面：`MainActivity`、日志查看器、启动动画、状态栏、余额徽标 |
+| `bubble/` | 悬浮球全套：窗口、外观、物理、手势、视频层、无障碍服务、命令桥 |
+| `privilege/` | 特权通道：Root、Shell、Shizuku、无线调试 |
+| `command/` | 给前端/AI 调的命令桥：日志、救援、状态栏、UI 探测 |
+| `web/` | 两个内核的宿主与**权限网关**：`WebHost`、`PageBridge`、`MediaCapability` |
+| `log/` | 日志、诊断包、崩溃记录、救援启动 |
+| `browser/` | 内置 AI 浏览器 |
+| `termux/` | Termux 环境引导 |
+
+### 权限：加一个能力必须同时改三处
+
+这是本项目**反复复发**的缺陷类型 —— 文件选择器、下载器、录音都栽在这上面。
+Android 的每个能力都要「清单声明 + 内核回调 + 运行时申请」三件齐备才通，
+缺任何一件的表现都是**静默失败**（页面只拿到一个含糊的错误，没有任何日志）。
+
+收敛点：
+
+- `web/MediaCapability.kt` 的 `WebCapability` 枚举 —— **加能力就加一个枚举项**
+- `WebHostCallbacks.capability` —— 内核回调统一走这个通道
+- `MainActivity.requestRuntimePermission()` —— 运行时申请统一入口（串行排队）
+
+新增一项能力时照着清单核：
+
+1. `AndroidManifest.xml` 声明权限（特殊权限另说）
+2. `WebCapability` 加枚举项
+3. `SystemWebHost` / `GeckoWebHost` 的内核回调里放行
+4. 跑 `./tools/check-architecture.sh`，第 4 节会检查清单与回调是否对齐
+
+### 架构守卫
+
+```bash
+./tools/check-architecture.sh
+```
+
+拦三件事：单个 `.kt` 不许超过上限（三个历史大文件只许变小）、
+禁止「修复 N」编号式注释（去 `git log` 查，注释里写编号必然腐烂）、
+权限三件套与桥分派表是否对齐。
+
+### 三个大文件为什么不拆
+
+`EngineManager.kt`（约 1.1 万行）、`MainActivity.kt` / `FloatingBubble.kt`
+（各约 5.4 千行）已知偏大，但**拆分收益小于代价**：
+
+- `EngineManager` 的 180 多个编译期常量被类内 700 余处引用，拆开必须把它们
+  提升成 `internal`，反而让「改一个常量影响哪些组件」更难追踪；
+- 两个 UI 类的成员大量共享 Activity/Window 生命周期状态，拆开要引入大量
+  传参或回调，等于把隐式耦合变成显式噪音。
+
+替代方案是**文件头导航**：每个大文件开头都有一张「按你要做的事找入口」的
+路线图，直接跳转，不必通读。改动时请顺手维护那张表。
+
 ## 目录结构（速查）
 
 运行期都在 `filesDir` 下。改动涉及这几个位置时最容易出错，**先看对应分册**：

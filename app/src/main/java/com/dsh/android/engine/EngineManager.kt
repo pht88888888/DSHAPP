@@ -1,4 +1,34 @@
 package com.dsh.android.engine
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ *  EngineManager —— 引擎的装配、启动、健康与自愈
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ *  这个类是本项目最大的一块（万行级），职责横跨「装环境」到「出故障自己修」。
+ *  它没有拆成多个类，是因为 180 多个编译期常量被内部 700 余处引用，拆开就
+ *  必须把它们的可见性提升成 internal —— 那会让「改一个常量影响哪些组件」变得
+ *  更难追踪，收益小于代价。所以这里改用路线图降低阅读成本。
+ *
+ *  按你要做的事找入口，不要从头读：
+ *
+ *    装一个组件          ensureXxx()          如 ensureMobileUi / ensureNodePty
+ *    起停引擎            start() / stop()
+ *    判断是否健康        checkHealth()
+ *    启动即崩的自愈      isolateBadBundles()   L1 自动隔离（基线 + 二分）
+ *    配置解析            runDumpConfig()       只解析不执行插件 apply()
+ *    真启动一次试试      probeStartup()        唯一可信的验证手段
+ *    引擎状态            State（sealed）        Idle/Extracting/Starting/Ready/Failed
+ *    常量与配置          companion object       文件末尾，180+ 个 const val
+ *
+ *  ## 改这个类之前必须知道的两件事
+ *
+ *  1. **别把常量改成 internal 去拆文件。** 700 余处引用，拆完调用链反而更长。
+ *     要拆就拆整个「装组件」段（ensureXxx 是自洽的，只依赖 context 与常量）。
+ *  2. **任何 ensureXxx 失败都不能抛异常。** 它们是启动路径上的一环，抛出去
+ *     就是「引擎起不来」。失败要记账（见 isolatedBundles / 日志），让
+ *     isolateBadBundles 有机会在下一轮把坏的摘掉。
+ */
 import android.app.ActivityManager
 import android.content.Context
 import com.dsh.android.log.DshLog as Log
@@ -10204,12 +10234,12 @@ class EngineManager private constructor(private val context: Context) {
          * 插件内容版本：改了 `mobile-ui.zip` 里的任何东西都必须改这里，
          * 否则设备上已解包的旧版不会被覆盖（同 TermuxBootstrap.NODE_VERSION 的道理）。
          *
-         * −48：修复 68 真正生效。第一版把 `type=password` 改成 `text` 之后，
+         * −48：真正生效。第一版把 `type=password` 改成 `text` 之后，
          *      又用 CSS `-webkit-text-security: disc` 补圆点 —— 而 blink 判定
          *      「密码字段」用的正是 `computedStyle.textSecurity != none`，
          *      等于把密码语义原样装了回去，输入法照样切安全键盘、照样屏蔽剪贴板。
          *      本版把这层 CSS 遮蔽彻底移除。
-         * −49：修复 68 的**真正生效点**。去掉 CSS 之后键盘仍是安全键盘 —— 因为
+         * −49：的**真正生效点**。去掉 CSS 之后键盘仍是安全键盘 —— 因为
          *      官方那两个凭据框带 `autoFocus: true`，元素插入 DOM 的同一帧就以
          *      `type=password` 聚焦，WebView 在那一刻就把输入连接的 inputType
          *      定成 `TYPE_TEXT_VARIATION_WEB_PASSWORD`(0xe1)，而**它不会为已建立
@@ -10233,7 +10263,7 @@ class EngineManager private constructor(private val context: Context) {
          *      内容列靠 WebView 自身避让系统栏活着；全面屏一开那层避让被撤掉
          *      （窗口 content 由 [0,108] 变 [0,0]），状态栏直接压住汉堡与聊天页
          *      header。同 v57 的道理，也必须 bump `-CompatVersion`。
-         * 1.0.0-59：上面那条 CSS 规则**压不过修复 66 的 `!important`**，实测
+         * 1.0.0-59：上面那条 CSS 规则**压不过的 `!important`**，实测
          *      `getComputedStyle` 仍是 0px、规则完全不生效。改为让
          *      `mpSyncFloatNavGap()` 在算 `--mp-float-nav-h` 时把状态栏高度一并纳入
          *      （JS 的 `Math.max` 不受内核版本限制；CSS 的 `max()` 要 Chrome 79，
@@ -10251,7 +10281,7 @@ class EngineManager private constructor(private val context: Context) {
          *      真正的修复在 `MainActivity.pushSystemBarInset()`（把状态栏物理像素
          *      ÷ density 换算成 CSS 像素再推）。本版只改了两处**注释**：
          *      `mpSyncFloatNavGap()` 与 CSS 那条规则原先写着「该变量在本 App 里
-         *      从未被任何代码写入（恒 0）」—— 那句话在修复 58 之后就过时了，
+         *      从未被任何代码写入（恒 0）」—— 那句话在之后就过时了，
          *      留着会误导下一个来改的人按"变量恒 0"的旧前提动手。
          *      ⚠️ 严格说这一版**没有改任何 JS 行为**，本可以不 bump；但
          *      `mobileui/lib/client.js` 是降级编译的输入之一，注释变了产物字节就变，
@@ -10369,7 +10399,7 @@ class EngineManager private constructor(private val context: Context) {
           *      （v88 之前挤掉正是因为 Default 太长）。
           *      字号 10px + opacity 0.65：它是次级信息，不该和模型名抢视觉重心。
           *      ⚠️ 两个戳都 bump（本常量 88 → 89，-CompatVersion 22 → 23）。
-          * 1.0.0-90：**思考正文不换行，把整页推出屏幕左侧**（修复 67）。
+          * 1.0.0-90：**思考正文不换行，把整页推出屏幕左侧**。
           *      症状（真机截图，一眼可见）：整个消息列表向左偏出屏幕，
           *      左侧文字被切一半（「已完成」只剩右半、消息操作图标只剩右半边），
           *      右侧反而留白；页面还能被横向拖动。
@@ -10385,7 +10415,7 @@ class EngineManager private constructor(private val context: Context) {
           *      实测：最长文本 1197 → 225px，scrollLeft 归 0，bodyX 回到 0，
           *      手势横向拖动无效（已实测 swipe 前后 scrollLeft 都是 339.67）。
           *      ⚠️ 两个戳都 bump（本常量 89 → 90，-CompatVersion 23 → 24）。
-          * 1.0.0-91：**模型名在老会话里又被挤掉**（修复 68）——v89 的补丁不完整。
+          * 1.0.0-91：**模型名在老会话里又被挤掉**——v89 的补丁不完整。
           *      v89 只保证了推理等级为 High（22px）时放得下；但真机打开一个
           *      老会话时等级是 **Default（33px）**，模型名立刻退回
           *      deepseek-v4.1-fl... 逐值实测（按钮固定 168px，模型名要 122px）：
@@ -10402,7 +10432,7 @@ class EngineManager private constructor(private val context: Context) {
           *      挂载点三处：300ms observer 批处理、scheduleStatsSync 微任务、
           *      启动爆发循环（保证首屏不闪一下截断）。
           *      ⚠️ 两个戳都 bump（本常量 90 → 91，-CompatVersion 24 → 25）。
-          * 1.0.0-92：**模型名与推理等级粘连**（修复 69）——v91 引入的视觉回归。
+          * 1.0.0-92：**模型名与推理等级粘连**——v91 引入的视觉回归。
           *      v91 把推理等级改成中文后，「deepseek-v4.1-flash默认」**挤成一片**
           *      没有间距。根因：v89 为挤宽度把 _7KE1Ra_trigger 的 gap 压到 1px，
           *      英文 High 有右侧字距留白看着还行，中文字形紧凑，1px 就是粘连。
@@ -10412,7 +10442,7 @@ class EngineManager private constructor(private val context: Context) {
           *      实测：按钮 163 → 167px，模型名 123px（= 内容宽度，零截断），
           *      推理等级间距 3px（不粘连）。
           *      ⚠️ 两个戳都 bump（本常量 91 → 92，-CompatVersion 25 → 26）。
-          * 1.0.0-93：**短模型名下出现幽灵间距**（修复 70）。
+          * 1.0.0-93：**短模型名下出现幽灵间距**。
           *      换到 agnes-3.0-flash 时，「agnes-3.0-flash    默认」中间空出一大块，
           *      而 deepseek-v4.1-flash 完全正常 —— 所以一直没暴露。
           *      根因：官方给 label 设了 text-align: center，而 v89 起我写成
@@ -10426,7 +10456,7 @@ class EngineManager private constructor(private val context: Context) {
           *      实测：短名 94=94 间隙 3px；长名 122=122 间隙 3px；
           *      超长名 盒子 128 / 文字 287 ⇒ 截断出省略号，布局不破。
           *      ⚠️ 两个戳都 bump（本常量 92 → 93，-CompatVersion 26 → 27）。
-          * 1.0.0-94：**整页能横向滚 114px**，点「更多操作」页面就左偏（修复 71）。
+          * 1.0.0-94：**整页能横向滚 114px**，点「更多操作」页面就左偏。
           *      现象：点右上角「⋯」后整个界面左移 114px，标题栏按钮从 x=294 跑到 180，
           *      输入框/发送键/遥测栏一起跟着跑（bodyX = -114、root.scrollLeft = 114）。
           *      排查：菜单本身只有 148px 宽不溢出（排除）；全树扫「右边界超视口 2px」
@@ -10444,7 +10474,7 @@ class EngineManager private constructor(private val context: Context) {
           *      程序化滚动也失效）。实测探针不受影响（x 仍 -184/544、h 691、offsetW 0），
           *      root.scrollWidth 550 → 360，scrollIntoView 后 bodyX 恒 0。
           *      ⚠️ 两个戳都 bump（本常量 93 → 94，-CompatVersion 27 → 28）。
-          * 1.0.0-95：**宽表格右侧 226px 在手机上永远看不到**（修复 72）。
+          * 1.0.0-95：**宽表格右侧 226px 在手机上永远看不到**。
           *      现象（真机截图一眼可见）：助手回复里的宽表格被右边缘硬切掉，
           *      表头「目标 / p50 / p95 / max」只显示到 p95，max 整列看不到，
           *      p95 的值（25ms / 1709）也被切一半。
@@ -10459,7 +10489,7 @@ class EngineManager private constructor(private val context: Context) {
           *      （scrollIntoView 验证 0 → 86 → 218），max / 一致性列完整显示。
           *      ⚠️ .md-table-wide 是**语义类名**（非构建期哈希），稳定性高。
           *      ⚠️ 两个戳都 bump（本常量 94 → 95，-CompatVersion 28 → 29）。
-          * 1.0.0-96：任务卡片半透明 ⇒ 底下的正文**透上来**，主次颠倒（修复 73）。
+          * 1.0.0-96：任务卡片半透明 ⇒ 底下的正文**透上来**，主次颠倒。
           *      现象（截图一眼可见）：任务卡片（「任务 5 已完成」+ 绿点清单）浮在
           *      正文上，背景只有 58% 不透明，下面那条消息的文字
           *      （「错误信息是「特权通道不可用」…」）透过卡片显出来，和清单叠成一团。
@@ -10477,24 +10507,24 @@ class EngineManager private constructor(private val context: Context) {
           *      官方就是做成浮动面板（实测 30%/50%/70%/90% 都有 1~6 条消息被压住，
           *      只有滚到底部才不重叠）。根治要改官方布局，风险远大于收益。
           *      ⚠️ 两个戳都 bump（本常量 95 → 96，-CompatVersion 29 → 30）。
-          * 1.0.0-97：两处**对比度不达标**，亮/暗主题下都读不清（修复 74 + 75）。
-          *      【修复 74】底栏推理等级「默认」：实测亮色 **2.18:1**、暗色 **2.42:1**
-          *      （WCAG AA 正文要求 4.5:1）。根因是我在修复 66 里加的 opacity: 0.65 ——
+          * 1.0.0-97：两处**对比度不达标**，亮/暗主题下都读不清（+ 75）。
+          *      【】底栏推理等级「默认」：实测亮色 **2.18:1**、暗色 **2.42:1**
+          *      （WCAG AA 正文要求 4.5:1）。根因是我在里加的 opacity: 0.65 ——
           *      方向对（次级信息不该抢重心）但太狠：实测把 opacity 拉到 1 也只有
           *      3.71~3.76:1，**光调透明度永远不够**，颜色本身 rgb(129,133,140) 就偏浅。
           *      也不能只改一个颜色：亮底(白)要深色、暗底(rgb(44,44,46))要浅色，
           *      实测同一颜色不可能两边达标（提亮 173,178,184 → 暗 6.53 ✅ / 亮 2.13 ❌；
           *      压深 97,102,107 → 亮 5.80 ✅ / 暗 2.40 ❌）。⇒ 必须写两套。
           *      最终：亮 rgb(97,102,107) 5.80:1、暗 rgb(173,178,184) 6.53:1，opacity 一律 1。
-          *      【修复 75】输入框占位符：亮色 **2.13:1**、暗色 **3.76:1**。这是用户
+          *      【】输入框占位符：亮色 **2.13:1**、暗色 **3.76:1**。这是用户
           *      **每次发消息都会看到**的提示文字。颜色来自官方变量 label-dimmed。
           *      ⚠️ 但不能一把拉满：占位符故意比正文淡是有语义的（区分"还没输入"与
           *      "已输入内容"），拉满会让人误以为已经填好了。⇒ 取**刚过 AA**：
           *      亮 rgb(112,117,122) 4.65:1、暗 rgb(165,170,176) 5.96:1。
           *      顺带把同色系的「代码块」标签与「快准狠模式（通用）」也从 ~3.5 提到 4.65。
           *      ⚠️ 两个戳都 bump（本常量 96 → 97，-CompatVersion 30 → 31）。
-          * 1.0.0-98：抽屉里两处次级文字读不清（修复 76）。
-          *      用修复 75 那套对比度扫描把侧边抽屉也过了一遍，命中 6 处 < 4.5:1，
+          * 1.0.0-98：抽屉里两处次级文字读不清。
+          *      用那套对比度扫描把侧边抽屉也过了一遍，命中 6 处 < 4.5:1，
           *      其中两处值得修（都是 rgb(129,133,140) → 3.55:1）：
           *        · .bhn1Oq_sectionLabel         「工作区」分组标题
           *        · .bhn1Oq_sessionOverflowButton「展开其余 2 个会话」
@@ -10504,9 +10534,9 @@ class EngineManager private constructor(private val context: Context) {
           *      「空面板」提示、任务卡「5 已完成」）都是**纯次级信息**，全拉到 4.5
           *      会让抽屉失去层次感、看起来一片同等重要。这两处是"导航结构"和
           *      "可点操作"，性质不同才单独提上来。
-          *      取值同修复 75：亮 rgb(105,110,115) 4.93:1 / 暗 rgb(165,170,176) 7.36:1。
+          *      取值同亮 rgb(105,110,115) 4.93:1 / 暗 rgb(165,170,176) 7.36:1。
           *      ⚠️ 两个戳都 bump（本常量 97 → 98，-CompatVersion 31 → 32）。
-          * 1.0.0-99：设置页所有说明副标题只有 3.71:1（修复 77）。
+          * 1.0.0-99：设置页所有说明副标题只有 3.71:1。
           *      设置里每项标题下那行灰字（「选择新会话的默认权限模式」
           *      「仅影响会话内容的字号」「选择希望看到多少工具调用细节」）是
           *      **用户理解这个开关干什么的唯一说明**，太淡等于没有说明。
@@ -10526,18 +10556,18 @@ class EngineManager private constructor(private val context: Context) {
           *      （99 → 100 / 33 → 34），否则会回退，设备上静默跑回没有这张卡的旧 UI。
           *      ⚠️ 两个戳都 bump（本常量 99 → 100，-CompatVersion 33 → 34）。
           * 1.0.0-103：两条移动端修复（用户截图报的两个问题）。
-          *      ① 修复 78 —— 输入框点中间落行尾。0.1.5 起官方把输入框从
+          *      ① —— 输入框点中间落行尾。0.1.5 起官方把输入框从
           *         `<textarea>` 换成 contenteditable div，Android WebView 在这上面
           *         的「像素 → 字符偏移」算得很差（点中间、光标跳行尾）。改为在
           *         `click` 上自己用 caretPositionFromPoint 定光标；只在
           *         「空选区 + 落点明显不同」时动手，不干扰长按选词/扩选/组字。
-          *      ② 修复 79 —— 思考正文两行竖直叠在一起糊成一团。流式追加时容器
+          *      ② —— 思考正文两行竖直叠在一起糊成一团。流式追加时容器
           *         高度更新落后于文字一帧（叠加 `overflow-wrap: anywhere` 让每行
           *         宽度不可预测），改为给思考正文显式 line-height + contain: layout。
           *      本版是**纯 JS 改动**（只有 client.js），未动 CSS 之外的产物，
           *      但 `mobileui/lib/client.js` 是降级编译输入，字节变了，
           *      所以本常量必须 bump（否则设备上继续跑旧 client.js，两条修复都收不到）。
-          * 1.0.0-104：修复 78 的实现修正（103 那版有缺陷，未发布到设备即被本版取代）。
+          * 1.0.0-104：的实现修正（103 那版有缺陷，未发布到设备即被本版取代）。
           *      ① 原实现用 `e.target` 当编辑区容器做 contains 判据 —— 点文字时
           *         target 是 Lexical 渲染的行内 span、点空白处是 root、点 <br> 又是
           *         另一个，判据会漏掉一大半情形。改成先 closest 找 composer 根，
@@ -10547,22 +10577,22 @@ class EngineManager private constructor(private val context: Context) {
           *         用户看到「光标闪一下又跳回行尾」。改成 setTimeout(0) 延后到
           *         本次事件处理完之后，让浏览器自然派发 selectionchange，
           *         Lexical 跟着同步。不碰它的内部 API。
-          *      ③ 同时把修复 79 的根因注释改成诚实表述：原注释把推断写成了
+          *      ③ 同时把的根因注释改成诚实表述：原注释把推断写成了
           *         「实测」，而这一条**没有真机逐帧验证过**，会误导后来人。
           * 1.0.0-105：用户反馈的《移动端 UI 修复报告》里三条**在当前源码中真实存在**
           *      的缺陷（报告其余条目描述的是手机上手工打的补丁，源码里没有）。
-          *      ① 修复 80 —— 过程行标题「一直抽搐」。修复 67 为了治「思考正文不换行
+          *      ① —— 过程行标题「一直抽搐」。为了治「思考正文不换行
           *         把整页推出屏幕」，把官方 TextShimmer 的 `._root_1rdzk_1`
           *         （`width: max-content`，标题单行的唯一保证）无差别改成了 `auto`。
           *         流式标题因此按可用宽度换行，行数 1→2→3 反复变，容器高度跟着弹。
           *         改为**只在 `.O_Ebla_title`（过程组标题）内部**把 max-content 还回去，
           *         思考正文章节完全不动；顺带把扫光的 `steps(48)` 改成 `linear`。
-          *      ② 修复 80 —— 底部统计条字号突然变大。`processStatsLine` 原先直接取
+          *      ② —— 底部统计条字号突然变大。`processStatsLine` 原先直接取
           *         `[data-composer-stat]`（anchor 层）当 label，`textContent` 赋值会
           *         **删掉内部 button.bOPqQW_pill + span.bOPqQW_label**，只剩裸文本，
           *         字号从官方 13px 变成继承 body 的 16px，撑满底栏。
           *         改为先取下钻到 `.bOPqQW_label`，取不到才退回 anchor（保证降档仍触发）。
-          *      ③ 修复 80 —— 点「刷新」后 401、会话列表空、回首页。页面侧原来是
+          *      ③ —— 点「刷新」后 401、会话列表空、回首页。页面侧原来是
           *         整页 `location.reload()`，而重载请求的是 `./`、不再带启动时那条
           *         `?token=`，于是 API / WebSocket 全部 401，只能重启 App 恢复。
           *         改为走原生桥新增的 `reloadWebUi()`：重载 `lastLoadedUrl`

@@ -1,4 +1,36 @@
 package com.dsh.android.bubble
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ *  FloatingBubble —— 悬浮球本体：窗口、拖动、吸附、视频层
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ *  这是显示在别的应用之上的那个球。它承载状态、接收手势、在需要时展开成
+ *  一张卡片显示 AI 正在干什么。
+ *
+ *  按你要做的事找入口：
+ *
+ *    显示 / 收起        show() / hide()
+ *    拖动与吸附         见 moveRunnable 与吸附逻辑（贴边、避让键盘）
+ *    外观                BubbleAppearance（形状/颜色/尺寸，可被 AI 用工具改）
+ *    物理与惯性          BubblePhysics、ShakeDetector
+ *    触摸拦截            BubbleTouchFrame（内容层真有视频时才拦截）
+ *    视频素材            BubbleVideos、BubbleVideoLayer
+ *    状态图片            BubbleStatusImages
+ *
+ *  ## 改这里之前必须知道的四件事
+ *
+ *  1. **悬浮窗是 `TYPE_APPLICATION_OVERLAY`，不是普通 View。** 它的坐标系是
+ *     屏幕坐标，与 Activity 无关；`getLocationOnScreen` 之外的一切坐标都可能是
+ *     错的。拖动前先换算。
+ *  2. **必须在主线程改 WindowManager 参数。** 子线程改会抛
+ *     `ViewRootImpl$CalledFromWrongThreadException`，而它在某些 ROM 上的
+ *     表现是**静默不生效**而不是崩溃。
+ *  3. **`show()` 与 `hide()` 必须幂等。** 调用方可能连点、可能在动画中途调用；
+ *     重复 removeView 会抛 `IllegalArgumentException`。
+ *  4. **屏幕尺寸会变**（旋转、分屏、折叠）。不重新夹取位置的话，球会跑到
+ *     可见区域之外，用户以为它消失了。
+ */
 import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
 import android.content.ComponentCallbacks

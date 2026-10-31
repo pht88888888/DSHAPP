@@ -1,4 +1,35 @@
 package com.dsh.android.ui
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ *  MainActivity —— 宿主壳：WebView、启动层、权限、下载、AI 浏览器
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ *  本类只管「把引擎的 Web GUI 显示出来，并把 Android 的能力接给它」。
+ *  聊天界面、会话、模型全部在网页里，这里**不碰**业务逻辑。
+ *
+ *  按你要做的事找入口：
+ *
+ *    WebView 装配        setupWebView()        设置项、内核回调、JS 桥注入
+ *    启动层与超时        showOverlay()         两级提示：12 秒中性、27 秒红字
+ *                         armOverlayTimeout()
+ *    权限                 requestRuntimePermission()  统一入口，串行排队
+ *                         （页面要什么能力由 WebCapability 定义）
+ *    下载                handleDownload()      cookie 鉴权后交系统下载器
+ *                         handleDownloadStream()  gecko 内核代发的响应
+ *    AI 浏览器           ensureAiBrowser()     内置浏览器，window.open 的落点
+ *    引擎                engine（EngineManager）
+ *
+ *  ## 改这里之前必须知道的三件事
+ *
+ *  1. **内核回调默认全是「静默拒绝」。** 文件选择、下载、媒体权限、JS 对话框、
+ *     地理位置 —— 不实现就不报错，页面只拿到一个含糊的失败。新增能力必须
+ *     同时改三处：清单声明、内核回调、运行时申请。判定收敛在 WebCapability。
+ *  2. **权限申请必须串行。** 系统同一时刻只处理一个对话框，并发 launch 会
+ *     丢掉后一个。队列见 permissionSinks。
+ *  3. **启动层的收起信号来自页面**（桥的 onUiReady），不是 onPageFinished。
+ *     页面加载完 ≠ 移动端插件装配完，两者真机实测差 1.4~1.7 秒。
+ */
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -128,7 +159,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var appliedBgHex = ""
 
-    // ══ 修复 65：键盘升起时输入框被盖住 ══════════════════════════════════
+    // ══ 键盘升起时输入框被盖住 ══════════════════════════════════
     // 现象：点输入框后键盘从底部升起，但输入框要等约 200ms 才跳上去，
     //      中间几帧被键盘压住。
     //
@@ -890,7 +921,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         engine = EngineManager.get(this)
-        loadImeHeight()   // 修复 65：把上次学到的键盘高度取回来（跨冷启动有效）
+        loadImeHeight()   // 把上次学到的键盘高度取回来（跨冷启动有效）
 
         // 失败浮层上的唯一出路。⚠️ Button 是 clickable 的子 View，点击不会冒泡到
         // overlay 自己的监听器（那个只负责"点一下收起浮层"），两者不冲突。
@@ -946,7 +977,7 @@ class MainActivity : AppCompatActivity() {
         // 不提前登记窗口宿主的话这一轮就只能落盘、看不到效果。
         SystemBarAppearance.attach(this)
         observeEngine()
-        observeImeInsets()   // 修复 65：键盘高度自学习 + 预判交接
+        observeImeInsets()   // 键盘高度自学习 + 预判交接
         // 前台服务要在引擎启动前拉起：它同时是「进程不被回收」和 WakeLock 的持有者，
         // 晚一步的话，引擎刚起就切后台仍可能被系统盯上。
         EngineService.start(this)
@@ -2356,7 +2387,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         /**
-         * 输入框即将获得焦点 —— 比键盘 insets 早约 200ms 的信号（见修复 65）。
+         * 输入框即将获得焦点 —— 比键盘 insets 早约 200ms 的信号（见说明）。
          *
          * ⚠️ 运行在 WebView 的 JS 线程，`onImeWillShow()` 内部会切主线程。
          */
