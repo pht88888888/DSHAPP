@@ -11,6 +11,7 @@ import android.view.WindowManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import com.dsh.android.engine.EngineManager
 
 /**
  * 环境快照 —— 诊断包里回答「这是台什么机器、什么版本、什么状态」的那一份。

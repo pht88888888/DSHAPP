@@ -8,6 +8,10 @@ import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import com.dsh.android.command.LogCommandBridge
+import com.dsh.android.engine.EngineManager
+import com.dsh.android.engine.EngineService
+import com.dsh.android.ui.LogViewerActivity
 
 /**
  * 诊断包 —— **本日志系统的最终交付物**。

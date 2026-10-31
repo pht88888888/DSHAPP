@@ -42,6 +42,8 @@ import org.json.JSONTokener
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URLDecoder
+import com.dsh.android.ui.MainActivity
+import com.dsh.android.R
 
 /**
  * AI 浏览器 —— 一个**独立于官方界面**的真 WebView。

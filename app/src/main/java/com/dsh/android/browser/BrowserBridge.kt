@@ -8,6 +8,8 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import com.dsh.android.command.UiProbeBridge
+import com.dsh.android.ui.MainActivity
 
 /**
  * AI 浏览器的**原生侧那一半** —— 把「模型想开网页/读页面/点按钮」变成一次真实操作。

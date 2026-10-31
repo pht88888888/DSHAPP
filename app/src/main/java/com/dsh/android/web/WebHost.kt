@@ -3,6 +3,7 @@ package com.dsh.android.web
 import android.net.Uri
 import android.view.View
 import java.io.InputStream
+import com.dsh.android.ui.MainActivity
 
 /**
  * 「Web 内核」的宿主抽象 —— 两个 flavor 各实现一份。
@@ -153,43 +154,12 @@ fun interface FileChooserChannel {
 }
 
 /**
- * 麦克风授权通道 —— 页面要录音，内核来问宿主同不同意。
+ * 页面弹出的 JS 对话框类型。
  *
- * ## 为什么必须存在这一层（本项目第三处「默认实现静默失败」）
- *
- * 页面的语音输入（`dsh-experimental-client-ui-voice-input`）调
- * `navigator.mediaDevices.getUserMedia({audio: true})`。这一句在 Android 的
- * WebView / GeckoView 里**不是**只看 Android 权限就放行的，而是要经过内核的
- * 授权回调：
- *
- * | 内核 | 回调 | 默认行为 |
- * |---|---|---|
- * | system | `WebChromeClient.onPermissionRequest` | **deny**（不弹框、不报错） |
- * | gecko | `PermissionDelegate.onMediaPermissionRequest` | **deny** |
- *
- * 两边的默认实现都是拒绝，且**不留任何日志**。页面侧于是拿到
- * `NotAllowedError`，前端把它翻译成 `RecordingError("permission")` ——
- * 界面文案永远是「麦克风权限被拒绝」，**哪怕 Android 权限早就授过了**。
- * 这正是本项目在文件选择器（⑦）与下载器（⑦.5）上踩过的同一种坑。
- *
- * ## 契约
- *
- * ⚠️ **必须回调**，且**必须在拿到结果之后回调**：内核的授权请求是挂起的，
- *   不回就是「页面永远停在等待授权的状态」，录音按钮点了没有任何反应。
- * ⚠️ 用户拒绝时回 `false`（不是抛异常、也不是不回）—— 页面会把它当正常拒绝
- *   处理，弹一句「权限被拒绝」，这是一条**用户可理解**的失败路径。
- * ⚠️ 宿主应当在回调里**先**确保 Android 运行时权限（`RECORD_AUDIO`）已授予，
- *   再回 `true`；否则内核放行了、录音却拿不到音频，症状是「录出来是静音」——
- *   比直接拒绝难查得多。
+ * 三种对话框在不同内核上的默认行为不一致，所以由宿主统一接管并显式给出
+ * 返回值 —— 见 [WebHostCallbacks.onJsDialog]。
  */
-fun interface MicrophoneChannel {
-    /**
-     * 请求麦克风使用权。
-     *
-     * @param onResult true = 允许，false = 拒绝。
-     */
-    fun request(onResult: (Boolean) -> Unit)
-}
+enum class JsDialogKind { Alert, Confirm, Prompt }
 
 /**
  * 一个下载请求。
@@ -262,12 +232,27 @@ class WebHostCallbacks(
     val onPageFinished: (String?) -> Unit,
     val onConsole: (String) -> Unit,
     val onExternalUrl: (String) -> Unit,
+    /**
+     * 页面弹了 JS 对话框（`alert` / `confirm` / `prompt`）。
+     *
+     * 两个内核都不约而同地把这类对话框当作「可有可无」：WebView 弹系统原生框，
+     * GeckoView 干脆不实现。后果是样式与 App 脱节，且 `confirm` / `prompt`
+     * 的返回值在不同内核上不一致 —— 依赖返回值的前端逻辑会走错分支。
+     *
+     * 这里只把事件上报给宿主（用于日志与统一的提示 UI），**决定仍然在宿主侧**：
+     * 回调收到后宿主可以忽略（原生实现已给出安全默认值）。
+     * `null` 表示宿主不关心。
+     */
+    val onJsDialog: ((kind: JsDialogKind, message: String, defaultValue: Any?) -> Unit)? = null,
     val fileChooser: FileChooserChannel,
     val onDownload: (DownloadRequest) -> Unit,
     val onDownloadStream: (DownloadStream) -> Unit,
     val onRendererGone: (didCrash: Boolean) -> Unit,
-    /** 页面要录音时的麦克风授权通道（见 [MicrophoneChannel]）。 */
-    val microphone: MicrophoneChannel,
+    /**
+     * 页面请求媒体/系统能力时的授权通道（麦克风、摄像头，见
+     * [WebCapability] 与 [CapabilityChannel]）。
+     */
+    val capability: CapabilityChannel,
     /**
      * 页面用 `window.open("about:blank")` 预开了一个**还没有 URL** 的窗口
      * （官方登录 `BrowserLogin.begin` 就是这条路径），内核需要宿主给一个

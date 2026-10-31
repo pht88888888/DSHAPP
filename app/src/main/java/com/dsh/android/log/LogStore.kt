@@ -12,6 +12,8 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.withLock
+import com.dsh.android.command.LogCommandBridge
+import com.dsh.android.engine.EngineManager
 
 /**
  * 分层日志存储 —— 整个日志系统的地基。

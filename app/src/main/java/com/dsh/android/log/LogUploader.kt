@@ -9,6 +9,9 @@ import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import com.dsh.android.core.DshApplication
+import com.dsh.android.ui.LogViewerActivity
+import com.dsh.android.ui.MainActivity
 
 /**
  * 诊断包上传 —— 把「用户报问题」从「来回问三轮」压成「一次上传」。

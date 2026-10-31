@@ -43,7 +43,7 @@
             android:paddingEnd="40dp">
 
             <!-- 动画主体：头像 + 双层环 -->
-            <com.dsh.android.BootAnimationView
+            <com.dsh.android.ui.BootAnimationView
                 android:id="@+id/bootAnim"
                 android:layout_width="190dp"
                 android:layout_height="190dp" />

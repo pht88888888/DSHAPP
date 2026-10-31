@@ -18,6 +18,10 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
+import com.dsh.android.core.DshApplication
+import com.dsh.android.engine.EngineManager
+import com.dsh.android.privilege.ShizukuChannel
+import com.dsh.android.privilege.ShizukuShell
 
 /**
  * Manages the Termux bootstrap — extracts from bundled assets into prefix dir.

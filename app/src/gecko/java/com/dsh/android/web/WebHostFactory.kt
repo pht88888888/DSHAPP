@@ -1,6 +1,7 @@
 package com.dsh.android.web
 
 import android.content.Context
+import com.dsh.android.ui.MainActivity
 
 /**
  * 建当前 flavor 的 Web 内核宿主。

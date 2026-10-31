@@ -10,7 +10,7 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import com.dsh.android.log.DshLog as Log
 import android.view.View
-import com.dsh.android.DshApplication
+import com.dsh.android.core.DshApplication
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
@@ -26,6 +26,10 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebExtension
+import com.dsh.android.engine.NativeUploader
+import com.dsh.android.privilege.ShizukuChannel
+import com.dsh.android.ui.ChatTranscript
+import com.dsh.android.ui.MainActivity
 
 /**
  * `gecko` flavor：用**内置**的 GeckoView 承载界面，不依赖设备上的系统 WebView。
@@ -189,28 +193,29 @@ class GeckoWebHost(
         }
 
         /**
-         * 页面请求麦克风 —— **必须覆写**。
+         * 页面请求麦克风/摄像头 —— **必须覆写**。
          *
-         * ⚠️ 默认实现是 `GeckoResult.deny()`：不弹框、不打日志。页面拿到
-         *   `NotAllowedError`，前端把那个翻译成 `RecordingError("permission")`，
-         *   界面永远显示「麦克风权限被拒绝」—— 即使 Android 权限早就授过了。
-         *   与 system 版的 `onPermissionRequest` 是**同一个缺口**（见
-         *   [MicrophoneChannel]）。
+         * 默认实现是 `reject()`：不弹框、不打日志。页面拿到 `NotAllowedError`，
+         * 前端翻译成「权限被拒绝」—— 即使 Android 权限早就授过了。与 system 版
+         * 的 `onPermissionRequest` 是同一个缺口（见 [CapabilityChannel]）。
          *
-         * ## 与 system 版的两处结构差异
+         * ## 与 system 版的结构差异
          *
-         * 1. **只有这一个回调**：GeckoView 把「设备级权限」（相机/麦克风，走
-         *    [onMediaPermissionRequest]）与「站点级权限」（地理位置/通知，走
-         *    `onContentPermissionRequest`）分开了，而 WebView 只有笼统的一个
-         *    `onPermissionRequest`。所以这里只需覆写前者。
-         * 2. **返回类型是 `Unit`**（不是 `GeckoResult`）：媒体权限靠
-         *    `MediaCallback.grant()` / `reject()` 异步回应，是"回调式"而非"返回式"。
+         * 1. **设备级与站点级分开**：GeckoView 把「相机/麦克风」放在
+         *    [onMediaPermissionRequest]，把「地理位置/通知」放在
+         *    `onContentPermissionRequest`。WebView 只有一个笼统的
+         *    `onPermissionRequest`。
+         * 2. **返回 `Unit`**：媒体权限靠 `MediaCallback.grant()` / `reject()`
+         *    异步回应，是回调式而非返回式。
          *
-         * ## 只放行麦克风
+         * ## 判定顺序
          *
-         * `audio` 里出现 `SOURCE_MICROPHONE` 才放行；摄像头（`video`）一律
-         * `reject()` —— 本 App 用不到，收紧比放行安全。用 `reject()` 而不是
-         * 什么都不做：不回就是「页面永远停在等待授权」，录音按钮点了毫无反应。
+         * 先看这次请求要哪些源，映射到 [WebCapability]，逐个申请 Android 权限；
+         * 全部通过才 `grant()`。任一被拒就整体 `reject()` —— 只放行一半会让页面
+         * 拿到一条没有数据的轨道（静音/黑屏），比直接拒绝难查得多。
+         *
+         * 用 `reject()` 而不是什么都不做：不回就是「页面永远停在等待授权」，
+         * 按钮点了毫无反应。
          */
         session.permissionDelegate = object : GeckoSession.PermissionDelegate {
             override fun onMediaPermissionRequest(
@@ -220,34 +225,50 @@ class GeckoWebHost(
                 audio: Array<GeckoSession.PermissionDelegate.MediaSource>?,
                 callback: GeckoSession.PermissionDelegate.MediaCallback,
             ) {
-                val wantsMic = audio?.any {
+                val micSource = audio?.firstOrNull {
                     it.source == GeckoSession.PermissionDelegate.MediaSource.SOURCE_MICROPHONE
-                } == true
-                if (!wantsMic) {
-                    Log.i(DshApplication.TAG, "页面请求媒体权限（非麦克风），拒绝: $uri")
+                }
+                // GeckoView 的 MediaSource 只有一个 SOURCE_CAMERA，
+                // 前后置由内核在同一个源内部决定，宿主的授权不区分朝向。
+                val camSource = video?.firstOrNull {
+                    it.source == GeckoSession.PermissionDelegate.MediaSource.SOURCE_CAMERA
+                }
+                if (micSource == null && camSource == null) {
+                    Log.i(DshApplication.TAG, "页面请求媒体权限（非麦克风/摄像头），拒绝: $uri")
                     callback.reject()
                     return
                 }
-                Log.i(DshApplication.TAG, "页面请求麦克风，转交宿主申请 Android 权限")
-                callbacks.microphone.request { granted ->
-                    // ⚠️ 必须在主线程回应（Gecko 的 delegate 回调契约要求）。
+                val wanted = buildList {
+                    if (micSource != null) add(WebCapability.Microphone)
+                    if (camSource != null) add(WebCapability.Camera)
+                }
+                Log.i(DshApplication.TAG, "页面请求 ${wanted.joinToString { it.label }}，转交宿主申请 Android 权限")
+                askSequentially(wanted, micSource, camSource, callback)
+            }
+
+            /** 依次申请 [wanted] 里每项能力的 Android 权限，全部通过才 `grant()`。 */
+            private fun askSequentially(
+                wanted: List<WebCapability>,
+                mic: GeckoSession.PermissionDelegate.MediaSource?,
+                cam: GeckoSession.PermissionDelegate.MediaSource?,
+                callback: GeckoSession.PermissionDelegate.MediaCallback,
+                index: Int = 0,
+            ) {
+                if (index >= wanted.size) {
+                    // 必须回主线程（Gecko delegate 的契约要求）。
                     geckoView.post {
-                        if (granted) {
-                            Log.i(DshApplication.TAG, "麦克风授权：允许")
-                            // ⚠️ 用 `grant(audio, null)` 这个重载（单个 MediaSource
-                            //   版本）：传 `null` 表示"不授权任何视频源"。传
-                            //   `MediaSource[]` 数组的那个重载在这里更啰嗦，
-                            //   而且必须自己保证数组非空。
-                            val mic = audio.first {
-                                it.source ==
-                                    GeckoSession.PermissionDelegate.MediaSource.SOURCE_MICROPHONE
-                            }
-                            callback.grant(mic, null)
-                        } else {
-                            Log.w(DshApplication.TAG, "麦克风授权：用户拒绝")
-                            callback.reject()
-                        }
+                        Log.i(DshApplication.TAG, "媒体权限全部获批，放行 mic=${mic != null} cam=${cam != null}")
+                        callback.grant(mic, cam)
                     }
+                    return
+                }
+                callbacks.capability.request(wanted[index]) { granted ->
+                    if (!granted) {
+                        Log.w(DshApplication.TAG, "媒体权限被拒：${wanted[index].label}")
+                        geckoView.post { callback.reject() }
+                        return@request
+                    }
+                    askSequentially(wanted, mic, cam, callback, index + 1)
                 }
             }
         }
@@ -415,6 +436,56 @@ class GeckoWebHost(
                     }
                 }
                 return result
+            }
+
+            /**
+             * 页面的 `alert()`。
+             *
+             * 不实现时 GeckoView 直接忽略 —— 页面认为已经把消息告诉了用户，
+             * 实际什么都没显示。这类「静默吞掉」会让依赖 alert 告知失败原因的
+             * 前端在用户眼里变成「点了没反应」。
+             *
+             * 这里转成宿主的日志与统一提示，再 `confirm` 掉让页面继续执行。
+             */
+            override fun onAlertPrompt(
+                session: GeckoSession,
+                prompt: GeckoSession.PromptDelegate.AlertPrompt,
+            ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
+                Log.i(DshApplication.TAG, "页面 alert（Gecko）: ${prompt.message?.take(200)}")
+                callbacks.onJsDialog?.invoke(JsDialogKind.Alert, prompt.message ?: "", null)
+                return GeckoResult.fromValue(prompt.dismiss())
+            }
+
+            /**
+             * 页面的 `confirm()`。
+             *
+             * 默认按「取消」回（`dismiss()`）—— 本 App 的插件里 confirm 只用于
+             * 破坏性操作确认，静默返回 true 会让用户在不了解情况时做出不可逆选择。
+             */
+            override fun onButtonPrompt(
+                session: GeckoSession,
+                prompt: GeckoSession.PromptDelegate.ButtonPrompt,
+            ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
+                Log.i(DshApplication.TAG, "页面 confirm/button（Gecko）: ${prompt.message?.take(200)}")
+                callbacks.onJsDialog?.invoke(JsDialogKind.Confirm, prompt.message ?: "", null)
+                // 默认按「取消」回：本 App 的插件里 confirm 只用于破坏性操作确认，
+                // 静默返回 true 会让用户在不了解情况时做出不可逆选择。
+                return GeckoResult.fromValue(prompt.dismiss())
+            }
+
+            /**
+             * 页面的 `prompt()`。
+             *
+             * 一律按取消回（`dismiss()`）：本 App 不用它收集输入，让用户面对一个
+             * 没有样式的输入框只会造成误操作。
+             */
+            override fun onTextPrompt(
+                session: GeckoSession,
+                prompt: GeckoSession.PromptDelegate.TextPrompt,
+            ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
+                Log.i(DshApplication.TAG, "页面 prompt（Gecko）: ${prompt.message?.take(200)}")
+                callbacks.onJsDialog?.invoke(JsDialogKind.Prompt, prompt.message ?: "", prompt.defaultValue)
+                return GeckoResult.fromValue(prompt.dismiss())
             }
         }
 

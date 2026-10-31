@@ -27,7 +27,7 @@
          BubbleTouchFrame 在**内容层真的有视频**时才开启拦截，其余情况与普通
          FrameLayout 逐字相同 —— 没有视频素材的用户不存在回归面。
     -->
-    <com.dsh.android.BubbleTouchFrame
+    <com.dsh.android.bubble.BubbleTouchFrame
         android:id="@+id/bubbleCircle"
         android:layout_width="44dp"
         android:layout_height="44dp"
@@ -90,7 +90,7 @@
             android:layout_gravity="bottom|end"
             android:layout_marginEnd="5dp"
             android:layout_marginBottom="5dp" />
-    </com.dsh.android.BubbleTouchFrame>
+    </com.dsh.android.bubble.BubbleTouchFrame>
 
     <!-- ══ 贴边态：拖出屏幕后剩下的那条薄片 ══ -->
     <!--

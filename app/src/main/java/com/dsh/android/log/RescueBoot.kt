@@ -17,6 +17,9 @@ import com.dsh.android.log.DshLog as Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import com.dsh.android.command.RescueCommandBridge
+import com.dsh.android.engine.EngineManager
+import com.dsh.android.ui.MainActivity
 
 /**
  * 启动层级（救援启动的降级阶梯）与「上次为什么起不来」的记录。

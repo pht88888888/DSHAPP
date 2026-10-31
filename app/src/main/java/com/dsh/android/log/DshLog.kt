@@ -1,6 +1,7 @@
 package com.dsh.android.log
 
 import android.util.Log as AndroidLog
+import com.dsh.android.core.DshApplication
 
 /**
  * `android.util.Log` 的**替身门面** —— 让全工程 476 处日志调用一行不改地落盘。

@@ -8,6 +8,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.dsh.android.ui.MainActivity
 
 /**
  * 启动 / 干净退出标记 —— Android 10 上判定「上次为什么没了」的**唯一**办法。

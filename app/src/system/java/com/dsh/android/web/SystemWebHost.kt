@@ -11,12 +11,20 @@ import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
+import android.webkit.GeolocationPermissions
+import android.webkit.JsPromptResult
+import android.webkit.JsResult
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import com.dsh.android.DshApplication
+import com.dsh.android.core.DshApplication
+import com.dsh.android.bubble.FloatingBubble
+import com.dsh.android.engine.EngineService
+import com.dsh.android.engine.NativeUploader
+import com.dsh.android.privilege.ShizukuChannel
+import com.dsh.android.ui.MainActivity
 
 /**
  * `system` flavor：用设备上的系统 WebView 承载界面。
@@ -234,50 +242,68 @@ class SystemWebHost(
             /**
              * 页面请求麦克风 —— **必须覆写**。
              *
-             * ⚠️ 默认实现直接 `deny()`：不弹框、不打日志、页面只拿到
-             *   `NotAllowedError`。前端把那个错误翻译成 `RecordingError("permission")`，
-             *   界面上永远显示「麦克风权限被拒绝」—— **即使 Android 权限早就授过了**。
-             *   这是本项目第三处「默认实现静默失败」（前两处是 ⑦ 的文件选择器、
-             *   ⑦.5 的下载器）。
+             * WebView 的默认实现是直接 `deny()`：不弹框、不打日志，页面只拿到
+             * `NotAllowedError`。前端把它翻译成「权限被拒绝」—— 即使 Android
+             * 权限早就授过了。这类「默认实现静默失败」本项目踩过三次：
+             * 文件选择器、下载器、录音。
              *
-             * ## 只放行音频，别的照旧拒绝
+             * 现在按 [WebCapability] 逐项判定：页面要什么就转给
+             * [CapabilityChannel] 去要 Android 权限，拿到才 `grant()`。
              *
-             * 本 App 只有一个页面、只用到录音。摄像头、地理位置、通知这些内核
-             * 会来问的权限**一个都不放行** —— 收紧到「只开需要的那一个」，
-             * 比"反正都是自己人、全放行"安全得多，而且以后加权限时也必须
-             * 显式写在这里，不会静默变成放行。
+             * 为什么必须「先拿 Android 权限、后 grant」：反过来的话内核认为已经
+             * 批准、媒体流却建不起来，症状是「录出来是静音」「摄像头黑屏」——
+             * 比直接拒绝难查得多。
              *
-             * ⚠️ **`grant()` 必须在 Android 权限真的拿到之后才调**（见
-             *   [MicrophoneChannel]）：先放行、后申请的话，内核认为已经批准、
-             *   音频却录不到，症状变成「录出来是静音」—— 那比直接拒绝难查得多。
+             * 不在 [WebCapability] 里的资源一律拒绝。收紧到白名单，是为了让
+             * 以后新增能力必须显式登记，不会因为某次改动静默变成放行。
              */
             override fun onPermissionRequest(request: PermissionRequest) {
-                val wantsMic = request.resources.any {
-                    it == PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                val wanted = request.resources.mapNotNull { res ->
+                    when (res) {
+                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> WebCapability.Microphone
+                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> WebCapability.Camera
+                        else -> null
+                    }
                 }
-                if (!wantsMic) {
+                if (wanted.isEmpty()) {
                     Log.i(
                         DshApplication.TAG,
-                        "页面请求内核权限 ${request.resources.joinToString()}，不属于麦克风，拒绝",
+                        "页面请求内核权限 ${request.resources.joinToString()}，不在允许清单内，拒绝",
                     )
                     request.deny()
                     return
                 }
-                Log.i(DshApplication.TAG, "页面请求麦克风，转交宿主申请 Android 权限")
-                callbacks.microphone.request { granted ->
-                    // ⚠️ 回调可能在任意线程（宿主那边走了权限 launcher 的线程）
-                    webView.post {
-                        if (granted) {
-                            Log.i(DshApplication.TAG, "麦克风授权：允许")
-                            // ⚠️ `grant()` 吃的是**要放行的资源列表**，不是 origin
-                            //   也不是布尔值 —— 签名是 `grant(String[] resources)`。
-                            //   把 `request.resources` 原样回传即可（上游就是这么做
-                            //   的，见 WebView 文档的 onPermissionRequest 示例）。
-                            request.grant(request.resources)
-                        } else {
-                            Log.w(DshApplication.TAG, "麦克风授权：用户拒绝")
-                            request.deny()
-                        }
+                Log.i(
+                    DshApplication.TAG,
+                    "页面请求内核权限 ${request.resources.joinToString()} → 转交宿主申请 Android 权限",
+                )
+                // 逐个能力串行申请：系统同一时刻只处理一个权限对话框，
+                // 并发发起会让后一个直接被丢弃。
+                grantSequentially(wanted, request)
+            }
+
+            /**
+             * 依次为 [wanted] 里的每个能力申请 Android 权限，全部通过才 `grant()`。
+             *
+             * 任一被拒绝就整体 `deny()`：内核的 `grant()` 是「这一次请求放行哪些
+             * 资源」，只放行一半会让页面拿到一条没有数据的轨道（静音/黑屏）。
+             */
+            private fun grantSequentially(
+                wanted: List<WebCapability>,
+                request: PermissionRequest,
+                index: Int = 0,
+            ) {
+                if (index >= wanted.size) {
+                    Log.i(DshApplication.TAG, "内核权限全部获批，放行 ${request.resources.joinToString()}")
+                    webView.post { request.grant(request.resources) }
+                    return
+                }
+                callbacks.capability.request(wanted[index]) { granted ->
+                    if (granted) {
+                        grantSequentially(wanted, request, index + 1)
+                    } else {
+                        Log.w(DshApplication.TAG, "内核权限被拒：${wanted[index].label}")
+                        webView.post { request.deny() }
                     }
                 }
             }
@@ -378,6 +404,80 @@ class SystemWebHost(
                 Log.i(DshApplication.TAG, "window.open 外链转系统浏览器: $url")
                 callbacks.onExternalUrl(url)
                 return false
+            }
+
+            /**
+             * 地理定位请求。
+             *
+             * 不实现这一条时，`navigator.geolocation.getCurrentPosition()` 的
+             * 表现是**永久挂起** —— 不报错、不拒绝、回调永不触发。这是所有失败
+             * 形态里最难查的一种：用户完全无从判断发生了什么。
+             *
+             * 本 App 没有定位业务，也刻意不申请 `ACCESS_FINE_LOCATION`：
+             * 拿位置对一个本地 agent 壳没有任何用处，而位置是敏感权限。
+             * 所以这里显式**拒绝并说明原因**，页面立刻拿到失败回调，
+             * 而不是卡在那里 —— 「明确拒绝」比「静默挂起」对用户友好得多。
+             */
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?,
+            ) {
+                Log.i(DshApplication.TAG, "页面请求地理定位，本 App 不提供: $origin")
+                // 第二参数 retain=false：不记住这个决定，下次还问（也就还拒绝）。
+                callback?.invoke(origin, false, false)
+            }
+
+            /**
+             * JS 对话框。
+             *
+             * WebView 的默认实现会弹一个系统原生对话框 —— 能用，但样式与本 App
+             * 完全脱节（安卓 13+ 上是白底方框，深色主题下非常突兀）。
+             * 更麻烦的是 `confirm()` 与 `prompt()`：部分 WebView 实现里默认
+             * 对话框的返回值不可靠，依赖返回值的插件会走错分支。
+             *
+             * 这里显式接管：`alert` 转成宿主统一的提示，`confirm` / `prompt`
+             * 明确返回确定值并在日志里留痕，让「页面问了但没人答」变成可观测事件。
+             */
+            override fun onJsAlert(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: JsResult?,
+            ): Boolean {
+                Log.i(DshApplication.TAG, "页面 alert: ${message?.take(200)}")
+                callbacks.onJsDialog?.invoke(JsDialogKind.Alert, message ?: "", null)
+                // 必须 confirm 掉，否则页面的后续 JS 全部停在这里。
+                result?.confirm()
+                return true
+            }
+
+            override fun onJsConfirm(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: JsResult?,
+            ): Boolean {
+                Log.i(DshApplication.TAG, "页面 confirm: ${message?.take(200)}")
+                // 默认按「取消」回：本 App 的插件里 confirm 只用于破坏性操作确认，
+                // 静默返回 true 会让用户在不了解情况时做出不可逆选择。
+                callbacks.onJsDialog?.invoke(JsDialogKind.Confirm, message ?: "", false)
+                result?.cancel()
+                return true
+            }
+
+            override fun onJsPrompt(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                defaultValue: String?,
+                result: JsPromptResult?,
+            ): Boolean {
+                Log.i(DshApplication.TAG, "页面 prompt: ${message?.take(200)}")
+                // prompt 一律返回 null（等同取消）：本 App 不用它收集输入，
+                // 而让用户面对一个没有样式的输入框只会造成误操作。
+                callbacks.onJsDialog?.invoke(JsDialogKind.Prompt, message ?: "", null)
+                result?.cancel()
+                return true
             }
         }
 

@@ -3,7 +3,8 @@ package com.dsh.android.web
 import android.content.Context
 import android.webkit.CookieManager
 import com.dsh.android.log.DshLog as Log
-import com.dsh.android.DshApplication
+import com.dsh.android.core.DshApplication
+import com.dsh.android.ui.MainActivity
 
 /**
  * 建当前 flavor 的 Web 内核宿主。

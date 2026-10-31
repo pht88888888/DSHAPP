@@ -9,6 +9,20 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!--
+        摄像头与麦克风。
+
+        这两项本身只是运行时权限，但**光在清单里声明是不够的** ——
+        内核（WebView / GeckoView）在页面调 `getUserMedia()` 时还要经过各自的
+        授权回调，而两边的默认实现都是静默拒绝。三处必须同时成立：
+        清单声明（这里）、内核回调放行（SystemWebHost / GeckoWebHost）、
+        运行时申请（RuntimePermissionCapability）。
+        判定逻辑收敛在 WebCapability 枚举上，加能力就改那一处。
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+    <!--
         申请「忽略电池优化」白名单。国产 ROM（华为/OPPO 等）会在息屏后冻结后台应用，
         仅靠前台服务 + WakeLock 仍会被杀。侧载分发，不受 Google Play 对该权限的限制。
     -->
@@ -83,7 +97,6 @@
         ⚠️ 语音数据流向：页面用 MediaRecorder 录一段音频**上传给引擎**做识别
           （本地 SenseVoice，首次使用时下载模型，约 239 MB），不是录成文件存本地。
     -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".DshApplication"

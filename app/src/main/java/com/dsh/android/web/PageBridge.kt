@@ -1,5 +1,10 @@
 package com.dsh.android.web
 
+import com.dsh.android.bubble.BubbleAppearance
+import com.dsh.android.privilege.ShellPrivilege
+import com.dsh.android.ui.ChatTranscript
+import com.dsh.android.ui.MainActivity
+
 /**
  * 页面 → 原生 的状态通道，页面侧看到的是 `window.DSHAndroid`。
  *

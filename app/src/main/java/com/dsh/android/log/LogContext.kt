@@ -1,6 +1,8 @@
 package com.dsh.android.log
 
 import android.content.Context
+import com.dsh.android.core.DshApplication
+import com.dsh.android.ui.MainActivity
 
 /**
  * 日志系统自己的 Application 上下文持有者。

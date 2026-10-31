@@ -4,13 +4,17 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log as AndroidLog
-import com.dsh.android.DshApplication
+import com.dsh.android.core.DshApplication
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import com.dsh.android.bubble.FloatingBubble
+import com.dsh.android.engine.EngineManager
+import com.dsh.android.ui.LogViewerActivity
+import com.dsh.android.ui.MainActivity
 
 /**
  * 崩溃现场捕获 —— 四类「进程非正常消失」各留一份带上下文的现场。

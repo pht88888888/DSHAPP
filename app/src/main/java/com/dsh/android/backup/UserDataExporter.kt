@@ -2,7 +2,7 @@ package com.dsh.android.backup
 
 import android.content.Context
 import android.util.Log
-import com.dsh.android.DshApplication
+import com.dsh.android.core.DshApplication
 import com.dsh.android.log.LogContext
 import java.io.File
 import java.text.SimpleDateFormat
