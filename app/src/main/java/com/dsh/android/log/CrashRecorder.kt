@@ -795,7 +795,7 @@ object CrashRecorder {
      * 但标红会把真崩溃的比例冲淡（实测 44 份里 36 份是冻结，标红后满屏红）。
      *
      * ⚠️ `engine-start-failed` **也刻意不在此列**：它确实是本 App 最严重的故障
-     * （界面直接不可用，见 [com.dsh.android.EngineManager]），但它是**启动失败、
+     * （界面直接不可用，见 [com.dsh.android.engine.EngineManager]），但它是**启动失败、
      * 没有崩溃过**。标红会让「崩溃现场」这个计数失去意义 —— 用户看到的是
      * 「有 70 份崩溃」而非「引擎反复起不来」。
      */
@@ -822,7 +822,7 @@ object CrashRecorder {
      * ⚠️ **存在的意义是替代「举例子」**。诊断包与 `logs` 工具的文案里原来写的是
      *   「渲染进程被回收/引擎正常退出等」，而真机 22 个 warn 包里那两个例子
      *   出现 **0** 次，实际全是 `engine-start-failed`(70) 与 `engine-exit`(16) ——
-     *   等于把「引擎起不来」（[com.dsh.android.EngineManager] 自己注释成
+     *   等于把「引擎起不来」（[com.dsh.android.engine.EngineManager] 自己注释成
      *   「本 App 最严重的一类故障」）报成了「引擎正常退出等」。
      *   例子是猜测，类别是事实。
      */

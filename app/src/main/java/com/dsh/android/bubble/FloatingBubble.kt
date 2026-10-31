@@ -4916,7 +4916,7 @@ class FloatingBubble(private val context: Context) {
      *   'android.view.ViewRootImpl android.view.View.getViewRootImpl()'
      *   on a null object reference
      *   at android.view.inputmethod.InputMethodManager.showSoftInput(…:2558)
-     *   at com.dsh.android.FloatingBubble.installPanelActions$lambda$…
+     *   at com.dsh.android.bubble.FloatingBubble.installPanelActions$lambda$…
      * ```
      *
      * **根因**：`showSoftInput(View, int)` 的第一个参数在 Java 侧没有 `@NonNull`

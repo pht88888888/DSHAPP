@@ -48,7 +48,7 @@ import com.dsh.android.ui.MainActivity
  *
  * Shizuku 的能力只能从**原生 Kotlin 侧**调用（它是 binder IPC，需要
  * `ShizukuProvider` 在清单里收 binder）。而真正要执行命令的是
- * [com.dsh.android.EngineManager] 解出来的 Node runner
+ * [com.dsh.android.engine.EngineManager] 解出来的 Node runner
  * （`dsh-android-shell.mjs`）—— 它是个独立进程，碰不到 binder。
  *
  * 所以这里把「执行一条 shell 命令」做成本地 IPC 服务：

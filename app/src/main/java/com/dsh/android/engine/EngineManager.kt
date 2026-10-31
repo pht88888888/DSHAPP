@@ -4740,7 +4740,7 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 与 [writeUiToolPatch] 同构。**没有「能力探测」这一步**：浏览器不需要
      * 任何特权，只要插件入口在就挂载 —— 浏览器实例由
-     * [com.dsh.android.MainActivity.ensureAiBrowser] 在模型第一次调用时按需创建。
+     * [com.dsh.android.ui.MainActivity.ensureAiBrowser] 在模型第一次调用时按需创建。
      */
     private fun writeBrowserToolPatch(): File? {
         val patch = File(dshHome, BROWSER_TOOL_PATCH)
@@ -10933,7 +10933,7 @@ class EngineManager private constructor(private val context: Context) {
         //   而各插件各自从 1 自增 —— 共用文件会让工具调用收到对方的回执。
         //
         // ⚠️ **没有「能力探测」这一步**：浏览器不需要任何授权，只要入口在就挂载。
-        //   浏览器实例由 [com.dsh.android.MainActivity.ensureAiBrowser] 按需创建。
+        //   浏览器实例由 [com.dsh.android.ui.MainActivity.ensureAiBrowser] 按需创建。
 
         /** 注册 `browser` 工具的 host 插件；打包成 zip 随 APK 分发。 */
         private const val BROWSER_TOOL_ASSET = "browser-tool.zip"

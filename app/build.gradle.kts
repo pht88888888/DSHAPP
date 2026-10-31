@@ -306,7 +306,7 @@ android {
         //      ① 守候排在 apply() 末尾，前面 30+ 初始化无 try/catch；
         //      ② 桥晚到时直接 return，此后永不再看；
         //      ③ ready() 要求 readyState==="complete"，卡在 interactive 就永不满足。
-        versionCode = 93
+        versionCode = 94
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
@@ -527,7 +527,7 @@ android {
         //   已全部撤回（见 git 记录）。今后调试包不改前两位版本号、不进夸克。
         //   本次改动：删掉 0.4.0 的右边缘「浏览」把手（它挡住了右侧栏内容），
         //   入口只剩官方右侧边栏那一项。
-        versionName = "0.4.3"
+        versionName = "0.4.4"
 
         // 只支持 arm64-v8a：内置的引擎资产与 Termux bootstrap 都是 arm64 架构
         ndk {

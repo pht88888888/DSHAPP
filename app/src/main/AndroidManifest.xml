@@ -99,7 +99,7 @@
     -->
 
     <application
-        android:name=".DshApplication"
+        android:name="com.dsh.android.core.DshApplication"
         android:allowBackup="false"
         android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
@@ -110,7 +110,7 @@
         tools:targetApi="35">
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.dsh.android.ui.MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:launchMode="singleTask"
@@ -166,7 +166,7 @@
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <service
-            android:name=".EngineService"
+            android:name="com.dsh.android.engine.EngineService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
@@ -197,7 +197,7 @@
               无障碍服务的设计，别改成手动启动。
         -->
         <service
-            android:name=".BubbleA11yService"
+            android:name="com.dsh.android.bubble.BubbleA11yService"
             android:exported="true"
             android:label="@string/bubble_a11y_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
@@ -225,7 +225,7 @@
             这个界面出现在最近任务里是合理的（他可能想切出去发截图再切回来）。
         -->
         <activity
-            android:name=".LogViewerActivity"
+            android:name="com.dsh.android.ui.LogViewerActivity"
             android:exported="false"
             android:label="@string/logs_title"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
@@ -242,7 +242,7 @@
             中止配对监听的方式就是点它，进程被回收后它必须还能工作。
         -->
         <receiver
-            android:name=".AdbPairingReceiver"
+            android:name="com.dsh.android.privilege.AdbPairingReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.dsh.android.action.PAIRING_REPLY" />

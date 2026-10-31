@@ -29,7 +29,7 @@ import com.dsh.android.ui.MainActivity
 /**
  * `system` flavor：用设备上的系统 WebView 承载界面。
  *
- * 这一份是把 [com.dsh.android.MainActivity] 里原本直接写在 `setupWebView()` 中的
+ * 这一份是把 [com.dsh.android.ui.MainActivity] 里原本直接写在 `setupWebView()` 中的
  * 逻辑原样搬过来，**行为一字不改** —— 原有的两个能力缺口（`onShowFileChooser`
  * 与 `setDownloadListener` 的默认实现静默失败）的修法也一并保留。
  *

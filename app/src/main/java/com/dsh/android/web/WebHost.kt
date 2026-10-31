@@ -13,7 +13,7 @@ import com.dsh.android.ui.MainActivity
  * | `system` | [com.dsh.android.web.SystemWebHost] | 设备上的系统 WebView |
  * | `gecko` | [com.dsh.android.web.GeckoWebHost] | APK 内置的 GeckoView |
  *
- * [com.dsh.android.MainActivity] 只对着这个接口写一次，两个版本共用同一份启动、
+ * [com.dsh.android.ui.MainActivity] 只对着这个接口写一次，两个版本共用同一份启动、
  * 键盘预判、返回键、启动层逻辑。
  *
  * ## 为什么值得抽这一层
@@ -59,7 +59,7 @@ interface WebHost {
      *
      * ⚠️ 实现方**不应**在这里切换 `currentUrl` 的语义 —— 它仍是「最近一次**发起**
      *   的 URL」，重载不改它。
-     * ⚠️ 由 [com.dsh.android.MainActivity] 在收到 `onRendererGone` 之后调用，
+     * ⚠️ 由 [com.dsh.android.ui.MainActivity] 在收到 `onRendererGone` 之后调用，
      *   调用时机由宿主的退避策略决定（见那里的注释）。
      */
     fun reload()
