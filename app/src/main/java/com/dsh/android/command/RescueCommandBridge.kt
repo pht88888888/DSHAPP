@@ -1,4 +1,5 @@
 package com.dsh.android.command
+import com.dsh.android.engine.constants.PROFILE_WEB
 import com.dsh.android.log.DshLog as Log
 import com.dsh.android.log.RescueBoot
 import org.json.JSONArray
@@ -238,7 +239,7 @@ object RescueCommandBridge {
         // ⚠️ `try-boot` 要十几秒，**不能在这个线程上跑**：轮询线程被占住，
         //   后续请求（比如用户等不及发的 switch-back）就全堵住了。
         if (action == "try-boot") {
-            val profile = json.optString("profile", EngineManager.PROFILE_WEB)
+            val profile = json.optString("profile", PROFILE_WEB)
             // `bundleFilter` 是可选参数：不给就是"用磁盘上的配置原样试一次"，
             // 给了就临时只加载这些 bundle（探测完还原，见 probeWithBundleFilter）。
             val filter = json.optJSONArray("bundleFilter")?.let { arr ->
