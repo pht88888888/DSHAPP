@@ -315,7 +315,17 @@ android {
         //    ReferenceError 炸掉整条 client bundle ⇒ API/导出/agent 一起失效。
         //    资产已重跑（chrome74-v40）；另修：贴边态旋转后不重贴边
         //    （横屏屏宽变大后 x 不越界，贴边条停在屏幕中间）。
-        versionCode = 95
+        //
+        //    96：残留的引擎锁让引擎「每次都在打印 URL 之前退出」——
+        //    用户截图里的 `connection (required)` 激活失败，真因是
+        //    `atomic-write: timed out waiting for the writer lock at
+        //    …/.credentials.yaml.lock`：那把锁由 `dsh-atomic-write` 的
+        //    `withFileLock()` 创建，只有「锁里记录的 PID 已不存在」才自愈，
+        //    **PID 被复用就永远等下去**，连安全模式重试也撞同一把锁。
+        //    现在启动引擎前清掉 `$DSH_HOME/.dsh` 顶层的 `*.lock`
+        //    （此刻引擎确认没在跑，这个目录只属于本 App，残骸必然是死的）。
+        //    另：导出时单个文件打不开不再让整包备份作废（跳过并写清单）。
+        versionCode = 96
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。

@@ -7501,6 +7501,50 @@ class EngineManager private constructor(private val context: Context) {
         true
     }
 
+    /**
+     * 清掉上一次遗留的引擎锁文件（`$DSH_HOME/.dsh` **顶层**的 `*.lock`）。
+     *
+     * ## 为什么需要（2026-11-01 真机反馈）
+     *
+     * 用户截图上两行提示一起出现：
+     *
+     *     dsh: startup failed: 1 required plugin did not activate
+     *     Failed plugins (1): connection (required)
+     *     Error: atomic-write: timed out waiting for the writer lock at
+     *            …/home/.dsh/.credentials.yaml.lock
+     *
+     * `connection` 插件激活期要写凭据，写凭据走
+     * `@deepseek-ai/dsh-atomic-write` 的 `withFileLock()`：锁是 `<文件名>.lock`，
+     * 内容写的是**持有者 PID**，抢不到就指数退避到超时（默认 2 秒，调用方可放宽）。
+     * 超时直接抛错 ⇒ required 插件不激活 ⇒ 引擎在打印 URL 之前退出。
+     *
+     * 那个库的自愈边界很明确：只有「锁里记录的 PID 已经不存在（ESRCH）」才会
+     * 删锁重试；**PID 被别的进程复用**时它照等不误（它的文档原话是
+     * "A holder whose PID a live process reused keeps its lock until an operator
+     * removes it"）。Android 上 PID 复用很常见，所以这把锁一旦残留就永远过不去 ——
+     * 连随后的安全模式重试也撞同一把锁，用户看到的就是「安全模式也起不来」。
+     *
+     * App 比引擎多知道一件事：**这个 `$DSH_HOME` 只属于本 App，而且此刻引擎
+     * 进程确实没在跑**（`start()` 开头的「引擎已在运行」早返回已经把那种情况排除）。
+     * 所以顶层的 `.lock` 必然是残骸，删掉即可 —— 不去按 PID 判活，
+     * 正好补上「PID 被复用」这个缝隙。
+     *
+     * ⚠️ 只删 [dshHome] **顶层**：凭据锁与 `all-stores.lock` 都在这一层；
+     *   更深处的 `sessions/`、`profiles/` 里不会有锁文件，别递归去碰用户数据。
+     */
+    private fun clearStaleEngineLocks() {
+        val locks = dshHome.listFiles { f -> f.isFile && f.name.endsWith(".lock") } ?: return
+        if (locks.isEmpty()) return
+        for (lock in locks) {
+            val owner = runCatching { lock.readText().trim() }.getOrDefault("")
+            if (lock.delete()) {
+                Log.w(TAG, "已清理残留的引擎锁: ${lock.name}（记录持有者 pid=${owner.ifEmpty { "?" }}）")
+            } else {
+                Log.w(TAG, "残留的引擎锁删不掉: ${lock.name}（将交给引擎自己的等待逻辑）")
+            }
+        }
+    }
+
     /** 启动引擎，等待其打印带 token 的 URL。 */
     suspend fun start() = withContext(Dispatchers.IO) {
         if (process?.isAlive == true) {
@@ -7895,6 +7939,10 @@ class EngineManager private constructor(private val context: Context) {
         val cmd = buildEngineArgs(nodeBin, binJs, targetProfile, overlays, resolveWebPort())
 
         Log.i(TAG, "启动引擎: ${cmd.joinToString(" ")}")
+
+        // ⚠️ 必须在 spawn **之前**：上一次残留的锁会让 `connection` 插件卡到
+        //   锁超时，引擎在打印 URL 之前就退出（见 [clearStaleEngineLocks]）。
+        clearStaleEngineLocks()
 
         val prefix = bootstrap.prefixDir.absolutePath
 

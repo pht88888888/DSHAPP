@@ -187,6 +187,12 @@ object UserDataExporter {
             //   拿不准时偏大一点无害（进度会慢一点到 100%），偏小则会超过 100%。
             val totalBytes = selected.sumOf { sizeOf(context, it).bytes }.coerceAtLeast(1)
             var written = 0L
+            /*
+             * 打不开的文件（权限、竞态删掉、崩溃留下的坏文件）记在这里，**跳过继续**。
+             *
+             * 见 [writeEntryOrSkip]：一个读不了的文件不该让整包备份作废。
+             */
+            val skipped = mutableListOf<String>()
 
             ZipOutputStream(tmp.outputStream().buffered()).use { zos ->
                 // 先写一份清单，恢复时靠它识别「这是我们自己的备份包」
@@ -208,8 +214,7 @@ object UserDataExporter {
                     val src = File(context.filesDir, item.path)
                     if (!src.exists()) continue
                     if (src.isFile) {
-                        writeEntry(zos, item.path, src)
-                        written += src.length()
+                        if (writeEntryOrSkip(zos, item.path, src, skipped)) written += src.length()
                     } else {
                         // 逐文件写：大目录不会一次性读进内存
                         val stack = ArrayDeque<Pair<File, String>>()
@@ -222,13 +227,30 @@ object UserDataExporter {
                                 if (c.isDirectory) {
                                     stack.addLast(c to rel)
                                 } else {
-                                    writeEntry(zos, rel, c)
+                                    if (!writeEntryOrSkip(zos, rel, c, skipped)) continue
                                     written += c.length()
                                     onProgress?.invoke((written.toFloat() / totalBytes).coerceIn(0f, 1f))
                                 }
                             }
                         }
                     }
+                }
+                /*
+                 * 有跳过的文件就在包里留一份清单 —— 备份包必须**自解释**。
+                 *
+                 * 否则用户拿到一个「导出成功」的包，恢复时才发现某几个 session
+                 * 没进去，而那时谁也不知道当时缺了什么、为什么缺。
+                 */
+                if (skipped.isNotEmpty()) {
+                    zos.putNextEntry(ZipEntry("DSH-BACKUP-SKIPPED.txt"))
+                    zos.write(
+                        buildString {
+                            appendLine("以下 ${skipped.size} 个文件没能打进备份（其余已正常写入）:")
+                            for (line in skipped) appendLine("  - $line")
+                        }.toByteArray(),
+                    )
+                    zos.closeEntry()
+                    Log.w(TAG, "导出时跳过了 ${skipped.size} 个读不了的文件（清单已写入包内）")
                 }
             }
 
@@ -270,6 +292,45 @@ object UserDataExporter {
         zos.putNextEntry(ZipEntry(path))
         file.inputStream().buffered().use { it.copyTo(zos) }
         zos.closeEntry()
+    }
+
+    /**
+     * 写一个条目，**单个文件打不开不拖垮整包**。
+     *
+     * ## 为什么需要
+     *
+     * 原来遍历里直接调 [writeEntry]：任何一个文件在 `inputStream()` 上抛
+     * （`EACCES` 权限、`ENOENT` 遍历期间被删、崩溃留下的坏文件），异常一路
+     * 冒到 [export] 的 catch，**整包备份作废** —— 用户的附件目录动辄上万个文件，
+     * 只要有一个怪文件，导出就永远是「导出失败」。
+     *
+     * ## 边界：只管「打开阶段」的失败
+     *
+     * `ZipOutputStream` 不是事务性的：`putNextEntry` 之后写到一半失败，
+     * 这个 entry 的字节已经在流里了，**没法回滚** —— 继续写会得到损坏的 zip。
+     * 所以读到一半抛错时仍然让整包失败（那是真的 I/O 故障，不该假装成功）。
+     * 这里挡的是「打开就能判断出来」的那一类，也正是线上最常见的那一类。
+     *
+     * @return true = 已写入；false = 已跳过并记进 [skipped]。
+     */
+    private fun writeEntryOrSkip(
+        zos: ZipOutputStream,
+        path: String,
+        file: File,
+        skipped: MutableList<String>,
+    ): Boolean {
+        val stream = try {
+            file.inputStream().buffered()
+        } catch (t: Throwable) {
+            skipped += "$path（${t.javaClass.simpleName}: ${t.message?.take(80) ?: "无详情"}）"
+            return false
+        }
+        stream.use {
+            zos.putNextEntry(ZipEntry(path))
+            it.copyTo(zos)
+            zos.closeEntry()
+        }
+        return true
     }
 
     /** 人类可读的体积文案。 */
