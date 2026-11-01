@@ -1,4 +1,4 @@
-﻿# 生成 WebView 兼容资产（webview-compat.zip）
+# 生成 WebView 兼容资产（webview-compat.zip）
 #
 # ── 为什么需要它 ──────────────────────────────────────────────────────
 #
@@ -175,7 +175,12 @@ param(
     #      ⚠️ PR #3 原作把本戳写成 24、把 `MOBILE_UI_VERSION` 写成 1.0.0-68，
     #      那是基于旧的 22/1.0.0-66 算的。合并时**必须取本地已推进的值再 +1**
     #      （33 → 34 / 1.0.0-99 → -100），否则会回退，设备上静默跑回旧 UI。
-    [string]$CompatVersion = "34",
+    # v40：`onUiReady` 三处根因修复（10-31-a）。**本版必须在 Windows 与 Linux 两侧
+    #      都取 40** —— 线上事故的原因正是漏跑本脚本：`mobile-ui.zip` 换了新版而
+    #      `webview-compat.zip` 的 `mobileui/lib/client.js` 还停在 10-29 的旧降级产物，
+    #      设备上先解出新插件、随后被旧产物整份覆盖（`build=2026-10-29-a` 照旧，
+    #      旧版里的 `diag is not defined` 还会炸掉整条 client bundle）。
+    [string]$CompatVersion = "40",
 
     [string]$EngineBin,
     [string]$OutZip

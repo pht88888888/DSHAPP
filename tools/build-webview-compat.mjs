@@ -69,7 +69,14 @@ const TARGET = argOf('target', 'chrome74');
 //      降级产物里必须带上 mpReloadUi + reloadWebUi + 新的统计条选择器，
 //      否则老内核上「刷新」仍会走 location.reload() 丢 token。
 // v37：哈希类名体检（启动后扫 7 个关键锚点，未命中经 pageDiag 上原生日志）。
-const COMPAT_VERSION = argOf('compat-version', '37');
+// v40：`onUiReady` 三处根因修复（10-31-a，守候提前/桥后到轮询/pageLoaded 宽限）。
+//      本次线上事故的原因正是**漏跑本脚本**：`mobile-ui.zip` 换了新版，
+//      `webview-compat.zip` 里的 `mobileui/lib/client.js` 还停在 10-29 的降级产物，
+//      于是设备上先解出新插件、再被旧降级产物整份覆盖 —— 用户看到的仍是
+//      `build=2026-10-29-a`，且旧版里的 `diag is not defined` 会炸掉整条
+//      client bundle（连带的 api-remotes 等模块全部不装配）。
+//      **改 `mobile-ui-plugin/**` 就必须重跑本脚本并 +1，没有例外。**
+const COMPAT_VERSION = argOf('compat-version', '40');
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const ENGINE_BIN = resolve(ROOT, argOf('engine-bin', 'app/src/main/assets/engine.bin'));

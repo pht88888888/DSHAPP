@@ -1928,6 +1928,11 @@ class FloatingBubble(private val context: Context) {
                 v.post {
                     val r = root ?: return@post
                     try {
+                        // 贴边态必须按新屏宽重贴：clampInto 只夹越界，不会把贴边条推回边缘。
+                        if (edgeCollapsed) {
+                            enterEdge(edgeSide)
+                            return@post
+                        }
                         val (nx, ny) = clampInto(curX, curY)
                         if (nx != curX || ny != curY) {
                             Log.i(TAG, "屏幕尺寸变化，气泡位置重新夹回: ($curX,$curY) → ($nx,$ny)")

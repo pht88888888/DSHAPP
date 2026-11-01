@@ -306,7 +306,16 @@ android {
         //      ① 守候排在 apply() 末尾，前面 30+ 初始化无 try/catch；
         //      ② 桥晚到时直接 return，此后永不再看；
         //      ③ ready() 要求 readyState==="complete"，卡在 interactive 就永不满足。
-        versionCode = 94
+        //
+        //    95：反馈第 5 批 —— 真因是 `webview-compat.zip` 里的
+        //    `mobileui/lib/client.js` **降级快照没跟着 `mobile-ui.zip` 重打**：
+        //    新插件解包后又被 10-29 的旧快照整份覆盖（日志里
+        //    `已安装移动端 UI 插件 1.0.0-110` 照打、页面装配的却仍是
+        //    `build=2026-10-29-a`），而旧版里那个裸 `diag` 引用会抛
+        //    ReferenceError 炸掉整条 client bundle ⇒ API/导出/agent 一起失效。
+        //    资产已重跑（chrome74-v40）；另修：贴边态旋转后不重贴边
+        //    （横屏屏宽变大后 x 不越界，贴边条停在屏幕中间）。
+        versionCode = 95
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
