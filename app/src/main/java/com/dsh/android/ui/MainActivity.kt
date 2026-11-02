@@ -794,8 +794,12 @@ class MainActivity : AppCompatActivity() {
                     isError = true,
                 )
             }
-        }, RELOAD_RECOVERY_TIMEOUT_MS)
+        }, reloadRecoveryTimeoutMs(attempt))
     }
+
+    /** 第 [attempt] 次重载的判失败窗口：首次 16 秒，之后每次 +6 秒（慢设备越往后越慢）。 */
+    private fun reloadRecoveryTimeoutMs(attempt: Int): Long =
+        RELOAD_RECOVERY_TIMEOUT_MS + (attempt - 1).coerceAtLeast(0) * 6000L
 
     /**
      * 键盘高度缓存的 key。
@@ -2260,6 +2264,9 @@ class MainActivity : AppCompatActivity() {
      */
     private var backQuerySeq = 0
 
+    /** 上一次「返回键退到后台」的时刻（见 [interceptBackExit]）。 */
+    private var lastBackExitAt = 0L
+
     /** 返回键探针的兜底定时器（见 [queryPageBack]）。 */
     private val backHandler = Handler(Looper.getMainLooper())
 
@@ -2343,6 +2350,7 @@ class MainActivity : AppCompatActivity() {
             backQuerySeq++
             backQueryPending = false
             Log.w(DshApplication.TAG, "返回键探针超时（页面未响应），按无可退层级处理")
+            if (interceptBackExit()) return@postDelayed
             moveTaskToBack(true)
         }, BACK_PROBE_TIMEOUT_MS)
 
@@ -2355,9 +2363,20 @@ class MainActivity : AppCompatActivity() {
             val consumed = result != null && result.trim('"') == "true"
             if (!consumed) {
                 Log.i(DshApplication.TAG, "返回键：页面已无可退层级，退到后台（不结束进程）")
+                if (interceptBackExit()) return@evaluateJavascript
                 moveTaskToBack(true)
             }
         }
+    }
+
+    /** 返回键「再按一次才退」：反馈 `badea0`（vivo）返回键「不小概率直接退出 App」
+     *  —— `moveTaskToBack` 在激进清理的后台上与"被杀"没区别。 */
+    private fun interceptBackExit(): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastBackExitAt <= BACK_EXIT_WINDOW_MS) return false
+        lastBackExitAt = now
+        Toast.makeText(this, "再按一次返回键退出", Toast.LENGTH_SHORT).show()
+        return true
     }
 
     /**
@@ -4439,8 +4458,12 @@ class MainActivity : AppCompatActivity() {
         }
         val text = when (st.tier) {
             RescueBoot.Tier.RESCUE ->
+                // ⚠️ 原因不同说法必须不同：反馈 `dbee25` 的截图里原因是「界面重载 2 次仍无
+                //   首帧（前端起不来）」，横幅却说「引擎没能正常启动」—— 用户被引去查引擎。
                 "⚠️ 救援模式$when_\n" +
-                    "引擎没能正常启动，或启动后 typert gateway 整体下线，" +
+                    (if (st.reason.contains("首帧") || st.reason.contains("界面"))
+                        "引擎是好的，是界面没能渲染出来（插件前端加载失败），"
+                    else "引擎没能正常启动，或启动后 typert gateway 整体下线，") +
                     "已用最小配置启动（你的插件配置没被删）。$gatewayLine\n" +
                     "AI 可以帮你找出并修好那个插件 —— 直接问它就行。"
             RescueBoot.Tier.ISOLATED ->
@@ -4510,7 +4533,8 @@ class MainActivity : AppCompatActivity() {
             sb.append("（想让 AI 恢复就告诉它这个路径）").append('\n')
         }
         if (f == null) {
-            sb.append("\n（没有记录到启动失败详情）")
+            val byWeb = st.reason.contains("首帧") || st.reason.contains("界面")
+            sb.append(if (byWeb) "\n（界面没能渲染，引擎本身是好的）" else "\n（没有记录到启动失败详情）")
         } else {
             // ⚠️ 标题按事实分岔，不写死「启动失败」：`gatewayCulprit` 非空表示
             //   这一次引擎**起来了**（只是 gateway 废了），说「启动失败」是错的。
@@ -5208,13 +5232,10 @@ class MainActivity : AppCompatActivity() {
         const val MIN_WEBVIEW_MAJOR_COMPAT = 73
 
         /**
-         * 等待 WebView 提交首帧的兜底超时（ms）。
-         *
-         * `postVisualStateCallback` 正常路径实测在几十毫秒内就回调（它只是等下一帧
-         * 提交），但**不保证一定触发** —— WebView 被销毁、渲染进程崩溃时不会来。
-         * 取 1.5 秒：足够覆盖一次正常的帧提交，又不至于让用户白等。
+         * 等待 WebView 提交首帧的兜底超时（ms）。1.5 秒只够「首帧马上就来」：反馈
+         * `2fd557` 实测重载后 1.503 s 仍未首帧，而引擎健康 ⇒ 启动层收起、用户看到白屏。
          */
-        const val PAINT_TIMEOUT_MS = 1500L
+        const val PAINT_TIMEOUT_MS = 4000L
 
         // ══ 悬浮气泡：注入脚本 ══════════════════════════════════════════
 
@@ -5269,6 +5290,7 @@ class MainActivity : AppCompatActivity() {
          * 与页面回 false 的语义一致 —— 最不该做的是把用户困在 App 里。
          */
         const val BACK_PROBE_TIMEOUT_MS = 1200L
+        const val BACK_EXIT_WINDOW_MS = 2000L
 
         /**
          * 内核进程死亡之后，等多久再重载界面（ms）。
@@ -5280,8 +5302,9 @@ class MainActivity : AppCompatActivity() {
          */
         const val RENDERER_RELOAD_DELAY_MS = 400L
 
-        /** 单次恢复最多重载几次（见 [reloadWithRetry]）。 */
-        const val MAX_RELOAD_ATTEMPTS = 2
+        /** 单次恢复最多重载几次（见 [reloadWithRetry]）。2 → 3：反馈 `2fd557` 在引擎
+         *  完全健康时被判成「两次都没恢复」而降级进救援模式。 */
+        const val MAX_RELOAD_ATTEMPTS = 3
 
         /**
          * 重载之后，等多久判断「界面恢复了没有」（ms）。
@@ -5307,8 +5330,10 @@ class MainActivity : AppCompatActivity() {
          *   ```
          *   取 8 秒：与 [armOverlayTimeout] 的口径一致（同为「等页面可用」），
          *   给足 3.8 秒实测值两倍余量，又不至于让用户觉得卡住不动。
+         *
+         * ⚠️ 8 秒仍不够（冷启动实测值）：反馈 `2fd557` 两次 8 秒都没等到首帧。
          */
-        const val RELOAD_RECOVERY_TIMEOUT_MS = 8000L
+        const val RELOAD_RECOVERY_TIMEOUT_MS = 16000L
 
         /**
          * 允许**自动**恢复的次数上界。
