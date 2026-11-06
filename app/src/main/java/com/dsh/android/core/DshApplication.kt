@@ -287,8 +287,20 @@ class DshApplication : Application() {
         /**
          * 日志上传服务器端点。
          *
-         * 部署在 `39.98.163.161:56789`（沙箱唯一的对外隧道），由 `dsh-mux` 按路径
-         * 分流到沙箱内的日志接收服务（127.0.0.1:18900）。
+         * ## ⚠️ 2026-11-07 换过地址（反馈 `20261106-205128-e73141` 等）
+         *
+         * 原来是 `http://39.98.163.161:56789/logs/upload`，那条链路是
+         * `39.98.163.161:56789 → dsh-mux → 沙箱 127.0.0.1:18900`。
+         *
+         * 多份真机诊断包里都出现「Failed to connect to /39.98.163.161:56789」，
+         * 实测该端口现在是 **Connection refused**，沙箱内的 18900 也没有在听
+         * —— 整条链路已经断了，所有用户的诊断包都传不上来（用户只能本地导出，
+         * 而手机上没有原生桥的版本连导出都点不动）。
+         *
+         * 现在改走**反馈站那条活着的公网入口**：`feedback.jiuling.cloud` 的
+         * `location /` 本来就反代到 `127.0.0.1:18901`（server.py），
+         * 服务端已加 `/logs/upload` 路由（不需要 description/email，字段名 `file`）。
+         * 同一台机器、同一套鉴权，`client_max_body_size` 是 64m，够用。
          *
          * ⚠️ 未配置（null）时上传按钮会明确提示「尚未配置日志服务器」，
          * 而不是静默失败（见 [LogUploader] 的类注释）。
@@ -296,7 +308,7 @@ class DshApplication : Application() {
          * ⚠️ 只能写 `val` 不能写 `const val` —— Kotlin 的 const 只允许非空的基本类型
          * 与 String，可空类型直接编译不过。
          */
-        val LOG_UPLOAD_ENDPOINT: String? = "http://39.98.163.161:56789/logs/upload"
+        val LOG_UPLOAD_ENDPOINT: String? = "https://feedback.jiuling.cloud/logs/upload"
 
         /**
          * 上传鉴权令牌（Bearer）。服务端校验同一份 token，
