@@ -351,7 +351,22 @@ android {
         //       静默跳过（反馈 `76ef28`「照片发不出去，改格式也不行」）。
         //       现在精确匹配失败后退一步找「同一行有 return + image/png +
         //       image/gif」，都不中才记 `image.patch-skipped` 事件。
-        versionCode = 98
+        //
+        //    99：GeckoView 版的「原生桥永远连不上」（反馈 `20261103-214225-d7b5ed`）。
+        //
+        //    用户日志从启动到最后一直是「GeckoView 桥等待 content script 连接…」，
+        //    注入=false，整块原生能力（气泡/root/无线调试）静默失效。
+        //
+        //    根因是**时序**：`content_scripts` 只在**新文档创建**时注入，而
+        //    `installBridgeExtension()` 的 `ensureBuiltIn` 是异步的。引擎一 ready
+        //    宿主就 `loadUri`，那一刻扩展还没注册完 —— 文档已经创建过了，
+        //    content script 永远不会补注入。
+        //
+        //    现在加一道闸门（`GeckoWebHost.bridgeGateOpen`）：扩展就绪前到的 URL
+        //    先扣住，就绪后（**成功或失败都算**，失败时页面必须能开，只是没桥）
+        //    再加载。安装流程本身也包了 try/catch，异常路径同样放行闸门 ——
+        //    否则「没桥」会被放大成「白屏」。
+        versionCode = 99
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。

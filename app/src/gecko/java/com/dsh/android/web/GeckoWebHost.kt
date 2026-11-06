@@ -95,6 +95,32 @@ class GeckoWebHost(
     /** 原生 → 扩展 的端口；扩展握手成功后才有值。 */
     private var port: WebExtension.Port? = null
 
+    /**
+     * 桥扩展是否已经允许页面加载。
+     *
+     * ## 为什么页面要等扩展（反馈 `20261103-214225-d7b5ed`）
+     *
+     * 用户日志从启动到最后一直是这一行：
+     *
+     *     GeckoView 桥等待 content script 连接…
+     *
+     * 也就是扩展装上了、委托也挂上了，但页面里**从来没有** content script
+     * 来 `connectNative`。
+     *
+     * 原因是时序：`content_scripts` 只在**新文档创建**时注入，而
+     * `installBridgeExtension()` 的 `ensureBuiltIn` 是异步的。引擎一 ready
+     * 宿主就 `loadUri`，那一刻扩展还没注册完 —— 文档已经创建过了，content
+     * script 永远不会补注入。于是整块原生桥（气泡、root、无线调试）静默失效，
+     * 界面上只表现为「注入=false」。
+     *
+     * 所以：扩展就绪（**成功或失败都算**，失败时页面必须能开，只是没桥）之前
+     * 到的 URL 先扣住，就绪后再加载。
+     */
+    private var bridgeGateOpen = false
+
+    /** 扩展就绪前扣下的 URL（见 [bridgeGateOpen]）。同一时刻只会有一个。 */
+    private var gatedUrl: String? = null
+
     /** 已经发出、还没收到结果的 eval 请求：id → 回调。 */
     private val pendingEvals = mutableMapOf<Long, (String?) -> Unit>()
 
@@ -492,7 +518,17 @@ class GeckoWebHost(
         session.open(runtime)
         geckoView.setSession(session)
 
-        installBridgeExtension()
+        /*
+         * ⚠️ 这里是**新引入的一条阻塞路径**（见 [bridgeGateOpen]）：装扩展失败
+         * 就不能卡住页面加载。所以任何一条异常路径都必须放行闸门 ——
+         * 否则用户看到的是「界面永远白屏」，比「没有原生桥」严重得多。
+         */
+        try {
+            installBridgeExtension()
+        } catch (t: Throwable) {
+            Log.e(DshApplication.TAG, "安装桥扩展时抛异常，直接放行页面加载", t)
+            openBridgeGate()
+        }
     }
 
     /**
@@ -675,12 +711,17 @@ class GeckoWebHost(
                     //   「原生能收消息了」，端口要等 content script 页面加载后自己
                     //   connectNative 才会来（见 onConnect）。这里只记录日志。
                     Log.i(DshApplication.TAG, "GeckoView 桥等待 content script 连接…")
+                    // 扩展已注册 ⇒ 现在创建的文档才会注入 content script（见 bridgeGateOpen）。
+                    openBridgeGate()
                 },
                 { error ->
                     // 扩展装不上 ⇒ 桥不存在 ⇒ 页面侧全部走「无桥」降级分支。
                     // 这是**功能性**失败而不是致命失败：界面能开，但设置页里的
                     // 气泡/root/无线调试三块不可用。必须明确记日志。
                     Log.e(DshApplication.TAG, "GeckoView 桥扩展安装失败", error)
+                    // ⚠️ 失败也必须放行：否则页面永远不加载，等于把「没桥」
+                    //   放大成「打不开」。没桥时各功能走的是既有的降级分支。
+                    openBridgeGate()
                 },
             )
     }
@@ -991,8 +1032,27 @@ class GeckoWebHost(
         }
     }
 
+    /**
+     * 扩展就绪后，把扣住的 URL 放出去（见 [bridgeGateOpen]）。
+     *
+     * 幂等：成功与失败两条回调都会调它，先到的赢。
+     */
+    private fun openBridgeGate() {
+        if (bridgeGateOpen) return
+        bridgeGateOpen = true
+        val url = gatedUrl ?: return
+        gatedUrl = null
+        Log.i(DshApplication.TAG, "桥扩展已就绪，开始加载界面: $url")
+        session.loadUri(url)
+    }
+
     override fun loadUrl(url: String) {
         lastLoadedUrl = url
+        // ⚠️ 扩展没注册完就加载，content script 永远不会注入（见 bridgeGateOpen）。
+        if (!bridgeGateOpen) {
+            gatedUrl = url
+            return
+        }
         session.loadUri(url)
     }
 
