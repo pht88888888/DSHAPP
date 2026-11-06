@@ -267,6 +267,16 @@
                 android:text="@string/logs_export" />
 
             <TextView
+                android:id="@+id/dataExport"
+                style="@style/LogAction"
+                android:text="@string/data_export" />
+
+            <TextView
+                android:id="@+id/dataImport"
+                style="@style/LogAction"
+                android:text="@string/data_import" />
+
+            <TextView
                 android:id="@+id/logUpload"
                 style="@style/LogAction"
                 android:text="@string/logs_upload" />

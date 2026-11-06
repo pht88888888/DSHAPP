@@ -153,9 +153,50 @@ class DshApplication : Application() {
         }
     }
 
+    /**
+     * 应用「上次导出的数据包」（反馈 `20261106-224409-706325`）。
+     *
+     * ## 为什么分两步、而不是导入时直接覆盖
+     *
+     * 导入时引擎正在跑，`$DSH_HOME` 底下有引擎正在写的会话文件。当场替换会撞车
+     * （引擎手里还拿着旧目录的句柄），而「先解到旁边、下次启动时换上去」是唯一
+     * 不会撞的时机 —— 本方法就在引擎启动**之前**被调用。
+     *
+     * 替换前把现有目录整份改名成 `home.bak-时间戳`，**不删**：用户导错了、
+     * 或者包里少了东西，还能自己捞回来。
+     */
+    private fun applyPendingDataImport() {
+        val homeDir = File(filesDir, "home")
+        val pendingDir = File(filesDir, "home-import")
+        val marker = File(pendingDir, "PENDING")
+        if (!marker.isFile) return
+        runCatching {
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            val backup = File(filesDir, "home.bak-$stamp")
+            if (homeDir.exists() && !homeDir.renameTo(backup)) {
+                error("现有数据目录改名失败（可能被占用）")
+            }
+            if (!pendingDir.renameTo(homeDir)) {
+                // 改名失败就把旧的换回去，别把用户晾在「没有数据」的状态。
+                backup.renameTo(homeDir)
+                error("导入包改名失败")
+            }
+            DshLog.i(TAG, "已应用导入的数据包，原数据备份在 ${backup.name}")
+            EventLog.record("data.import.applied", mapOf("backup" to backup.name))
+        }.onFailure {
+            DshLog.e(TAG, "应用导入的数据包失败", it)
+            EventLog.record("data.import.failed", mapOf("err" to (it.message ?: "unknown")))
+            // 失败时清掉标记，避免每次启动都重试同一份坏包。
+            runCatching { File(pendingDir, "PENDING").delete() }
+        }
+    }
+
     private fun bootstrapTermux() {
         applicationScope.launch {
             val t0 = System.currentTimeMillis()
+            // ⚠️ 必须在 Termux 引导与引擎启动**之前**：见 applyPendingDataImport 的 KDoc。
+            runCatching { applyPendingDataImport() }
             try {
                 val bootstrap = TermuxBootstrap(this@DshApplication)
                 if (!bootstrap.isReady) {

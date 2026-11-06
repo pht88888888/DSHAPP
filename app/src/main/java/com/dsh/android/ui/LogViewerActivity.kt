@@ -377,6 +377,8 @@ class LogViewerActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.logCopy).setOnClickListener { copyAll() }
         findViewById<TextView>(R.id.logPlugins).setOnClickListener { showPluginSheet() }
         findViewById<TextView>(R.id.logExport).setOnClickListener { exportBundle() }
+        findViewById<TextView>(R.id.dataExport).setOnClickListener { exportAllData() }
+        findViewById<TextView>(R.id.dataImport).setOnClickListener { startDataImport() }
         findViewById<TextView>(R.id.logUpload).setOnClickListener { upload() }
         findViewById<TextView>(R.id.logClear).setOnClickListener { confirmClear() }
     }
@@ -579,6 +581,173 @@ class LogViewerActivity : AppCompatActivity() {
      *
      * ⚠️ 失败返回 null，调用方退回私有路径提示 —— 复制失败不该让导出整个报错。
      */
+    /**
+     * 把 `$DSH_HOME` 里**用户自己的数据**打成一个 zip，放到公共目录。
+     *
+     * ## 为什么要这个（反馈 `20261106-224409-706325`）
+     *
+     * 用户原话：「旧的 APP 没办法被新的 APP 覆盖，数据无法转移，用 AI 去替换文件
+     * 的方式去转移，新的 APP 会直接变成下面图片的样子……最后导致数据无法转移」。
+     *
+     * 换机、换包名、卸载重装都会撞上这件事：会话和配置全在 App 私有目录里，
+     * 而私有目录外面进不去。让人用 tar 手动搬，搬过去也是坏的 ——
+     * 缺的不是文件，是这些文件之间的对应关系。
+     *
+     * ## 为什么**不**把整个目录打进去
+     *
+     * `node_modules` 动辄几百 MB 且可以重装，插件目录里的依赖同理。带上它们会
+     * 让「导出一份数据」变成「等五分钟」，而用户要的只是**会话与配置**。
+     * 所以跳过 `node_modules` / `.cache` / 日志目录。
+     *
+     * ⚠️ 必须后台线程：读几十上百 MB 再压缩，主线程做就是 ANR。
+     */
+    /** 选包 → 解压到 `home-import/` → 写 `PENDING`（真正的替换在下次启动时做）。 */
+    private fun startDataImport() {
+        toast(getString(R.string.data_import_hint))
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        runCatching { startActivityForResult(intent, REQ_DATA_IMPORT) }
+            .onFailure { toast(getString(R.string.data_import_failed, "没有可用的文件选择器")) }
+    }
+
+    @Deprecated("targetSdk 28，用 startActivityForResult 是有意为之")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_DATA_IMPORT) return
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        toast(getString(R.string.data_import_reading))
+        Thread({
+            val done = runCatching { unpackDataImport(uri) }.getOrNull() ?: false
+            handler.post {
+                if (done) {
+                    toast(getString(R.string.data_import_ok))
+                    LogStore.app('I', "LogViewer", "已准备导入数据包，等待下次启动应用")
+                } else {
+                    toast(getString(R.string.data_import_failed, "包结构不对或读不了"))
+                }
+            }
+        }, "dsh-data-import").start()
+    }
+
+    /**
+     * 把导入包解开到 `filesDir/home-import/`，最后写 `PENDING` 标记。
+     *
+     * ⚠️ **不直接覆盖 `home/`**：引擎正在跑，手里拿着那里的句柄。真正的替换在
+     *   下次启动、引擎起来之前做（见 `DshApplication.applyPendingDataImport`）。
+     * ⚠️ **路径必须校验不越界**（zip-slip）：包是用户从外面选进来的，
+     *   里面的 entry 名字不受我们控制。
+     */
+    private fun unpackDataImport(uri: android.net.Uri): Boolean {
+        val staging = File(filesDir, "home-import")
+        staging.deleteRecursively()
+        val target = File(staging, "home")
+        target.mkdirs()
+        // 包里的相对路径以 `.dsh` 为根（导出的就是 `home/.dsh`）。
+        val dshOut = File(target, ".dsh")
+        val root = dshOut.canonicalFile
+        var entries = 0
+        contentResolver.openInputStream(uri)?.use { input ->
+            java.util.zip.ZipInputStream(input.buffered()).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val name = entry.name
+                    if (!entry.isDirectory && name.isNotEmpty()) {
+                        val out = File(dshOut, name)
+                        val canonical = out.canonicalFile
+                        if (!canonical.path.startsWith(root.path + File.separator)) {
+                            LogStore.app('W', "LogViewer", "跳过越界的导入条目: $name")
+                        } else {
+                            out.parentFile?.mkdirs()
+                            out.outputStream().use { zis.copyTo(it) }
+                            entries += 1
+                        }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+        } ?: return false
+        if (entries == 0) {
+            staging.deleteRecursively()
+            return false
+        }
+        File(staging, "PENDING").writeText(entries.toString())
+        return true
+    }
+
+    private fun exportAllData() {
+        toast(getString(R.string.data_exporting))
+        Thread({
+            val result = runCatching {
+                val home = File(filesDir, "home/.dsh")
+                if (!home.isDirectory) return@runCatching null
+                val outDir = File(logsDir(), "export").apply { mkdirs() }
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                    .format(java.util.Date())
+                val out = File(outDir, "dsh-data-$stamp.zip")
+                var files = 0
+                java.util.zip.ZipOutputStream(out.outputStream().buffered()).use { zos ->
+                    home.walkTopDown().forEach { f ->
+                        if (f == home) return@forEach
+                        val rel = f.relativeTo(home).path
+                        // 跳过可重装的依赖与缓存（见上面的 KDoc）。
+                        if (SKIP_DATA_EXPORT.any { rel.startsWith(it) || rel.contains("/$it") }) return@forEach
+                        if (f.isDirectory) return@forEach
+                        if (!f.isFile) return@forEach
+                        runCatching {
+                            zos.putNextEntry(java.util.zip.ZipEntry(rel))
+                            f.inputStream().use { it.copyTo(zos) }
+                            zos.closeEntry()
+                            files += 1
+                        }
+                    }
+                }
+                if (files == 0) {
+                    out.delete()
+                    null
+                } else {
+                    out
+                }
+            }.getOrNull()
+            val shared = result?.let { publishToPublicDir(it) }
+            handler.post {
+                if (result == null) {
+                    toast(getString(R.string.data_export_empty))
+                } else {
+                    val size = android.text.format.Formatter.formatFileSize(
+                        this@LogViewerActivity,
+                        result.length(),
+                    )
+                    toast(getString(R.string.data_export_ok, (shared ?: result).absolutePath, size))
+                    LogStore.app('I', "LogViewer", "导出全部数据: ${result.name} (${result.length()} 字节)")
+                }
+            }
+        }, "dsh-data-export").start()
+    }
+
+    /**
+     * 导出时跳过的目录（按相对路径前缀或任一段匹配）。
+     *
+     * 这些都能重装：`node_modules` 是插件依赖，`.cache` 是运行时缓存，
+     * `logs` 与 `crash` 已经由「导出诊断包」单独覆盖。
+     *
+     * ⚠️ 定义成类级 `val` 而不是塞进 companion：本类已经有 companion object 了，
+     *   Kotlin 不允许一个类有两个。
+     */
+    /** 文件选择器的请求码（导入数据）。 */
+    private val REQ_DATA_IMPORT = 0x6d31
+
+    private val SKIP_DATA_EXPORT = listOf(
+        "node_modules",
+        ".cache",
+        "logs",
+        "crash",
+        ".pnpm-store",
+    )
+
     private fun publishToPublicDir(bundle: File): File? = runCatching {
         val dir = com.dsh.android.log.LogContext.publicExportDirOrNull() ?: return@runCatching null
         // 已经在公共目录里（无权限时 publicExportDirOrNull 会退回 filesDir，

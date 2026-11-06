@@ -13,6 +13,16 @@
     <string name="logs_src_crash">崩溃</string>
     <string name="logs_search_hint">搜索（tag、关键字、时间）</string>
     <string name="logs_export">导出诊断包</string>
+    <string name="data_export">导出全部数据</string>
+    <string name="data_exporting">正在打包数据（会话与配置，不含依赖）…</string>
+    <string name="data_export_ok">数据已导出：\n%1$s\n大小 %2$s</string>
+    <string name="data_export_empty">没有可导出的数据（$DSH_HOME 是空的）</string>
+    <string name="data_export_failed">导出失败：%1$s</string>
+    <string name="data_import">导入数据</string>
+    <string name="data_import_hint">选一个「导出全部数据」得到的 zip，导入后重启 App 生效。原有数据会先备份，不会直接删。</string>
+    <string name="data_import_reading">正在解包…</string>
+    <string name="data_import_ok">导入包已就绪，重启 App 后生效（原数据已备份）</string>
+    <string name="data_import_failed">导入失败：%1$s</string>
     <string name="logs_upload">上传给开发者</string>
     <string name="logs_copy">复制全部</string>
     <string name="logs_refresh">刷新</string>
