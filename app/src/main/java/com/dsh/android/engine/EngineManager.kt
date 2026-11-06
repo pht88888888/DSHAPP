@@ -1715,13 +1715,30 @@ class EngineManager private constructor(private val context: Context) {
              * 用同一份空白去缩进多行替换体。这样缩进换了也不影响。
              */
             val lines = source.split("\n").toMutableList()
-            val idx = lines.indexOfFirst { it.trimEnd().endsWith(IMG_TYPE_GUARD.trimEnd()) }
+            val exact = lines.indexOfFirst { it.trimEnd().endsWith(IMG_TYPE_GUARD.trimEnd()) }
+            /*
+             * ⚠️ 精确行尾匹配失败时**不能直接放弃**（反馈 `20261105-214500-76ef28`
+             * 「照片无法发出去，改格式也不行」）：引擎一升级，这条语句可能被
+             * 改写（换个判断顺序、拆成两行、多一个 mime），而用户那边的表现
+             * 就是白名单又收紧了 —— 补丁静默跳过，谁也不知道。
+             *
+             * 退一步找「同一行里既有 return、又同时列了 image/png 与 image/gif」，
+             * 这个组合足够特定，不会误伤数组定义（那种没有 return）。
+             */
+            val idx = if (exact >= 0) {
+                exact
+            } else {
+                lines.indexOfFirst { line ->
+                    line.contains("return") && line.contains("\"image/png\"") && line.contains("\"image/gif\"")
+                }
+            }
             if (idx < 0) {
                 Log.w(
                     TAG,
                     "发图格式判断结构与预期不符，跳过补丁（找不到以 " +
-                        "`${IMG_TYPE_GUARD.take(40)}…` 结尾的行）",
+                        "`${IMG_TYPE_GUARD.take(40)}…` 结尾的行，也没有 return+image/png+image/gif 的行）",
                 )
+                EventLog.record("image.patch-skipped", mapOf("file" to entry.name))
                 return
             }
             // 取那一行的行首空白（可能为空）。
@@ -8131,6 +8148,8 @@ class EngineManager private constructor(private val context: Context) {
                         val urlPattern = URL_PATTERN
         val readyLatch = java.util.concurrent.CountDownLatch(1)
         var readyUrl: String? = null
+        // 运行中 gateway 掉线只处理一次（见下面输出循环里的判据）。
+        var gatewayDownSeen = false
 
         Thread {
             try {
@@ -8174,6 +8193,36 @@ class EngineManager private constructor(private val context: Context) {
                         synchronized(logLines) {
                             logLines.addLast(line)
                             while (logLines.size > MAX_LOG_LINES) logLines.removeFirst()
+                        }
+                        /*
+                         * **运行中**的 gateway 掉线也要认（反馈 `20261106-125423-f50bba`）。
+                         *
+                         * 原来的判据只在 `start()` 成功分支里跑一次，看的是**启动那段**
+                         * stdout。而用户截图里那句
+                         *   `typert gateway: session/create: Active Service
+                         *    "sessionController" is unavailable`
+                         * 是**运行中**点「新建会话」才冒出来的 —— 此时启动早已成功、
+                         * 判据早已跑完，于是既不降级也没有横幅，用户只能对着红色提示
+                         * 一直点：工作区打不开、新建也失败。
+                         *
+                         * ⚠️ `requestRestart` 必须丢到别的线程：这里正在读引擎的
+                         *   stdout，重启会等引擎退出，在读取线程里等就是自己等自己。
+                         */
+                        if (!gatewayDownSeen && readyUrl != null && RescueBoot.looksLikeGatewayDown(line)) {
+                            gatewayDownSeen = true
+                            val hit = line.trim()
+                            Log.e(TAG, "运行中出现 typert gateway 服务不可用：$hit")
+                            EventLog.record(
+                                "engine.gateway-down-runtime",
+                                mapOf("line" to hit.take(200)),
+                            )
+                            if (RescueBoot.tier().tier == RescueBoot.Tier.NORMAL && rescueAvailable) {
+                                escalateToRescue(
+                                    "运行中 typert gateway 服务不可用：" + hit.take(120),
+                                    from = "gateway",
+                                )
+                                Thread { requestRestart("运行中 typert gateway 服务不可用") }.start()
+                            }
                         }
                         if (readyUrl == null) {
                             val m = urlPattern.find(line)

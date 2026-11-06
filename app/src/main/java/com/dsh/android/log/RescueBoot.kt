@@ -556,6 +556,27 @@ object RescueBoot {
      *
      * @return 判据成立时返回涉事包名（能解析到就给，给不到返回空串）；否则 null。
      */
+    /**
+     * 单行输出是否说明「typert gateway 的服务已经不可用」。
+     *
+     * 与 [parseGatewayFailure] 的分工：那个看**启动那段**输出、只认
+     * `contributor(s) failed to register` 一句；这个看**运行中任意一行**，
+     * 因为它要回答的是「用户现在点的这个操作为什么失败」（反馈
+     * `20261106-125423-f50bba`：新建会话报
+     * `typert gateway: session/create: Active Service "sessionController"
+     *  is unavailable`）。
+     *
+     * ⚠️ 判据**必须**带上 `typert`/gateway 的专属措辞。`Active Service "…"
+     *   is unavailable` 本身是很通用的说法，别的服务挂了也是这个句式；一旦误判，
+     *   代价是把用户正在正常用的会话踢进救援模式重启 —— 比不修更糟。
+     */
+    fun looksLikeGatewayDown(line: String): Boolean {
+        if (line.isEmpty()) return false
+        if (line.contains("strict definition was withdrawn")) return true
+        if (line.contains("typert contributor(s) failed to register")) return true
+        return line.contains("typert") && line.contains("is unavailable")
+    }
+
     fun parseGatewayFailure(tailLines: List<String>): String? {
         val cleaned = tailLines.map { stripLogPrefix(it) }
         // ⚠️ 先定位那句话，**只在它之后**找涉事行。

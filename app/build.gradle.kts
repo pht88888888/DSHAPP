@@ -338,7 +338,20 @@ android {
         //    另：返回键加「再按一次才退」（`badea0`：vivo 上手势返回与界面
         //    返回键「不小概率直接退出 App」—— 页面没消费时 moveTaskToBack，
         //    在激进清理的后台上与"被杀"没区别）。
-        versionCode = 97
+        //
+        //    98：两处「坏了但不吭声」，都来自反馈：
+        //    ① typert gateway 的服务在**运行中**挂掉时，App 完全不知道 ——
+        //       判据原来只在 start() 成功分支里跑一次、只看启动那段输出。
+        //       反馈 `f50bba`/`f9cf27` 的新建会话报
+        //       `Active Service "sessionController" is unavailable`，
+        //       用户只能对着红色提示一直点。现在读 stdout 时实时认这句话
+        //       （判据 `RescueBoot.looksLikeGatewayDown`，必须带 typert 专属措辞，
+        //       避免把别的服务挂了误判成 gateway），命中即降级到救援模式。
+        //    ② 发图白名单补丁的锚点只有「行尾精确匹配」一种，引擎一升级就
+        //       静默跳过（反馈 `76ef28`「照片发不出去，改格式也不行」）。
+        //       现在精确匹配失败后退一步找「同一行有 return + image/png +
+        //       image/gif」，都不中才记 `image.patch-skipped` 事件。
+        versionCode = 98
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
