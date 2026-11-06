@@ -7596,6 +7596,36 @@ class EngineManager private constructor(private val context: Context) {
         // 重解包**，而那会把已经打好的补丁与已解出的原生插件全部抹掉 —— 那些
         // ensureXxx 都是幂等的，重解包之后再跑一遍才是正确顺序。
         // 真机实测：正常态体检耗时 0.7~0.8 秒，对 7~10 秒的启动时间可忽略。
+        /*
+         * ⚠️ **首次启动时 bootstrap 解压与引擎启动是并发的**（前者在
+         *   `DshApplication.bootstrapTermux()` 的 `applicationScope.launch` 里），
+         *   原来这里不等它。
+         *
+         * 后果在真机上很确定（反馈 `20261106-215120-1a090a`，HUAWEI PSN-AL00 /
+         * Android 16 / 首次安装）：
+         *
+         * ```
+         * 21:48:07  [TERMUX] install start arch=aarch64
+         * 21:48:17  启动引擎: …/termux/usr/bin/node …
+         * 21:48:17  CANNOT LINK EXECUTABLE "…/usr/bin/node":
+         *           library "libz.so.1" not found: needed by main executable
+         * ```
+         *
+         * 原因是 node 的 NEEDED 要 `libz.so.1`，而 APK 里只有
+         * `lib/libz.so.1.3.2`，那条 `libz.so.1` 软链由解压流程最后统一建：
+         * 解压没跑完时 `targetPath.exists()` 为 false，软链**被跳过**，
+         * 而 `installNodeRuntime()` 仍然返回 true（它校验 node 时用的是自带
+         * LD_LIBRARY_PATH），于是引擎带着一个链接不上的 node 就这么起了。
+         *
+         * `install()` 本身幂等、且持有 prefix 文件锁 —— 这里等它跑完即可，
+         * 不会重复解压。
+         */
+        if (!bootstrap.isReady) {
+            Log.w(TAG, "Termux 尚未就绪（首次安装或上次未完成），先等引导跑完再启动引擎")
+            EventLog.record("engine.wait-bootstrap")
+            bootstrap.install()
+        }
+
         if (!bootstrap.installNodeRuntime()) {
             _state.value = State.Failed(
                 "Termux 环境未就绪，无法启动引擎。\n" +

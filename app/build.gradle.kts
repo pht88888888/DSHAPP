@@ -366,7 +366,24 @@ android {
         //    先扣住，就绪后（**成功或失败都算**，失败时页面必须能开，只是没桥）
         //    再加载。安装流程本身也包了 try/catch，异常路径同样放行闸门 ——
         //    否则「没桥」会被放大成「白屏」。
-        versionCode = 99
+        //
+        //    100：首次安装时引擎等 Termux 引导跑完再启动（反馈 `20261106-215120-1a090a`）。
+        //
+        //    真机（HUAWEI PSN-AL00 / Android 16 / 首次安装）日志：
+        //        21:48:07  [TERMUX] install start arch=aarch64
+        //        21:48:17  启动引擎: …/termux/usr/bin/node …
+        //        21:48:17  CANNOT LINK EXECUTABLE "…/node": library "libz.so.1" not found
+        //
+        //    `bootstrapTermux()` 是 `applicationScope.launch` 异步跑的，而引擎
+        //    启动不等它。node 的 NEEDED 要 `libz.so.1`，APK 里只有
+        //    `lib/libz.so.1.3.2`，那条软链由解压流程最后统一建 —— 解压没跑完时
+        //    `targetPath.exists()` 为 false，软链被跳过，而 `installNodeRuntime()`
+        //    仍然返回 true（它校验 node 用的是自带 LD_LIBRARY_PATH），于是引擎
+        //    带着一个链接不上的 node 起了。
+        //
+        //    现在 `start()` 里先 `if (!bootstrap.isReady) bootstrap.install()`；
+        //    该调用幂等且持 prefix 文件锁，不会重复解压。
+        versionCode = 100
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
