@@ -751,163 +751,6 @@ window.__ModuleLoader__.load({
   background: rgba(67, 69, 74, 0.97) !important;
 }
 
-/* ══ 修复 64：模型名在窄屏下被截断（"deepseek-v4.1..." 看不全）═════════
-   症状（360px 宽、dpr 3 真机截图核对）：
-     · 底栏模型按钮里的模型名被 ellipsis 截成 "deepseek-v4.1..."；
-     · 紧随其后的推理等级（Default）**宽度直接是 0**，完全看不见。
-
-   根因不是"文字太长"，而是**这一行有一块 41px 的空地被浪费了**：
-   官方 uV2eYG_row 用的是 "justify-content: space-between"，子项只有
-   uV2eYG_tools（80px，可收缩）和 uV2eYG_trailing（190px，
-   "flex: 0 0 auto" 不收缩）。"space-between" 把剩余空间全推到了两者中间
-   —— 实测 tools 结束于 x=104、trailing 从 x=145 才开始，**中间空 41px**，
-   而右边模型名正因为缺 16px 在截断。把空隙让给 trailing 即可。
-
-   修法（逐层放宽，缺一层都撑不开 —— 实测每层都被上一层的
-   "flex: 0 0 auto" / "display: block" 卡住）：
-     row            space-between → flex-start（不再把空隙推到中间）
-     trailing       0 0 auto → 1 1 0%
-     standardControls / _7KE1Ra_root   0 1 auto → 1 1 0%
-     _7KE1Ra_trigger  max-width: 139.5px → none（官方在这里写死了上限）
-   腾出宽度后模型名完整显示（实测 144px = 内容 144px，零截断）。
-
-   ## 推理等级（Default / High）为什么不藏
-   一开始为了让模型名完整，把推理等级 display:none 掉了，理由是"它是默认值"。
-   **那是错的**：真机 aria-label 显示实际值是 High（用户设过），藏起来就是丢信息。
-   正确做法是腾宽度而不是砍信息 —— 腾出 41px 后模型名与 High 能同时放下
-   （实测模型名 122px + High 28px + 内边距/箭头 = 168px，按钮正好 168px）。
-
-   ⚠️ 两个都是官方构建期哈希类名，官方升级可能变；失效后果只是
-      "回到截断状态"，不影响功能。 */
-[data-mobile] .uV2eYG_row {
-  justify-content: flex-start !important;
-  /* 修复 69：官方 row gap 是 12px，tools 只占 80px，中间那 12px 是纯浪费。
-     缩到 8px 换回 4px 给模型名 —— 正好够把「默认」和模型名拉开到 3px 间距
-     而不再截断模型名。实测：gap 12→8 后按钮 163→167px，
-     模型名 119→123px（= 内容宽度，零截断），推理等级间距 3px。
-     为什么非要这 4px：见下面 _7KE1Ra_trigger 的 gap 注释。 */
-  gap: 8px !important;
-}
-[data-mobile] .uV2eYG_tools {
-  flex: 0 0 auto !important;
-}
-[data-mobile] .uV2eYG_trailing {
-  flex: 1 1 0% !important;
-  min-width: 0 !important;
-}
-[data-mobile] .uV2eYG_standardControls {
-  flex: 1 1 0% !important;
-  min-width: 0 !important;
-}
-[data-mobile] ._7KE1Ra_root {
-  flex: 1 1 0% !important;
-  min-width: 0 !important;
-  width: 100% !important;
-}
-[data-mobile] ._7KE1Ra_trigger {
-  padding-left: 4px !important;
-  padding-right: 0 !important;
-  /* 修复 69：这里原来是 1px（v89 为挤宽度而压到极限）。
-     但 v91 把推理等级改成了中文（Default → 默认），中文字形没有英文那种
-     右侧字距留白，1px 看起来就是「deepseek-v4.1-flash默认」**粘连**。
-     实测各值（配合上面 row gap:8px）：
-       gap 1px → 模型名 123px 完整，但视觉粘连
-       gap 2px → 模型名 121px（122 需求，临界）
-       gap 3px → 模型名 119px（**截断**）  ← 只有 row gap 仍是 12 时才会这样
-     把 row gap 从 12 缩到 8 腾出 4px 后，gap 3px 也能保持模型名 123px 完整，
-     所以最终取 3px —— 既不粘连，也不截断。 */
-  gap: 3px !important;
-  min-width: 0 !important;
-  width: 100% !important;
-  max-width: none !important;
-  justify-content: flex-start !important;
-}
-[data-mobile] ._7KE1Ra_triggerLabel {
-  min-width: 0 !important;
-  /* ══ 修复 70：模型名与推理等级之间出现"幽灵间距" ══════════════════════
-     现象（真机截图，一眼就能看出来）：换到短模型名 agnes-3.0-flash 时，
-     「agnes-3.0-flash    默认」中间空出一大块，而 deepseek-v4.1-flash 却正常。
-
-     根因：官方给这个 label 设了 **text-align: center**，而 v89 起我把它写成
-     **flex: 1 1 auto** ⇒ 盒子会撑满剩余空间，文字在盒子里居中，
-     两边各留一半空白。实测（按钮 172px）：
-       agnes-3.0-flash  盒子 128px / 文字只有 **94px** ⇒ 真实间隙 **20px**
-       deepseek-v4.1-flash 盒子 122px / 文字 122px ⇒ 恰好贴满，看不出问题
-     所以这个 bug 只在**较短的模型名**下暴露 —— deepseek 时一直没发现。
-
-     ⚠️ 别改成 text-align: left 就完事：实测那只是把空白全推到右边，
-        真实间隙反而变成 **37px**（更难看）。问题在盒子太宽，不在对齐。
-     正解是让盒子**按内容收缩**：flex 从 1 1 auto 改成 **0 1 auto**。
-       · 0 = 不主动撑满（盒子=文字宽度）
-       · 1 = 仍可被压缩（超长模型名照样出省略号，不撑破布局）
-     实测三种情况都正确：
-       agnes-3.0-flash       盒子 94 = 文字 94，间隙 3px，不截断
-       deepseek-v4.1-flash   盒子 122 = 文字 122，间隙 3px，不截断
-       a-very-long-model-…   盒子 128，文字 287 ⇒ 截断出省略号（布局不破）
-     text-align: left 保留：盒子已等于内容宽度，对齐方式不再影响布局，
-     但设成 left 能让「文字比盒子窄」的极端情况也贴着左边显示。 */
-  flex: 0 1 auto !important;
-  text-align: left !important;
-}
-/* ⚠️⚠️ 推理等级**必须显示**（修复 66）——上一版把它藏掉了，那是错的。
-   当时理由是「它恒为 Default，默认值藏掉不丢信息」。真机核对 aria-label
-   才发现实际值是 **High**：
-     选择模型，当前 deepseek-v4.1-flash，推理等级 High
-   也就是说**用户设过的非默认推理等级被藏起来了**，实打实的信息丢失。
-   字号 10px + opacity 0.65：它是次级信息，不该和模型名抢视觉重心。
-
-   ⚠️ 修复 68：**光靠 CSS 不够，还要缩文案**。
-   修复 66 只保证了「High 能放下」（22px），但真机打开一个老会话时
-   推理等级是 **Default（33px）**，模型名又被挤成 "deepseek-v4.1-fl..."。
-   逐值实测（按钮固定 168px）：
-     Default 33px → 模型名 115px（截断，需要 122px）
-     Medium  37px → 模型名 111px（截断）
-     Minimal 36px → 模型名 112px（截断）
-     High/Low/Max 19~22px → 模型名 126~129px（放得下）
-   所以只在 CSS 层调 flex 治不了根：**必须让文案本身变短**。
-   做法是 JS 里按表把英文等级缩成中文（"mpAbbreviateEffort"，见文件后半），
-   实测缩短后全部放得下：
-     默认 20px / 中 10px / 最低 20px / 低 10px / 高 10px / 最高 20px / 超高 20px
-   → 模型名一律 128~138px，**任何等级都不再截断**。
-   为什么敢改文案：它是纯装饰性次级标签，"aria-label" 与 "title" 仍保留
-   完整英文原文（"选择模型，当前 …, 推理等级 Default"），可访问性不受影响。 */
-[data-mobile] ._7KE1Ra_triggerEffort {
-  flex: 0 0 auto !important;
-  font-size: 10px !important;
-  /* ══ 修复 74：推理等级「默认」对比度不达标，两种主题下都看不清 ════════
-     现象：底栏「deepseek-v4.1-flash 默认」里那个「默认」发灰，
-     亮色/暗色下都要凑近才看得清。
-
-     实测（WCAG 对比度，AA 正文要求 4.5:1）：
-       亮色：文字 rgb(129,133,140) × opacity 0.65 叠在白底上 → **2.18:1**
-       暗色：同色 × 0.65 叠在 rgb(44,44,46) 上        → **2.42:1**
-     两边都远低于 4.5，不是"稍微浅一点"，是真的读不清。
-
-     ⚠️ 根因是修复 66 里我加的 **opacity: 0.65** —— 当时的理由是
-        "它是次级信息，不该和模型名抢视觉重心"。方向没错，但 0.65 太狠：
-        实测把 opacity 拉到 1 也只有 3.71~3.76:1，**光调透明度永远不够**，
-        因为颜色本身 rgb(129,133,140) 就偏浅。必须同时改颜色。
-
-     ⚠️ 也不能只改一个颜色：亮色底(白)要**深**色才够对比，暗色底(rgb(44,44,46))
-        要**浅**色。实测同一个颜色不可能两边都达标：
-          提亮到 rgb(173,178,184)：暗色 6.53 ✅ / 亮色 2.13 ❌
-          压深到 rgb(97,102,107)： 亮色 5.80 ✅ / 暗色 2.40 ❌
-        ⇒ 必须写**两套**，靠 body[data-ds-dark-theme] 切换。
-
-     最终取值（opacity 一律 1）：
-       亮色 rgb(97,102,107)  → **5.80:1** ✅
-       暗色 rgb(173,178,184) → **6.53:1** ✅
-     两者都过 AA。仍然是 10px 小字、仍然排在模型名之后，
-     视觉层级靠字号与位置区分，不靠把它调淡到看不清。 */
-  opacity: 1 !important;
-  color: rgb(97, 102, 107) !important;
-  white-space: nowrap !important;
-}
-[data-mobile] body[data-ds-dark-theme] ._7KE1Ra_triggerEffort,
-[data-mobile] [data-ds-dark-theme] ._7KE1Ra_triggerEffort {
-  color: rgb(173, 178, 184) !important;
-}
-
 /* ══ 修复 75：输入框占位符对比度只有 2.13:1，手机上几乎读不出 ═══════════
    现象：输入框里那句「发消息或创建任务, / 调用指令, @ 文件或对话」
    在亮色下淡得像水印，要凑近才认得出 —— 而这是用户**每次发消息都会看到**
@@ -1410,47 +1253,6 @@ window.__ModuleLoader__.load({
 			}
 			// 去掉空串与重复，保持顺序（单调递减，降档必然终止）
 			return v.filter((x, i) => x && v.indexOf(x) === i);
-		}
-
-		/* ── 修复 68：推理等级文案缩写（防止它把模型名挤掉）───────────────
-		   背景见上面 "_7KE1Ra_triggerEffort" 那条 CSS 注释：底栏模型按钮
-		   固定 168px，模型名要 122px，留给推理等级的空间只有 ~26px。
-		   逐值实测英文等级占宽：Default 33 / Medium 37 / Minimal 36 /
-		   High 22 / Low 19 / Max 19 —— 前三个都会把模型名挤成省略号。
-
-		   所以按表缩成中文（每个都 ≤20px，实测全部放得下）。
-		   ⚠️ 只改**显示文本**，不动 "aria-label" / "title"：
-		      可访问性与「点开菜单看到的完整选项」都保留英文原文。
-		   ⚠️ 表里没有的值原样返回 —— 官方将来加了新等级时，
-		      最坏结果只是"那一档可能挤一下"，不会显示错。 */
-		const MP_EFFORT_ABBR = {
-			Default: "默认",
-			Medium: "中",
-			Minimal: "最低",
-			Low: "低",
-			High: "高",
-			Max: "最高",
-			XHigh: "超高"
-		};
-
-		/**
-		 * 把底栏的推理等级缩成短中文。幂等：已经是缩写值就直接返回，
-		 * 所以放进 300ms 的 observer 批处理里不会反复写 DOM。
-		 *
-		 * ⚠️ 必须**先读原文再判断**：React 每次重渲染都会把文本写回英文，
-		 *    这里再缩一次 —— 和 processStatsLine 的 MP_STATS_RAW 是同一套思路。
-		 */
-		function mpAbbreviateEffort() {
-			if (!mpIsMobile()) return;
-			const els = document.querySelectorAll("._7KE1Ra_triggerEffort");
-			for (const el of els) {
-				const cur = (el.textContent || "").trim();
-				const short = MP_EFFORT_ABBR[cur];
-				if (short === undefined) continue;      // 已是缩写 / 未知值 → 不写
-				// 把完整英文留在 title 上，长按/无障碍仍能读到原文
-				if (!el.getAttribute("title")) el.setAttribute("title", cur);
-				el.textContent = short;
-			}
 		}
 
 		/**
@@ -3942,7 +3744,6 @@ window.__ModuleLoader__.load({
 			queueMicrotask(() => {
 				statsSyncQueued = false;
 				processStatsLine();
-				mpAbbreviateEffort();   // 修复 68：同批处理，抢在绘制前缩掉长文案
 			});
 		};
 		// ── 修复 35b：轨迹详情面板「不可用」回填闪烁（同步处理，不等节流）──
@@ -4004,7 +3805,6 @@ window.__ModuleLoader__.load({
 				moTimer = 0;
 				document.querySelectorAll(".xzv4MW_timeEnd").forEach(trimMeta);
 				processStatsLine();
-				mpAbbreviateEffort();   // 修复 68：推理等级缩写，防止挤掉模型名
 				watchApproval();
 				mpSyncDrawer();
 				mpAnchorBurger(); // ⭐ 修复 47：兜底重挂（React 摘掉 header 子节点时专用 observer 若漏掉）
@@ -9969,7 +9769,6 @@ window.__ModuleLoader__.load({
 				mpSyncMobileAttr();
 				mpSyncDrawer();
 				bindTitleRename();
-				mpAbbreviateEffort();      /* 修复 68：首屏就把长等级缩掉，避免闪一下截断 */
 				mpInstallPendingTrust();   /* 修复 51 兜底 */
 				if (++mpBootBursts >= 10) window.clearInterval(mpBootBurstTimer);
 			}, 120);
