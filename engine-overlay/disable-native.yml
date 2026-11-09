@@ -1,4 +1,4 @@
-# dsh-mobile：Android 平台裁剪 overlay（针对 dsh 0.2.0-rc.2）
+# dsh-mobile：Android 平台裁剪 overlay（针对 dsh 0.2.2-rc.1）
 #
 # 背景：Android 的 libc 是 bionic 而非 glibc，下列包在模块顶层 `import`
 # 平台原生二进制，在 Android 上必然加载失败并导致引擎启动崩溃：

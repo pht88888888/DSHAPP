@@ -245,8 +245,9 @@
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
 
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              # `list_agents` 自 dsh 0.2.2 起由上面这行主入口的 `apply()` 自行注册
+              # （`registerListAgents(ctx)`），包已移除 `./list-agents` 子路径导出。
+              # 再单独插入一条会 `ERR_PACKAGE_PATH_NOT_EXPORTED` 导致整个预设加载失败。
 
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'

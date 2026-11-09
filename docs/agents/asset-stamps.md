@@ -7,10 +7,10 @@
 
 | 改了什么 | 必须改 |
 |---|---|
-| `mobile-ui.zip` 内容 | `EngineConstants.MOBILE_UI_VERSION`（现 `1.0.0-110`）**且**重跑 `tools/build-webview-compat.mjs`（Linux）/ `.ps1`（Windows）并 bump `--compat-version` / `-CompatVersion`（现 `40`，见 ⑯）。**漏跑这一步的后果是「插件整份被旧降级产物覆盖」**：设备上 `已安装移动端 UI 插件 1.0.0-110` 照打，页面跑的却是上一版 |
+| `mobile-ui.zip` 内容 | `EngineConstants.MOBILE_UI_VERSION`（现 `1.0.0-116`）**且**重跑 `tools/build-webview-compat.mjs`（Linux）/ `.ps1`（Windows）并 bump `--compat-version` / `-CompatVersion`（现 `47`，见 ⑯）。**漏跑这一步的后果是「插件整份被旧降级产物覆盖」**：设备上 `已安装移动端 UI 插件 1.0.0-114` 照打，页面跑的却是上一版 |
 | `dsh-bridge/content.js` 内容 | `app/src/gecko/assets/dsh-bridge/manifest.json` 的 `version`（现 `1.0.15`），否则 GeckoView 继续用旧扩展（见 ⑦.7） |
 | `node-runtime.bin` 内容 | `TermuxBootstrap.NODE_VERSION`（`26.4.0-2`） |
-| `engine.bin` 内容 | `MainActivity.assetStamp`（`0.2.1-rc.2-1`） |
+| `engine.bin` 内容 | `MainActivity.assetStamp`（`0.2.2-rc.1-1`） |
 | `pnpm-android-arm64.zip` 内容 | `EngineManager.PNPM_VERSION`（`11.28.3`） |
 | `adb-wireless-arm64.zip` | 无需改（判据是 `bin/adb` 非空 + 完整性哨兵 `.extracted`，见 ⑪.1） |
 | `node-addon-android-arm64.zip` | 无需改（只查文件存在且非空） |
@@ -31,12 +31,14 @@
 | `ui-probe.js` | 无需改（原生每次启动读一次进内存，见 ⑫.5）。⚠️ 但改了语义要同步升 `ui-probe.js` 内部的 `VERSION`（页面上的旧探针靠它判断要不要换） |
 | `webview-polyfill.js` | 无需改（每次启动覆盖写） |
 | `webview-compat.zip` | **必须重跑** `tools/build-webview-compat.ps1`（见 ⑯；文件名带内容 hash，换 `engine.bin` 后必然对不上） |
-| `preset-skills.zip` | `EngineManager.PRESET_SKILLS_VERSION`（现 `1.0.0-1`）。判据是 `skills/.preset_skills_version` 里的字符串，**改了内容不改这个常量 ⇒ 老设备永远拿不到新 skill** |
-| `preset-razor.zip` | `EngineManager.PRESET_RAZOR_VERSION`（现 `1.0.3-1`）。⚠️ 它走 profile bundle（解到 `$DSH_HOME/node_modules/dsh-preset-razor/`），判据是包目录里的 `.preset_razor_version`，**改了内容不改这个常量 ⇒ 老设备永远停在旧提示词**（踩过：0.2.1 已删掉 `{{cwd}}` 变量，旧提示词留着它会让「快准狠模式」一选中就处理失败） |
+| `preset-skills.zip` | `EngineManager.PRESET_SKILLS_VERSION`（现 `1.0.0-3`）。判据是 `skills/.preset_skills_version` 里的字符串，**改了内容不改这个常量 ⇒ 老设备永远拿不到新 skill** |
+| `preset-razor.zip` | `EngineManager.PRESET_RAZOR_VERSION`（现 `1.0.3-2`）。⚠️ 它走 profile bundle（解到 `$DSH_HOME/node_modules/dsh-preset-razor/`），判据是包目录里的 `.preset_razor_version`，**改了内容不改这个常量 ⇒ 老设备永远停在旧提示词**（踩过：0.2.1 已删掉 `{{cwd}}` 变量，旧提示词留着它会让「快准狠模式」一选中就处理失败） |
 | `core-memory.zip` | `EngineManager.CORE_MEMORY_VERSION`（现 `1.0.0-2`） |
+| `agnes-multimodal.zip` | `EngineManager.AGNES_MM_VERSION`（现 `1.0.0-4`）。判据是包目录里的 `.agnes_mm_version` |
+| `market-plugin.zip` | `EngineManager.MARKET_VERSION`（现 `1.0.0-6`）。判据是包目录里的 `.market_version` |
 
 **漏改的后果是静默的**：老标记仍在 → 解包被跳过 → 新资产永不生效。
-这三个都是踩过的坑。
+上表凡是要改版本戳常量（`*_VERSION`）的资产，都踩过这个坑。
 
 ### ⚠️ 改 `mobile-ui-plugin/**` 的源码**必须手工重打对应的 `.zip`**
 

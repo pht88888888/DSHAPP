@@ -20,18 +20,12 @@ window.__ModuleLoader__.load({
 
 /* 4c. 长按手势选择控制：
      全局禁用 touch-callout + user-select（消灭长按弹出系统菜单和文字选中）。
-     例外：消息区域 .wSkVaW_viewArea 和输入元素允许原生长按行为。
+     例外：输入元素允许原生长按行为。
      非消息区域（header/sidebar/settings等）保持 disabled，体验接近原生 app。 */
 [data-mobile] * {
   -webkit-touch-callout: none !important;
   user-select: none !important;
   -webkit-user-select: none !important;
-}
-[data-mobile] .wSkVaW_viewArea,
-[data-mobile] .wSkVaW_viewArea * {
-  -webkit-touch-callout: default !important;
-  user-select: text !important;
-  -webkit-user-select: text !important;
 }
 [data-mobile] input, [data-mobile] textarea, [data-mobile] [contenteditable] {
   -webkit-touch-callout: default !important;
@@ -171,6 +165,18 @@ window.__ModuleLoader__.load({
 }
 [data-mobile] .pI_x6G_sidebarCol.mp-drawer-open {
   left: 0;
+  /* ⚠️ dsh 0.2.2-rc.1 起，官方把侧栏开合从「left 位移」改成了
+     「transform: translate(-100%) + visibility: hidden」。
+     本插件仍是用 left 把侧栏移出屏幕再做浮层滑入，于是出现**最坏组合**：
+       · 我们的 left: 0 生效了（抽屉"以为"自己开了）
+       · 官方的 translate(-100%) 又把整个侧栏推到屏幕外
+       · 而遮罩（.mp-drawer-mask.mp-drawer-open）已经 opacity:1 盖满全屏
+     → 真机上看到的就是「整页蒙一层灰、点哪都没反应」，且点击遮罩
+       关不掉抽屉（遮罩可见但抽屉不可见，用户完全无法理解发生了什么）。
+     这里把官方的两项一并按住，让 left 重新成为唯一的位置来源。
+     关闭时本规则不匹配，官方自己的 translate/visibility 照常收回。 */
+  transform: translate(0px) !important;
+  visibility: visible !important;
 }
 /* ⚠️ 修复 26 起**不再**给抽屉加 .mp-drawer-closing —— 规则保留作回滚安全网。
    为什么弃用：visibility **会继承给子元素**，而设置弹窗的 DOM 就在抽屉内部
@@ -230,11 +236,6 @@ window.__ModuleLoader__.load({
 .mp-nav-btn.mp-press {
   background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .15));
 }
-/* 官方 header 给汉堡让出左侧空间（标题不再被压住） */
-[data-mobile] .wSkVaW_header {
-  padding-left: 52px !important;
-}
-
 /* ══ 修复 30：头部单行化（2026-09-16 啾灵拍板方案）══════════════════════
    官方 0.1.5 头部两行（标题行 + 对话/轨迹 tabs）在手机上占 ~85px。改为：
    ① tabs 行隐藏，「轨迹」入口移入 ⋯ 菜单（mpInjectTraceItem）
@@ -500,11 +501,6 @@ window.__ModuleLoader__.load({
   padding-left: 2px !important;
   padding-right: 2px !important;
   gap: 4px !important;
-}
-[data-mobile] .bOPqQW_pill {
-  padding-left: 3px !important;
-  padding-right: 3px !important;
-  gap: 3px !important;
 }
 /* 药丸文字必须能收缩：官方 .bOPqQW_label 是 overflow:hidden + ellipsis，
    但缺 min-width:0 → flex 项不肯收缩，超宽时文字直接被裁（尾部变省略号）。
@@ -1303,59 +1299,6 @@ window.__ModuleLoader__.load({
  * ⚠️ 本注释位于 CSS 模板字符串内部：**禁止出现反引号**，那会提前终止字符串。
  *    上面提到的属性名一律不加 markdown 反引号，就是这个原因。 */
 
-/* ══ 修复 80：过程行标题「一直抽搐」—— 官方单行契约被修复 67 顺手打掉了 ══
-
-   症状（用户反馈）：模型流式思考时，过程组标题（形如
-   「正在分析请求 · <流式思考摘要>」）在 1 行 / 2 行 / 3 行之间快速变化，
-   标题按钮高度在 19 → 38 → 57px 之间反复跳，下面整块内容跟着上下弹动；
-   标题上的扫光每 1.5s 循环一次，进一步放大抖动感。
-
-   根因（**不是**修复 67 想治的东西，是被它误伤的）：
-   官方 TextShimmer 组件（ui-primitives/src/TextShimmer.module.css）里
-       ._root_1rdzk_1 { display: inline-grid; width: max-content; }
-   「width: max-content」是标题**永远单行**的唯一保证，超宽部分交给
-   外层的 max-width:100% 截断。
-
-   而修复 67 为了治「思考正文不换行把整页推出屏幕」，把这个**同一个**
-   ._root_1rdzk_1 无差别改成了 width: auto。它同时命中思考正文容器与
-   TextShimmer 根节点，于是标题失去单行保证、按可用宽度换行；
-   标题内容又是**流式**的，行数不断变化 ⇒ 容器高度不断变化 ⇒ 整块上下弹。
-   ._decoration_1rdzk_25（扫光是 inset:0 的绝对定位层）跟着标题高度一起变，
-   在 2~3 行上反复扫，视觉上更抖。
-
-   修法：**只在过程行标题内部**把 max-content 还回去，思考正文完全不动 ——
-   两边的诉求不冲突，冲突的是修复 67 用了同一个选择器去满足它们。
-
-   ⚠️ 用 .O_Ebla_title 定位（官方过程组标题按钮），思考正文在
-      [data-chat-group-part="reasoning"] 下、不在 .O_Ebla_title 里，互不影响。
-   ⚠️ 全部是构建期哈希类名，官方升级可能失效；失效后果只是**回到抽搐**，
-      不会白屏。失效时按上面注释的语义重新对齐选择器即可。 */
-[data-mobile] .O_Ebla_title {
-  overflow: hidden !important;
-  max-width: 100% !important;
-}
-[data-mobile] .O_Ebla_title ._root_1rdzk_1 {
-  width: max-content !important;
-  max-width: 100% !important;
-  min-width: 0 !important;
-  overflow: hidden !important;
-}
-[data-mobile] .O_Ebla_title ._content_1rdzk_11 {
-  min-width: 0 !important;
-  overflow: hidden !important;
-}
-[data-mobile] .O_Ebla_title ._text_1rdzk_17 {
-  display: block !important;
-  max-width: 100% !important;
-  white-space: nowrap !important;
-  word-break: normal !important;
-  overflow-wrap: normal !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-}
-[data-mobile] .O_Ebla_title ._decoration_1rdzk_25 {
-  overflow: hidden !important;
-}
 /* 官方扫光是 steps(48) 的离散跳变，窄屏上约等于每秒 32 次跳。
    改成线性插值，观感平滑很多（不影响「一明一暗」的扫光本身）。 */
 [data-mobile] ._sweep_1rdzk_34,
@@ -2994,7 +2937,7 @@ window.__ModuleLoader__.load({
 
 			const shellReady = () =>
 				document.documentElement.hasAttribute("data-mobile") &&
-				document.querySelector(".mp-nav-btn") !== null;
+				document.documentElement.hasAttribute("data-mp-shell");
 
 			const ready = () => {
 				if (!shellReady()) { shellReadyAt = 0; return false; }
@@ -3058,8 +3001,26 @@ window.__ModuleLoader__.load({
 
 			function mpSidebarCol() { return document.querySelector(".pI_x6G_sidebarCol"); }
 			function mpOfficialToggle() { return document.querySelector(".hHd-Xa_toggle"); }
-			// 官方开合状态的唯一事实源：.hHd-Xa_root 是否带 hHd-Xa_collapsed
+			// 官方开合状态的唯一事实源。
+			//
+			// ⚠️ dsh 0.2.2-rc.1 把这个状态从 `.hHd-Xa_root.hHd-Xa_collapsed` 类
+			//    搬到了 `.pI_x6G_frame[data-sidebar-drawer][data-sidebar-collapsed]`
+			//    属性上，并且侧栏位置改用 `transform: translate(-100%)` 表达
+			//    （旧版是 `left: -340px`）。
+			//
+			//    只认旧类名的后果**不是"抽屉打不开"而是"一进 App 整屏变灰"**：
+			//    找不到 hHd-Xa_collapsed 时本函数恒返回 true（误判"已展开"）→
+			//    mpSyncDrawer 立刻给遮罩加 .mp-drawer-open（opacity:1 +
+			//    pointer-events:auto + inset:0 z=39）→ 而侧栏实际是收起的、
+			//    被官方 transform 推出屏幕 → 页面上没有任何抽屉，只有一层
+			//    rgba(0,0,0,.35) 遮罩盖住整页，且所有点击都被遮罩吃掉。
+			//    真机症状（CDY-TN90 / 2026-11-09）：首页整体偏灰、点哪都没反应，
+			//    点一下反而把抽屉点出来（那次点击恰好命中官方 toggle）。
+			//
+			//    顺序：先认新属性，再退回旧类名兜底（老版本引擎仍走后者）。
 			function mpOfficialDrawerOpen() {
+				const frame = document.querySelector(".pI_x6G_frame[data-sidebar-drawer]");
+				if (frame) return !frame.hasAttribute("data-sidebar-collapsed");
 				const col = mpSidebarCol();
 				const root = col ? col.querySelector(".hHd-Xa_root") : null;
 				return !!root && !root.classList.contains("hHd-Xa_collapsed");
@@ -3100,7 +3061,17 @@ window.__ModuleLoader__.load({
 				// 模态弹窗打开时：只做**视觉收起**（抽屉滑出屏幕），不点官方 toggle。
 				// （修复 26 教训：官方收起会触发 railIn → footArea opacity:0 → 连坐弹窗。）
 				// 弹窗关闭后这里会自然走到下一行，把推迟的官方收起补做掉。
-				const modal = document.querySelector('[role="dialog"][aria-modal="true"]');
+				// ⚠️ modal 查询必须**排除侧栏自己**。
+				//   0.2.2-rc.1 起官方给侧栏根节点（.hHd-Xa_root）加了
+				//   role="dialog" aria-modal="true"（移动端抽屉的语义化写法），
+				//   于是原来的 querySelector 永远命中"侧栏自身"→ 每次 sync 都走
+				//   「有弹窗 → 视觉收起抽屉」分支 → 抽屉刚打开 14ms 就被关掉，
+				//   表现是点汉堡毫无反应（真机 2026-11-09 实测：
+				//   370ms 加上 .mp-drawer-open，384ms 变 .mp-drawer-closing）。
+				//   判定标准改为「不在侧栏子树内」才算真弹窗。
+				const col0ForModal = mpSidebarCol();
+				const modal = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')]
+					.find((el) => !(col0ForModal && col0ForModal.contains(el)));
 				if (modal) {
 					const col = mpSidebarCol();
 					// 只看「视觉开」类：官方 expanded 与否在弹窗期间无所谓，
@@ -3134,7 +3105,16 @@ window.__ModuleLoader__.load({
 				if (mpOfficialDrawerOpen()) { mpCloseDrawer(); return; }
 				const btn = mpOfficialToggle();
 				if (btn) btn.click();
+				// ⚠️ 点完官方 toggle 必须**立刻**把视觉状态切到打开，不能只等 mpSyncDrawer。
+				//   实测（dsh 0.2.2-rc.1 / CDY-TN90，2026-11-09）：官方 React 回流慢于 60ms，
+				//   那一刻 mpOfficialDrawerOpen() 仍读到 collapsed=true → mpSyncDrawer
+				//   反手把 .mp-drawer-open 摘掉 → 抽屉本体被官方 toggle 打开了，
+				//   遮罩却没显示 → 点抽屉外空白处关不掉抽屉（遮罩才是关闭的点击接收器），
+				//   用户只能靠再点一次汉堡。CSS 已让 .mp-drawer-open 独立决定位置
+				//   （left:0 + transform/visibility 双保险），所以先开视觉是安全的。
+				mpSetDrawerOpen(true);
 				setTimeout(mpSyncDrawer, 60);
+				setTimeout(mpSyncDrawer, 300);
 			}
 			// 修复 25：抽屉关闭。
 			// ⚠️ 旧实现（修复 ③）用 .mp-drawer-closing 把抽屉**瞬间**隐藏，但遮罩仍走
@@ -3245,7 +3225,16 @@ window.__ModuleLoader__.load({
 				if (mpOfficialDrawerOpen()) return;
 				const btn = mpOfficialToggle();
 				if (btn) btn.click();
+				// ⚠️ 点完官方 toggle 必须**立刻**把视觉状态切到打开，不能只等 mpSyncDrawer。
+				//   实测（0.2.2-rc.1 / CDY-TN90）：官方 React 回流慢于 60ms，
+				//   那一刻 mpOfficialDrawerOpen() 仍是 false → mpSyncDrawer 反手把
+				//   .mp-drawer-open 摘掉 → 抽屉本体显示了，遮罩却没显示 →
+				//   点抽屉外空白处关不掉抽屉（遮罩才是关闭的点击接收器）。
+				//   CSS 已让 .mp-drawer-open 独立决定位置（left + transform 双保险），
+				//   所以这里先开视觉是安全的；官方状态由下面两次 sync 追上。
+				mpSetDrawerOpen(true);
 				setTimeout(mpSyncDrawer, 60);
+				setTimeout(mpSyncDrawer, 260);
 			}
 
 			// 汉堡按钮：固定左上、浮于正文之上（自建元素，不注入 React 子树）
@@ -3663,7 +3652,10 @@ window.__ModuleLoader__.load({
 					// ① 自建节点：汉堡按钮 / 遮罩 / 设置页返回条 / 分组小标题
 					document.querySelectorAll(".mp-nav-btn, .mp-drawer-mask, .mp-back-bar, .mp-nav-group")
 						.forEach((n) => { try { n.remove(); } catch (e) { /* 静默 */ } });
-					mpNavBtnEl = null; // ⭐ 修复 47：节点已移除，引用一并清空
+					mpNavBtnEl = null;
+					// 外壳标记必须一并清掉：mpBuildShellForMobile() 用它做幂等判断，
+					// 残留会让"宽屏→窄屏"回来时直接 early return、不再重建遮罩。
+					document.documentElement.removeAttribute("data-mp-shell");
 					// ⚠️ **不复位 mpShellBuilt**：监听器只该注册一次。
 					//   复位它会让重进窄屏时 mpBuildShell 再走一遍 → 重复注册
 					//   MutationObserver / click / resize（三个都泄漏）。
@@ -3698,24 +3690,17 @@ window.__ModuleLoader__.load({
 			function mpBuildShellForMobile() {
 				if (!mpIsMobile()) return; // 修复 40
 				// 幂等：拆解后重进窄屏会再次调用，别建出第二个汉堡。
-				if (document.querySelector(".mp-nav-btn")) return;
-				const btn = document.createElement("button");
-				btn.type = "button";
-				btn.className = "mp-nav-btn";
-				btn.setAttribute("aria-label", "打开导航");
-				btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-				btn.addEventListener("click", (e) => { e.stopPropagation(); mpToggleDrawer(); });
-				document.body.appendChild(btn);
-				mpNavBtnEl = btn; // ⭐ 修复 47：自持引用，detached 后也能重挂
-				// 修复 30：汉堡锚定进 header（CSS .mp-nav-btn.mp-in-header 相对 header 定位）。
-				// ⚠️ React 重渲染 header 会把外来子节点整个清掉（btn 变 detached），
-				//   所以这里不能只看 class 判断"已锚定"——必须检查 btn 是否还在文档里，
-				//   不在就重新 appendChild（实测 detached 节点可无损重挂）。
-				// ⚠️ 修复 31：**空会话页（Hero）官方 header 是空壳**（高度 0、无 titleRow），
-				//   锚进去 = 锚进一个 0 高度容器 → 汉堡被裁掉、新建对话后打不开侧边栏。
-				//   判据：header 有可见内容（titleRow 存在）才锚定；否则退回 body + fixed 定位。
+				// 幂等：拆解后重进窄屏会再次调用。
+				if (document.documentElement.hasAttribute("data-mp-shell")) return;
+				// ⚠️ 2026-11-09 起**不再自建汉堡按钮**。
+				//   官方 dsh 0.2.2-rc.1 在主区 header 自带「打开侧边栏」按钮
+				//   （.IW6AQa_iconButton，label="打开侧边栏"，实测 (12,11) 28x28、
+				//   visibility: visible，点击可完整开合抽屉），
+				//   而本插件自建的那个 svg 落在 (16,14) 20x20 —— 两个图标几乎完全
+				//   重合，用户看到的就是"左上角两个汉堡叠在一起"。
+				//   官方既然有入口，自绘只会造成重复，故删除，直接交给官方按钮。
+				document.documentElement.setAttribute("data-mp-shell", "");
 				mpMask();
-				mpAnchorBurger(); // 修复 40：首屏立即锚定（observer 只在 mutation 时触发）
 				// 修复 32：用户在抽屉内点**官方收起按钮**（.hHd-Xa_toggle）时，
 				//   官方会**立刻**把侧栏切到 56px 图标条形态（collapsed + railIn），
 				//   而我们的抽屉还在 left:0 没滑走 → 中间约 160ms 露出"空白侧边栏"，
@@ -10020,11 +10005,8 @@ window.__ModuleLoader__.load({
 					try {
 						const probes = [
 							['wSkVaW_root', '会话根容器'],
-							['wSkVaW_viewArea', '消息区'],
 							['uV2eYG_dock', '底栏'],
 							['uV2eYG_card', '输入卡片'],
-							['O_Ebla_title', '过程组标题'],
-							['bOPqQW_pill', '遥测药丸'],
 							['YDXeBa_sessionRow', '会话列表行'],
 						];
 						const missing = [];
@@ -10038,7 +10020,7 @@ window.__ModuleLoader__.load({
 							if (n === 0) missing.push(label + '(' + cls + ')');
 						}
 						mpDiag(missing.length === 0
-							? '选择器体检: 7 个关键锚点全部命中'
+							? '选择器体检: 4 个关键锚点全部命中'
 							: '选择器体检: ' + missing.length + ' 个未命中 → ' +
 								missing.join('、') + ' ｜官方可能已改类名，相关 CSS 规则已静默失效');
 					} catch (e) {

@@ -400,7 +400,12 @@ android {
         //    102：诊断包上传换到 feedback.jiuling.cloud（老的 39.98.163.161:56789 已连不上）。
         //
         //    103：v102 之后的例行整包（本轮无功能改动，内容与 v102 一致）。
-        versionCode = 103
+        //
+        //    104：内置引擎 0.2.1-rc.2 → 0.2.2-rc.1（官方 latest）。
+        //         同步：engine.bin、webview-compat.zip（前端产物换新，compat v40 → v41）、
+        //         preset-razor.zip（引擎把 `list_agents` 合并进主入口，删掉独立的
+        //         `/list-agents` 子路径条目 —— 不删则预设加载即失败）。
+        versionCode = 104
         // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
         // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
         // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。

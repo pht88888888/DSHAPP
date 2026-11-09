@@ -153,7 +153,15 @@ const val AUTO_SAFE_MODE_MIN_FAILURES = 3
          * 引擎升级若增删了这个列表，本副本要跟着改 —— 漏改只会让体检**少报**，
          * 不会误伤（体检判据是「缺了才隔离」）。
          */
-val REQUIRED_ENTRY_IDS = listOf("agent-loop", "webserver", "modules", "connection")
+val REQUIRED_ENTRY_IDS = listOf(
+            "agent-loop",
+            "tool-executor-native",
+            "tool-executor-ptc",
+            "webserver",
+            "web-runtime",
+            "modules",
+            "connection",
+        )
 
         /**
          * 从引擎报错行里抠出被指认的文件绝对路径。
@@ -611,7 +619,7 @@ const val PRESET_RAZOR_LEGACY_DIR = "preset-razor"
 const val PRESET_RAZOR_MARKER = ".preset_razor_bundle_registered"
 
         /** 内容版本戳：改了 `preset-razor.zip` 里任何东西都必须改这里。 */
-const val PRESET_RAZOR_VERSION = "1.0.3-1"
+const val PRESET_RAZOR_VERSION = "1.0.3-2"
 const val PRESET_RAZOR_STAMP = ".preset_razor_version"
 
         /**
@@ -1593,7 +1601,7 @@ const val PNPM_DIR = "lib/pnpm"
          *   否则 `.mobile_ui_version` 不变，新 zip 解包被整体跳过 —— 这个失败是
          *   完全静默的（见 AGENTS.md 三条最容易违反的规矩之一）。
          */
-const val MOBILE_UI_VERSION = "1.0.0-110"
+const val MOBILE_UI_VERSION = "1.0.0-116"
 const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────

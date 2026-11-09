@@ -76,7 +76,11 @@ const TARGET = argOf('target', 'chrome74');
 //      `build=2026-10-29-a`，且旧版里的 `diag is not defined` 会炸掉整条
 //      client bundle（连带的 api-remotes 等模块全部不装配）。
 //      **改 `mobile-ui-plugin/**` 就必须重跑本脚本并 +1，没有例外。**
-const COMPAT_VERSION = argOf('compat-version', '40');
+// v41：引擎 0.2.1-rc.2 → 0.2.2-rc.1。`dist/` 与 `engine/` 两棵树全部换新
+//      （前端产物 `index-CN7NIWNw.js` → `index-BgUyXZcc.js`、`vendor-DcuzkuQH.js`
+//      → `vendor-BUMdD3V7.js`，`index-BxpfOGf3.css` 已移除），`mobileui/` 未变。
+//      同理：不 +1 则设备上戳相等而整份跳过，降级内核仍跑旧前端。
+const COMPAT_VERSION = argOf('compat-version', '47');
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const ENGINE_BIN = resolve(ROOT, argOf('engine-bin', 'app/src/main/assets/engine.bin'));

@@ -155,25 +155,37 @@ export function install() {
   if (NativeHeaders.__dshGuarded === true) return
 
   /**
-   * 包装后的 `Headers`：构造与 `set`/`append` 都过一遍净化。
+   * 用 Proxy 包装构造器，**保留 `instanceof` 语义**。
    *
-   * 用 `class extends` 而不是 Proxy：`instanceof Headers` 仍然成立，
-   * 上游代码里的类型判断不会因此走偏。
+   * ## ⚠️ 为什么不能用 `class extends`（2026-11-09 真机实测）
+   *
+   * 原来的写法是 `class GuardedHeaders extends NativeHeaders` 再整体替换
+   * `globalThis.Headers`。这会让 `原生 Headers 实例 instanceof Headers` 变成
+   * **false**（子类判断，base 实例不是 sub 的实例）。
+   *
+   * dsh 0.2.2-rc.1 的请求认证里正是这么判断的：
+   *
+   * ```js
+   * function header(headers, name) {
+   *   if (headers instanceof Headers) return headers.get(name) ?? void 0
+   *   const value = headers[name]
+   * }
+   * ```
+   *
+   * 一旦 `instanceof` 判错，`Host` / `Cookie` 全都取不到，`requestAudience()`
+   * 返回 undefined，认证必失败 —— 症状是引擎正常打印
+   * `dsh web: http://127.0.0.1:3080/?token=…`，但页面打开就是
+   * `dsh web authentication required`（401），且重启、重装、换 token 全无效。
+   *
+   * Proxy 的 `prototype` 转发到 target，`x instanceof ProxyCtor` 与
+   * `x instanceof NativeCtor` 完全等价，同时 `construct` 钩子仍能净化入参。
    */
-  class GuardedHeaders extends NativeHeaders {
-    constructor(init) {
-      super(guardInit(init, 'Headers 构造'))
-    }
-
-    set(name, value) {
-      return super.set(cleanName(name, 'Headers.set'), cleanValue(value, 'Headers.set', String(name)))
-    }
-
-    append(name, value) {
-      return super.append(cleanName(name, 'Headers.append'), cleanValue(value, 'Headers.append', String(name)))
-    }
-  }
-
+  const GuardedHeaders = new Proxy(NativeHeaders, {
+    construct(target, args, newTarget) {
+      const next = args.length > 0 ? [guardInit(args[0], 'Headers 构造'), ...args.slice(1)] : args
+      return Reflect.construct(target, next, newTarget)
+    },
+  })
   Object.defineProperty(GuardedHeaders, 'name', { value: 'Headers', configurable: true })
   GuardedHeaders.__dshGuarded = true
   globalThis.Headers = GuardedHeaders
@@ -185,20 +197,19 @@ export function install() {
   // 交给 undici 校验，抛错发生在 `fetch` 之前 —— 只包装 `Headers` 和 `fetch`
   // 根本拦不住它。而 SDK 里 `new Request(...)` 再 `fetch(request)` 是常见写法。
   //
-  // 实测（未装本层时）：`new Request('http://x/', { headers: { 'x-test': 'a'*21+'樱' } })`
-  // 直接抛与用户截图完全相同的 `Cannot convert argument to a ByteString ...`。
+  // 与 Headers 同理，用 Proxy 而不是 `class extends`：否则
+  // `原生 Request 实例 instanceof Request` 也会变成 false。
   const NativeRequest = globalThis.Request
   if (typeof NativeRequest === 'function' && NativeRequest.__dshGuarded !== true) {
-    const GuardedRequest = class Request extends NativeRequest {
-      constructor(input, init) {
-        // 只碰 `init.headers`；`input` 是 URL 字符串或另一个 Request，
-        // 后者内部已是合法 Headers（非法的话它自己构造时就抛了）。
-        if (init !== undefined && init !== null && init.headers !== undefined) {
-          init = { ...init, headers: guardInit(init.headers, 'Request 构造') }
-        }
-        super(input, init)
-      }
-    }
+    const GuardedRequest = new Proxy(NativeRequest, {
+      construct(target, args, newTarget) {
+        const [input, init] = args
+        const next = init !== undefined && init !== null && init.headers !== undefined
+          ? [input, { ...init, headers: guardInit(init.headers, 'Request 构造') }, ...args.slice(2)]
+          : args
+        return Reflect.construct(target, next, newTarget)
+      },
+    })
     Object.defineProperty(GuardedRequest, 'name', { value: 'Request', configurable: true })
     GuardedRequest.__dshGuarded = true
     globalThis.Request = GuardedRequest
