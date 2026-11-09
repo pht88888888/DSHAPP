@@ -82,7 +82,7 @@ $env:JAVA_HOME = "<你的 JDK 17 路径>"   # 必须显式设置
 | `adb-wireless-arm64.zip` | 5.3 MB | Termux 官方 adb |
 | `sharp-wasm32.zip` | 3.5 MB | sharp 的 wasm32 变体 |
 | `ripgrep-android-arm64.zip` | 2.0 MB | 官方 linux-arm64 静态 rg |
-| 其余 24 个 | < 1 MB | 自编译 native 绑定 / 内置插件 zip |
+| 其余 26 个 | < 1 MB | 自编译 native 绑定 / 内置插件 zip |
 
 **每个资产的来源、生成方式与校验方法**见
 [docs/agents/regen-assets.md](docs/agents/regen-assets.md)。
@@ -158,7 +158,7 @@ app/src/system/ · app/src/gecko/       两个 Web 内核的 flavor 源集
 mobile-ui-plugin/                      内置插件源码（TypeScript/JS）
 remote-plugin/                         配对服务端 + 端到端测试
 tools/                                 构建与校验脚本
-docs/agents/                           开发文档（35 篇，按需检索）
+docs/agents/                           开发文档（36 篇，按需检索）
 ```
 
 ## 文档

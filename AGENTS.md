@@ -95,25 +95,29 @@ Android 的每个能力都要「清单声明 + 内核回调 + 运行时申请」
 1. `AndroidManifest.xml` 声明权限（特殊权限另说）
 2. `WebCapability` 加枚举项
 3. `SystemWebHost` / `GeckoWebHost` 的内核回调里放行
-4. 跑 `./tools/check-architecture.sh`，第 4 节会检查清单与回调是否对齐
+4. 跑 `bash tools/check-architecture.sh`，第 4 节会检查清单与回调是否对齐
 
 ### 架构守卫
 
 ```bash
-./tools/check-architecture.sh
+bash tools/check-architecture.sh
 ```
 
 拦三件事：单个 `.kt` 不许超过上限（三个历史大文件只许变小）、
 禁止「修复 N」编号式注释（去 `git log` 查，注释里写编号必然腐烂）、
 权限三件套与桥分派表是否对齐。
 
+> 脚本在仓库里是 `100644`（没有执行位），直接 `./tools/check-architecture.sh`
+> 会 `Permission denied`，必须用 `bash` 显式调用。
+
 ### 三个大文件为什么不拆
 
-`EngineManager.kt`（约 1.1 万行）、`MainActivity.kt` / `FloatingBubble.kt`
+`EngineManager.kt`（约 9.2 千行）、`MainActivity.kt` / `FloatingBubble.kt`
 （各约 5.4 千行）已知偏大，但**拆分收益小于代价**：
 
-- `EngineManager` 的 180 多个编译期常量被类内 700 余处引用，拆开必须把它们
-  提升成 `internal`，反而让「改一个常量影响哪些组件」更难追踪；
+- `EngineManager` 的 40 个 `ensureXxx` 与 10 个 `patchXxx` 共享同一批实例状态
+  （子进程句柄、日志缓冲、当前降级层级），拆开要引入大量传参或可变共享对象，
+  反而让「改一个字段影响哪些组件」更难追踪；
 - 两个 UI 类的成员大量共享 Activity/Window 生命周期状态，拆开要引入大量
   传参或回调，等于把隐式耦合变成显式噪音。
 
