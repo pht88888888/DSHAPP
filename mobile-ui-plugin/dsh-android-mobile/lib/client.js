@@ -65,11 +65,15 @@ window.__ModuleLoader__.load({
    正解是**并进 --mp-float-nav-h 的语义**：让 mpSyncFloatNavGap() 在算它的时候
    把状态栏高度也纳入（JS 里 Math.max 不受内核版本限制）。那条 !important 规则
    于是不用动，两条让位需求由同一个变量统一表达。 */
+/* 只去掉焦点轮廓，**不碰 box-shadow**。
+   ⚠️ 曾经的写法是 [tabindex]:focus 上加 box-shadow: none，而官方输入卡片
+   .uV2eYG_card 带 tabindex="-1"：发完消息输入框拿到焦点，卡片命中该规则，
+   它那圈 box-shadow（边框感的来源）被清成 none —— 屏幕上的表现就是
+   「输入框边框消失」，点一下空白处失去焦点才回来。阴影永远归官方管。 */
 [data-mobile] button:focus, [data-mobile] button:focus-visible, [data-mobile] a:focus,
-[data-mobile] [tabindex]:focus, [data-mobile] input:focus,
-[data-mobile] textarea:focus, [data-mobile] select:focus {
+[data-mobile] [tabindex]:focus, [data-mobile] [tabindex]:focus-visible,
+[data-mobile] input:focus, [data-mobile] textarea:focus, [data-mobile] select:focus {
   outline: none !important;
-  box-shadow: none !important;
 }
 
 /* 2. 消息操作栏：隐藏点赞/有问题反馈按钮（保留 复制/分支/时间/用时） */
@@ -81,6 +85,31 @@ window.__ModuleLoader__.load({
 /* 1. 会话头部：标题长时右侧 actions/utilities 溢出重叠（undo 快照徽章 vs session log 按钮）→ 换行。
    容器是 wSkVaW_headerActions（模式徽章+快照徽章+utilities 并排超出容器宽，flex nowrap 导致重叠）。
    让 headerActions 在 titleCluster 内收缩、换行，避免溢出与 headerUtilities 重叠。 */
+/* 配合上面 header 的 pointer-events:none —— header 内部控件（标题、⋯ 菜单、
+   各徽章）必须保持可点，否则整个顶栏都变成"看得见摸不着"。 */
+/* ══ 设置面板：官方 0.2.2 把 .VOzbGW_panel 从 flex 布局换成了 CSS Grid ══════
+   grid-template-columns: 300px 60px / areas "title header" "nav nav"
+   而插件的整套改造（backBar、竖向 nav、二级页切换）全是按 flex 写的，
+   flex-direction:column 对 grid 容器无效 ⇒ 返回条被挤到右上角 60px 那条缝里、
+   官方 navTitle 占着左上角、nav 高度吃掉整屏、options 只剩 24px。
+   这里把面板还原成纵向 flex，插件的既有逻辑即可照常工作。 */
+[data-mobile] .VOzbGW_panel {
+  display: flex !important;
+  flex-direction: column !important;
+}
+/* 官方 navTitle 与插件 backBar 是重复的标题，藏掉官方的那个 */
+[data-mobile] .VOzbGW_panel > .VOzbGW_navTitle {
+  display: none !important;
+}
+/* header 在移动端本就无用（官方默认 display:none），显式保底 */
+[data-mobile] .VOzbGW_panel > .VOzbGW_header {
+  display: none !important;
+}
+
+[data-mobile] .wSkVaW_header * {
+  pointer-events: auto !important;
+}
+
 [data-mobile] .wSkVaW_titleRow {
   flex-wrap: wrap;
   row-gap: 2px;
@@ -250,6 +279,12 @@ window.__ModuleLoader__.load({
      菜单透明（背景被消息文字盖住）且点不动（啾灵真机 2026-09-16 实测）。
      给 header 一个显式 z-index 让它整体高于消息流，菜单即恢复最上层。 */
   z-index: 30 !important;
+  /* ⚠️ 2026-11-09（用户真机反馈）：这条 z-index 让 header 盖住了官方侧栏按钮
+     所在的 .pI_x6G_leadingSeat（z-index:15）。用真实触摸点上去，命中的是
+     header 本身，官方按钮**点不动**。解法只改命中、不改层叠：
+     header 容器不吃点击，内部元素照常可点，空出来的左上角就交给官方按钮。
+     这不是替代官方按钮，是让它能被点到。 */
+  pointer-events: none !important;
   /* 修复 57：左右内边距给两端控件让出真实空间（内容盒，故用 border-box）。
      修复 59：左内边距**不再写死**，改由 mpSyncHeaderCenter() 按右侧控件
      的运行时真实占位反推（左留白 = 右占位 ⇒ 标题簇中心恒落在屏幕中线）。
@@ -477,176 +512,6 @@ window.__ModuleLoader__.load({
    桌面端：无 data-mobile → 规则不命中，按钮与布局完全不变。 */
 [data-mobile] .wSkVaW_headerUtilities [data-open-target] {
   display: none !important;
-}
-
-/* 8b. StatsPills（0.1.5 新版：两个可点药丸）在手机宽度下的收窄：
-   官方 .bOPqQW_root 左右内边距 = calc(--dsh-composer-side-clearance + 16px) = 32px，
-   390dp 下药丸实测 129 + 143 + gap 12 = 284px > 可用 236px → 尾部恒被截断。
-   收窄内边距到 8px、gap 到 8px 后可用 284px，两枚药丸完整显示（保持单行）。
-
-   ⭐ 修复 60（2026-09-28 啾灵反馈「底部长了会有省略号，比较难看」）：
-   实测底部宽度预算（iPhone 13 / 390px）：
-     root(BuPN2G_root) 内容区 356px
-       └ dock 356px 上限，其中 遥测栏 + gap12 + 环形61
-         └ 遥测栏最多 283px（= 356 − 12 − 61）
-            └ 减 padding 12 + 药丸间 gap 6 + 两药丸固定开销 26*2=52
-              ⇒ 文本可用 ~213px
-   而原文案「24 轮 1085 步·172 t/s」+「92.9M·缓存 93%」实测 197px——
-   **余量仅 ~16px**：步数从 4 位变 5 位（1085→10857）就要 +8px，再叠加
-   轮数或 token 量增长必然溢出 → 尾部省略号；继续压缩时 label 的
-   min-width:0 会把它压到 0 宽，视觉上就像整组「消失」。
-   下面把各处 padding/gap 再收紧一档，文本可用宽提到 ~227px（+14px）。
-   剩余差额由 JS 分级降档兜底（见 processStatsLine / mpFitStats）。 */
-[data-mobile] .bOPqQW_root {
-  padding-left: 2px !important;
-  padding-right: 2px !important;
-  gap: 4px !important;
-}
-/* 药丸文字必须能收缩：官方 .bOPqQW_label 是 overflow:hidden + ellipsis，
-   但缺 min-width:0 → flex 项不肯收缩，超宽时文字直接被裁（尾部变省略号）。
-   ⭐ 修复 60：给 min-width 一个下限（而非 0）。原来的 min-width:0 允许它被
-   一路压到 0 宽 → 药丸只剩图标，视觉上就是用户反馈的「底部信息整组消失」。
-   现在最多压到 3em，配合 JS 分级降档，永远不会出现 0 宽或省略号。 */
-[data-mobile] .bOPqQW_label {
-  min-width: 3em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-[data-mobile] .bOPqQW_anchor {
-  min-width: 0;
-}
-/* ⚠️ 修复 60 注记：root **必须保持可收缩**（官方 flex 简写 0/1/auto）。
-   不要改成 flex:0 0 auto —— 那样 root 会撑开 dock 横向溢出，且
-   scrollWidth === clientWidth 恒成立，processStatsLine 里
-   「内容宽 > 可视宽」的溢出检测将永远失效，分级降档也就永不触发。
-   真正的防线是：① label 的 min-width:3em（防 0 宽「消失」）
-   ② JS 分级降档（防省略号）。 */
-
-/* ══ 修复 63（方案 A）：给「三组并排」腾出余量 ══════════════════════════
-   文案侧已把 tok/s 与 token 总量移进弹层（见 mpStatsVariants 的注释），
-   这里再把三组之间的横向开销各收一档，给 5~6 位步数留余量：
-     · dock（遥测栏 ↔ 上下文环）gap 12 → 8
-     · 上下文环触发器 padding 8→6、图标↔文字 gap 6→4
-   ⚠️ .JObwrW_* 与 .uV2eYG_* 是官方构建期哈希类名（分别来自
-      ui-conversation 的 ContextMeter / InputBar），官方升级可能变；
-      失效的后果只是「回到官方间距」，不影响功能。 */
-[data-mobile] .uV2eYG_dock {
-  gap: 8px !important;
-}
-[data-mobile] .JObwrW_trigger {
-  padding-left: 6px !important;
-  padding-right: 6px !important;
-  gap: 4px !important;
-}
-
-/* ══ 修复 65：底部遥测栏挤成两行 / 溢出视口被裁 ═══════════════════════
-   症状（360px / dpr3 真机截图）：
-     · 底部那行被折成两行：「1 轮 1 步 · 30 / tok/s」「30.5K tok · 缓存命 / 中 9%」，
-       右侧上下文环「12%」孤零零挂在第二行右边；
-     · 更早的版本里它直接溢出视口被裁：dock scrollWidth 382 vs clientWidth 326，
-       左边「1 轮」的「1」被切掉、右边上下文环整个跑到 x=343（视口只有 360）之外。
-
-   根因有两层：
-     ① **CSS 层**：官方这几个药丸是 "white-space: normal"，宽度不够就换行，
-        换行之后 "dock" 高度从 26px 涨到 46px，整块往上顶、把输入框挤走；
-     ② **JS 层**（更隐蔽）：本文件里那套「文案放不下就自动降档」的机制
-        （"processStatsLine" / "mpStatsFits"）**从上线起就没生效过** ——
-        它找的是 "[data-composer-stats] .bOPqQW_root" 和 ".bOPqQW_label"，
-        而官方现在的结构是 ".uV2eYG_dock > span[data-composer-stat]"，
-        三个旧选择器**全部查不到**（真机实测：root null、label 0 个）。
-        所以降档一次都没跑过，长文案原样铺在屏幕上。
-
-   修法两处配合（缺一个都不行）：
-     · CSS：药丸 "nowrap" + "overflow: hidden"，先保证**绝不换行**
-       （换行是视觉上最糟的形态，宁可截断也不换行）；
-     · JS："processStatsLine" 改按 "data-composer-stat" 属性找元素（见那边的注释），
-       "mpStatsFits" 改成「截断/超父容器」判据 —— 这样降档才会真正触发，
-       把文案缩到「1轮 1步」「30.5K·缓存9%」这种一行放得下的基准档。
-   实测最终形态：dock 高 26px、两个药丸 55px/103px 均零截断、上下文环在同一行。
-
-   ⚠️ "uV2eYG_*" / "JObwrW_*" 是官方构建期哈希类名，官方升级可能变；
-      "data-composer-stat" 是语义属性，比哈希稳，所以 JS 侧优先用它。 */
-[data-mobile] .uV2eYG_dock [data-composer-stat] {
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-}
-[data-mobile] .uV2eYG_dock {
-  flex-wrap: nowrap !important;
-}
-
-/* ══ 修复 67：思考正文不换行，把整页推出屏幕左侧 ═══════════════════════
-   症状（真机截图，非常明显）：
-     整个消息列表**向左偏出屏幕**，左侧文字被切一半
-     （「已完成」只看得见「已完成」的右半、「目前没有」只剩「前没有」、
-      消息操作图标只剩右半边），右侧反而留出一片空白。
-     而且页面能被**横向拖动**，拖一下就左右跑。
-
-   根因：思考（reasoning）正文的 span 带了 "white-space: nowrap"，
-   一行到底不换行 —— 实测最长的一条 **1197px**（视口只有 360px）。
-   它把滚动容器 ".wSkVaW_root" 的 scrollWidth 从 360 撑到 **550**，
-   浏览器为了显示光标位置把 scrollLeft 自动设成 **39.67**，
-   于是整页看起来「左移了 40px」。实测：
-     · "_text_1rdzk_17" 的 getBoundingClientRect().width = 1197（多条 700~1200）
-     · ".wSkVaW_root" scrollWidth 550 / clientWidth 360 / scrollLeft 39.67
-     · ".wSkVaW_scrollBody" 的 x = **-40**（负值 = 已跑出屏幕左边界）
-
-   修法：两处一起改，缺一个都不行 ——
-     ① "._text_1rdzk_17" 恢复换行（"white-space: normal" + "overflow-wrap: anywhere"
-        兜住那种一整串没有空格的英文/路径，否则单行还是会顶出去）；
-     ② "._root_1rdzk_1" 官方写的是 "width: max-content"，它在 flex 里会按
-        **内容原始宽度**撑开（哪怕子项已经允许换行），改成 "width: auto" 才会
-        服从父级的 100% 约束。
-   实测修复后：最长文本 1197 → 225px，scrollLeft 归 0，scrollBody 的 x 回到 0，
-   页面不再能横向拖动。
-
-   ⚠️ 这两个都是官方构建期哈希类名，官方升级可能变；失效后果只是
-      "回到能横向拖动"，不影响功能。 */
-[data-mobile] ._root_1rdzk_1 {
-  width: auto !important;
-  max-width: 100% !important;
-}
-[data-mobile] ._text_1rdzk_17 {
-  white-space: normal !important;
-  word-break: break-word !important;
-  overflow-wrap: anywhere !important;
-}
-
-/* ══ 修复 79：思考正文两行**竖直叠在一起**，糊成一团看不清 ═══════════════
-
-   现象（用户截图，红框标出）：AI 回复过程中，思考块里同一行位置上下叠着
-   两段不同文字，比如
-
-     「ui dump 找不到 composer（可能 App 在后台，或者 UI 状态不对）」
-     「确认前端输入框用的是 textarea 还是可编辑层」
-
-   两行**共用同一段竖直空间**，笔画互相穿插，完全读不出内容。
-
-   ⚠️ 根因**尚未在真机上逐帧确认**，下面是基于截图像素与代码的推断，
-      写清楚是为了让下一个来改的人知道这套改动的依据有多强、错在哪里：
-
-   推断：思考正文是流式追加的（每个 reasoning-delta 往同一个容器里塞文字），
-   容器行高是**继承来的 line-height: normal**（没有显式值）；叠加修复 67
-   为防横向溢出加的 overflow-wrap: anywhere —— 后者允许在**任意字符间断行**，
-   每行宽度因此不可预测。流式高频追加时容器高度连续重算，若某次重排里
-   「高度」与「文字」不同步，后续行就会画在上一行仍占用的位置附近，
-   形成截图里那种竖直方向的重叠。
-
-   修法（针对上述推断，且都是**无风险的正向约束**，即使推断不中也不会有副作用）：
-   给思考正文一个显式行高（不再依赖继承），并强制 display: block
-   + contain: layout —— 后者让容器成为独立布局单元，高度变化不与父级重排
-   互相干扰。这治的是「高度跟不上」，而不是把文字藏起来。
-   ⚠️ 若 v62 之后重叠仍在，说明推断不中，下一步应当抓真机 DOM 逐帧比对
-      （不是继续在这一层加 CSS）。
-
-   ⚠️ 用 [data-chat-group-part="reasoning"] 这个**语义属性**定位，不用
-      官方构建期哈希类名 —— 后者每次官方升级都会变（见修复 67 的警告）。
-   ⚠️ 行高取 1.6：中文正文的常规值，也是官方正文在用的一档，视觉一致。 */
-[data-mobile] [data-chat-group-part="reasoning"] ._text_1rdzk_17,
-[data-mobile] [data-chat-group-part="reasoning"] [class*="_text_"] {
-  line-height: 1.6 !important;
-  display: block !important;
-  contain: layout !important;
 }
 
 /* ══ 修复 71：整页能横向滚 114px，点一下「更多操作」页面就左偏 ══════════
@@ -1167,252 +1032,61 @@ window.__ModuleLoader__.load({
 			el.textContent = m[1];
 		}
 
-		// ── 3. composer StatsPills 精简 ──
-		// 官方 .bOPqQW_root 左右内边距 = calc(--dsh-composer-side-clearance + 16px) = 32px，
-		// 390dp 下可用宽仅 270px，而两枚药丸实测 129 + 143 + gap 12 = 284px → 尾部恒被截断
-		// （用户看到的是「3 轮 22 …」）。
+		// ── 3b. 底栏用量文案缩写（针对官方当前 DOM 重做）──
+		// 官方这一行是三组并排，360px 视口下的**实测**数据：
+		//   dock 可用 326px（x 16 → 342）
+		//   activity  "1 轮 7 步·12246 tok/s"  label 需要 130px，实际只给 84px
+		//   usage     "216K tok·缓存命中 82%"   label 需要 141px，实际只给 92px
+		//   context   "3%"                      53px
+		// 两组都被官方自己的 text-overflow:ellipsis 截断，屏幕上分别是
+		// 「1 轮 7 步 · 12...」和「216K tok · 缓...」。
+		// 三组都完整需要约 404px，只有 326px 可用 —— 光靠官方收缩放不下。
 		//
-		// ⭐ 修复 60（2026-09-28 啾灵反馈「底部长了会有省略号，比较难看」+「有时整组消失」）：
-		// 实测底部宽度预算（iPhone 13 / 390px）：
-		//     dock 上限 356px = 遥测栏 + gap12 + 环形61  ⇒ 遥测栏最多 283px
-		//     减 root padding 4 + 药丸间 gap 4 + 两药丸固定开销 (icon14+gap3+pad6)*2=46
-		//     ⇒ 文本预算 229px，而原文案「24 轮 1085 步·172 t/s」+「92.9M·缓存 93%」实测 197px
-		//     ⇒ **余量仅 ~16px**。步数 4 位→5 位要 +7px，轮数/token 再长就溢出 → 尾部省略号。
+		// 所以这里**只压缩文案、不碰任何宽高/字号/内距**，布局仍然完全由官方决定：
+		//   activity  "1 轮 7 步·12246 tok/s"  → "1 轮 7 步"
+		//             （速度是每秒都在跳的瞬时值，信息半衰期最短；点开药丸的
+		//               弹层里仍能看到完整数据）
+		//   usage     "216K tok·缓存命中 82%"  → "216K·缓存 82%"
+		//             （"tok" 由图标表达；"缓存命中" 缩成 "缓存"）
+		// 压缩后两组分别约 50px / 100px，合计约 299px，在 326px 里放得下。
 		//
-		// 为什么会出现「整组消失」：.bOPqQW_label 带 min-width:0（修复早期为解决
-		//   flex 不肯收缩而加），溢出时它会被一路压到 0 宽 → 药丸只剩图标，
-		//   视觉上就是「轮/步、缓存两组信息消失了」。
-		//
-		// 修法：不做"压缩到溢出"，改为**分级降档**——按信息重要性逐级舍弃，
-		//   每级都实测真实宽度，选第一个放得下的，因此**永不产生省略号**。
-		//   信息优先级（啾灵认可的顺序）：
-		//     ① 轮/步计数  —— 进度核心，任何档位都保留
-		//     ② 缓存命中率 % —— 第二重要，最后档位也保留
-		//     ③ token 总量（92.9M）—— 中优先级，挤不下先舍
-		//     ④ 速度 t/s   —— 实时性弱、变化最频繁，**最先**舍弃
-		// 幂等：降档结果写回 dataset.mpApplied，下一轮若文本未变则不重复测量；
-		//   React 写入新数值时（now !== mpApplied）才重新计算并更新原文缓存。
-		const MP_STATS_RAW = "mpRaw", MP_STATS_APPLIED = "mpApplied";
-
-		/* ══ 修复 63：底栏常驻文案精简（方案 A + 用户追加「用量」）══════════════
-
-		   常驻可见 = 轮/步（进度）· token 总量·缓存命中%（用量/成本效率）·
-		   上下文环%（会不会爆，环由 conversation 插件的 ContextMeter 渲染）。
-		   常驻里**去掉**的只有 tok/s。
-
-		   为什么（预算账）：官方「详细」档这一行是三组并排
-		     ⏱「24 轮 1085 步 · 172 tok/s」 🗄「92.9M tok · 缓存命中 93%」 ◔「63%」
-		   需求宽 ~285px，而 390px 屏的 dock 预算 ~283px —— **天生差一点**，
-		   所以永远在省略号边缘蹭，数字一进位就变省略号。精简后实测：
-		     ⏱「24轮 1085步」+ 🗄「92.9M·缓存93%」
-		     = 药丸 93 + 4(药丸间 gap) + 109 ≈ 216px（含图标/padding/内 gap），
-		     对 240px 的保守预算余量 ~24px（真实 dock 预算更宽松，约 298px）。
-		   于是按用户要求把 token 总量放回来仍然放得下；仍是 tok/s 留在弹层
-		   （瞬时值、每秒都在跳，信息半衰期最短，且它是最长的一段）。
-		   ⭐ 关键前提：三组**都能点开**，弹层里一个数据都没少
-		     （时间药丸 → LLM/工具时长、首 token、速度；用量药丸 → 缓存命中率、
-		      输入/缓存读/缓存写/输出 tok；上下文环 → ~已用/窗口 + 分段明细）。
-
-		   下面第 0 档（基准档）就是固定精简文案，其余档位是极端数字
-		   （1085→108570 步、总量涨到 B 级之类）时的兜底降档。 */
-		function mpStatsVariants(raw) {
-			const abbr = (s) => s.replace(/缓存命中/g, "缓存").replace(/(\S)\s*tok\/s/g, "$1 t/s");
-			const src = abbr(raw);
-			const v = [];
-			if (/轮|步|turns|steps/.test(src)) {
-				// 进度药丸：基准档直接就是**紧排**的「24轮 1085步」
-				// （官方原文「24 轮 1085 步」在数字与单位间有空格，白占约 8px，
-				//   而这次改动的目的就是省宽度 → 不把它当基准档）。
-				// 其后依次：去掉中间空格 → 只留步数 → 只留数字。
-				const tight = src.replace(/\s*·\s*[^·]*$/, "").trim()
-					.replace(/(\d)\s+(轮|步|turns|steps)/g, "$1$2");
-				v.push(tight);
-				v.push(tight.replace(/\s+/g, ""));
-				const stepsOnly = tight.replace(/^.*?(\d+)\s*(步|steps)\s*$/, "$1$2");
-				v.push(stepsOnly);
-				if (stepsOnly !== tight) v.push(stepsOnly.replace(/\s*(步|steps)\s*$/, ""));
-			} else {
-				// 用量药丸：基准档 = 官方同款语义「总量·缓存N%」（用户 2026-10-03
-				//   看过实测余量后要求把「用量」放回来）。
-				//   总量与缓存命中%本来就是官方的**同一枚药丸**（UsagePill），
-				//   合在一枚里比拆成两枚省一个图标+间距+间隙（约 31px），
-				//   所以放回总量不必新增药丸。
-				//   降档顺序：舍总量 → 舍「缓存」二字只留百分比。
-				const m = /·\s*([^·]+)$/.exec(src);
-				if (m) {
-					// "92.9M tok" → "92.9M"（图标已表达"token"，单位白占宽）
-					const total = src.slice(0, m.index).trim().replace(/\s*tok\b/g, "").trim();
-					const cache = m[1].trim().replace(/\s+/g, "");
-					if (total) v.push(total + "·" + cache);
-					v.push(cache);
-					const pct = (cache.match(/\d+(?:\.\d+)?%/) || [""])[0];
-					if (pct) v.push(pct);
-				} else {
-					v.push(src.replace(/\s*tok\b/g, "").trim() || src);
+		// 为什么改文本节点而不是 textContent：
+		//   label 的子节点是 [文本][分隔符 span][文本] 三段，React 的 fiber 记着
+		//   这三个节点。只改 .nodeValue 不动结构，React 后续更新仍然能对上；
+		//   换成 textContent 会把它拍平成一个节点，React 再更新时找不到原节点。
+		// 幂等：改完后再进来条件不成立直接返回；characterData 分支同步调用，
+		//   微任务早于绘制，所以不会闪一帧原文。
+		function mpCompactStats() {
+			if (!mpIsMobile()) return;
+			const dock = document.querySelector(".uV2eYG_dock");
+			if (!dock) return;
+			const act = dock.querySelector('[data-composer-stat="activity"] .bOPqQW_label');
+			if (act) {
+				const k = act.childNodes;
+				if (k.length === 3 && k[2] && k[2].nodeType === 3 && k[2].nodeValue) {
+					k[2].nodeValue = "";
+					if (k[1] && k[1].nodeType === 1) k[1].style.display = "none";
 				}
 			}
-			// 去掉空串与重复，保持顺序（单调递减，降档必然终止）
-			return v.filter((x, i) => x && v.indexOf(x) === i);
-		}
-
-		/**
-		 * 判断底部遥测栏当前文案「是否排得下一行」。
-		 *
-		 * ⚠️⚠️ **修复 65：旧判据在官方换 DOM 之后恒为 true，降档从未触发。**
-		 *
-		 * 旧实现："root.scrollWidth > root.clientWidth"。
-		 * 但现在的根节点 ".uV2eYG_dock" 是 "flex" + **宽度随内容收缩**的
-		 * （内容短时 229px、长时 326px），"scrollWidth" 与 "clientWidth"
-		 * **永远相等** ⇒ 判据恒 false ⇒ 一档都不降。
-		 *
-		 * 真机实测的后果（截图核对）：底部那行挤成**两行**
-		 *（「1 轮 1 步 · 30 / tok/s」「30.5K tok · 缓存命 / 中 9%」），
-		 * 右侧上下文环 "12%" 孤零零挂在第二行右边；更早的版本里
-		 * 它直接超出视口被裁掉（dock scrollWidth 382 vs clientWidth 326）。
-		 *
-		 * 新判据（两条，任一不满足就算「放不下」）：
-		 *  ① **是否换行** —— 用 "getClientRects().length > 1"，这是最直接的
-		 *     "文字被折成多行"信号，与容器宽度怎么算无关；
-		 *  ② **是否超出父容器** —— 内容右边界比父容器右边界还远。
-		 *     兜住 "justify-content: center" 那种「两边一起溢出」的情况
-		 *    （单看 ① 时若容器把文字压在一行却整体溢出，① 会漏判）。
-		 *
-		 * 保持**纯只读**：不写 DOM ⇒ 不触发 MutationObserver ⇒ 不会重演
-		 * 修复 60b 那个把页面卡死的死循环。
-		 */
-		function mpStatsFits(root, labels) {
-			// ① 任一药丸被折成多行 ⇒ 放不下
-			for (const el of labels) {
-				if (el.getClientRects().length > 1) return false;
-				// 药丸内部自己截断（ellipsis）也算放不下
-				if (el.scrollWidth > el.clientWidth + 1) return false;
+			const use = dock.querySelector('[data-composer-stat="usage"] .bOPqQW_label');
+			if (use) {
+				const k = use.childNodes;
+				if (k.length === 3) {
+					if (k[0] && k[0].nodeType === 3) {
+						const head = k[0].nodeValue || "";
+						if (/\s*tok\s*$/.test(head)) k[0].nodeValue = head.replace(/\s*tok\s*$/, "");
+					}
+					if (k[2] && k[2].nodeType === 3) {
+						const tail = k[2].nodeValue || "";
+						if (/^缓存命中/.test(tail)) k[2].nodeValue = tail.replace(/^缓存命中/, "缓存");
+					}
+				}
 			}
-			// ② 整体超出父容器（两侧都算）
-			const parent = root.parentElement;
-			if (parent !== null) {
-				const rootRect = root.getBoundingClientRect();
-				const parentRect = parent.getBoundingClientRect();
-				if (rootRect.right > parentRect.right + 1) return false;
-				if (rootRect.left < parentRect.left - 1) return false;
-			}
-			return true;
-		}
-
-		/* ⚠️⚠️ 修复 60b（2026-09-28）——上一版这里是**死循环**，把整个页面卡死了，
-		   表现是「什么按钮都点不了、输入框也点不了」，远程访问时尤其明显。
-
-		   错在哪（务必不要再写回来）：
-		     processStatsLine 被 MutationObserver 的 characterData 分支调用
-		     （见文件末尾 mo.observe(document.body, {childList,subtree,characterData})）。
-		     上一版每次都【从第 0 档（最长文案）重新开始试】：
-		         写第 0 档 → 溢出 → 写第 1 档 → 溢出 → 写第 2 档 → 放得下
-		     净结果虽然回到第 2 档，但**每次调用都写了 3 次 textContent** ⇒
-		     每次写入又触发一次 observer ⇒ queueMicrotask 再调回来 ⇒
-		     微任务级无限循环，主线程被 100% 占满，页面彻底无响应。
-
-		   正确做法（现在这版）必须满足两条不变量：
-		     ① **不溢出就一个 DOM 都不写，直接 return** —— 无写入 ⇒ 不触发 observer
-		        ⇒ 环被切断。这是最关键的一条。
-		     ② **只能单调降档，绝不回写更长的档** —— 候选档位有限（≤4 档），
-		        每次最多降一级，降到最后一档就 next === cur 不再写入 ⇒ 必然终止。
-
-		   信息优先级（修复 63 / 方案 A 之后的最终形态）：
-		     常驻 = 轮/步 · 缓存命中% · 上下文环%；tok/s 与 token 总量**从基准档
-		     就已移入弹层**（点药丸即得），不再参与常驻竞争。
-		     这里的档位只剩「极端数字兜底」：轮→步→纯数字、缓存标签→纯百分比。 */
-		function processStatsLine() {
-			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			// ⚠️⚠️ **修复 65：官方换过 DOM 结构，旧选择器已全部失配。**
-			//
-			// 旧版（本函数原先写的）：
-			//   root   = `[data-composer-stats] .bOPqQW_root` / `.bOPqQW_root`
-			//   labels = `.bOPqQW_label`
-			// 真机实测（2026-10-21）**三个选择器全部查不到**：
-			//   `[data-composer-stats]` → null
-			//   `.bOPqQW_root`          → null
-			//   `.bOPqQW_label`         → 0 个
-			// 也就是说**降档逻辑从上线起就没生效过**（不是"偶发失效"），
-			// 症状就是底部遥测栏超出视口被裁：实测 dock clientWidth 326、
-			// scrollWidth 382（溢出 56px），左边「1 轮」的「1」被切掉、
-			// 右边上下文环「12%」整个跑到 x=343（视口只有 360）之外。
-			//
-			// 新版结构（实测）：
-			//   `.uV2eYG_dock`（flex，justify-content:center，宽 326）
-			//     ├─ span[data-composer-stat="activity"] > button.bOPqQW_pill
-			//     └─ span[data-composer-stat="usage"]    > button.bOPqQW_pill
-			//   ⭐ 药丸类名 `bOPqQW_*` 还在，只是**根节点**从 `bOPqQW_root`
-			//      变成了 `uV2eYG_dock`，且不再有 `data-composer-stats` 包裹层；
-			//      文案也不再是 `.bOPqQW_label`，而是药丸自身的 textContent。
-			//
-			// 所以这里改成**按 `data-composer-stat` 属性找**（语义属性比哈希类名稳，
-			// 官方改样式不会动它），并保留旧选择器作兜底 —— 万一哪天又切回去。
-			const root =
-				document.querySelector(".uV2eYG_dock") ||
-				document.querySelector("[data-composer-stats] .bOPqQW_root") ||
-				document.querySelector(".bOPqQW_root");
-			if (!root) return;
-			// ⚠️⚠️ **修复 80：必须取到最内层的 label，绝不能停在 anchor 上。**
-			//
-			// 官方结构（真机实测）：
-			//   .uV2eYG_dock > span[data-composer-stat] > button.bOPqQW_pill > span.bOPqQW_label
-			//                  └────── anchor ──────┘  └── pill ──┘  └── 真正的文字 ──┘
-			//
-			// 旧实现直接拿 `[data-composer-stat]`（= anchor）当 label，随后
-			// `el.textContent = next` 会**把内部整个 button + span 删掉**，只剩一段裸文本。
-			// 裸文本不再继承官方 pill 的 13px 字号/内边距/圆角，而是继承 body 的 16px
-			// —— 症状就是「底部统计条字号突然变大，撑满整个底栏」。
-			//
-			// 所以先按语义属性拿到 anchor，再**逐个下钻到最内层 label**；
-			// 只有下钻不到（官方又改了结构）时才退回 anchor 本身，保证降档仍然发生。
-			const anchors = [...root.querySelectorAll("[data-composer-stat]")];
-			let labels = anchors.length
-				? anchors.map((el) => el.querySelector(".bOPqQW_label") || el)
-				: [...root.querySelectorAll(".bOPqQW_label")];
-			if (!labels.length) return;
-
-			// ① 原文快照：只有「当前文本不是我们上次写的那一份」时才认为 React 更新了原文。
-			//    必须带 MP_STATS_APPLIED 判断，否则我们写下的缩短文案会被误当成新原文，
-			//    原文越缩越短、再也回不去。
-			for (const el of labels) {
-				const now = el.textContent || "";
-				if (now !== el.dataset[MP_STATS_APPLIED]) el.dataset[MP_STATS_RAW] = now;
-			}
-
-			// ② 档位表（按 mpStatsRaw 生成，一药丸一组，单调递减）
-			const variants = labels.map((el) => mpStatsVariants(el.dataset[MP_STATS_RAW] || el.textContent || ""));
-			// 放得下？（root 内容溢出 + 每个 label 的内部截断都要看：
-			// label 带 ellipsis 时 root 未必溢出，但 label.scrollWidth 会暴露截断）
-			const fits = mpStatsFits(root, labels);
-
-			// ③ 双不变量（修复 60b 的死循环教训必须继续成立）：
-			//    ① **不写 DOM 的路径必须存在且最先命中** —— 当前文案已在候选表里
-			//       且放得下 ⇒ 一个字节都不写 ⇒ 不触发 observer ⇒ 环被切断；
-			//    ② **只能单调降档**，每次最多降一级 ⇒ 必然终止。
-			//
-			//    ⭐ 修复 63 的实质改动：官方原文（idx < 0）**不再看放不放得下**，
-			//       一律先归一到基准档 v[0]（= 精简常驻文案：轮/步 · 缓存N%）。
-			//       因为方案 A 是「常驻就精简」，不是「挤不下才精简」——
-			//       否则数字短的时候 tok/s 和 token 总量又会回到屏幕上。
-			//       归一后下一轮 idx ≥ 0 且放得下 ⇒ 走不变量①，不再写入。
-			//       已在候选表里（idx ≥ 0）才允许、且只在溢出时降一级。
-			labels.forEach((el, i) => {
-				const v = variants[i];
-				const cur = el.textContent || "";
-				const idx = v.indexOf(cur);
-				let next;
-				if (idx < 0) next = v[0];               // 官方原文 → 归一为精简基准档
-				else if (fits) return;                  // 已是候选档且放得下 → 不写（断环）
-				else next = v[Math.min(idx + 1, v.length - 1)]; // 溢出 → 降一档
-				if (next === cur) return;               // 无变化 ⇒ 不写 ⇒ 不触发 observer
-				el.textContent = next;
-				el.dataset[MP_STATS_APPLIED] = next;
-			});
 		}
 
 		// ── 6. 侧栏点「新会话」或「会话条」后自动收回抽屉 ──
-		function closeDrawerAfterClick() {
-			setTimeout(() => { mpCloseDrawer(); }, 150);
-		}
+		// ⚠️ 已停用：官方自己的抽屉会在切换会话后处理收起，插件不再代劳。
+		function closeDrawerAfterClick() { }
 		function onNewSessionClick(e) {
 			if (!mpIsMobile()) return; // 修复 40：收抽屉仅移动端有意义
 			// 覆盖两种新建会话按钮（中英文界面）：
@@ -1942,17 +1616,30 @@ window.__ModuleLoader__.load({
 		// ── 7. 设置页两级化（全 inline style，不用 CSS 规则——见 CSS 区注释） ──
 		function setupSettingsDialog(dialog) {
 			if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-			if (dialog.dataset.mpReady) return;
-			dialog.dataset.mpReady = "1";
+			// ⚠️⚠️ 0.2.2 起**侧栏根节点也带 role="dialog" aria-modal="true"**
+			//   （移动端抽屉的语义化写法）。若不排除，这里会把侧栏当成设置页改造：
+			//   侧栏里凭空冒出返回圆钮 + 居中的「设置」标题，而真正的设置页
+			//   反倒没人处理 —— 真机表现就是"设置页布局错乱"。
+			//   侧栏的识别特征：根节点类名 hHd-Xa_root / 直接子节点有 hHd-Xa_panelList。
+			if (dialog.classList.contains("hHd-Xa_root")) return;
+			if (Array.from(dialog.children).some((c) => c.classList && c.classList.contains("hHd-Xa_panelList"))) return;
 			const nav = Array.from(dialog.children).find((c) => c.tagName === "NAV");
 			if (!nav) return;
+			// ⚠️ 标记载体必须落在"确认这是设置页"之后：原先先写 mpReady 再找 nav，
+			//   一旦首次调用时 React 尚未渲染出 nav，就会永久放弃改造（真机上
+			//   表现为"有的设备设置页是改造后的样子，有的还是官方原样"）。
+			if (dialog.dataset.mpReady) return;
+			dialog.dataset.mpReady = "1";
 			dialog.dataset.mpSettings = "1";
 			// 隐藏安卓壳遗留的"开发者选项"：其功能依赖 window.androidBridge /
 			// /api/android/*，在 Web 进程中不存在，保留会进入一个空壳页面。
 			nav.querySelectorAll("button").forEach((b) => {
 				if ((b.innerText || "").trim() === "开发者选项") b.style.display = "none";
 			});
-			const content = nav.nextElementSibling;
+			// ⚠️ 0.2.2 的结构变了：内容区 .VOzbGW_options 是 dialog 的**直接子元素**，
+			//   不再是 nav 的兄弟。原来写 nav.nextElementSibling 会取到 .VOzbGW_header
+			//   （官方给它 display:none），于是"点二级项"显示的是空内容区。
+			const content = dialog.querySelector(".VOzbGW_options") || nav.nextElementSibling;
 			setupPluginGrouping(content);
 			setupNavIcons(nav);
 			const isNarrow = () => mpIsMobile();
@@ -1969,7 +1656,10 @@ window.__ModuleLoader__.load({
 				overlay.style.height = "100vh";
 				overlay.style.alignItems = "stretch";
 			}
-			const navTitle = nav.querySelector(".VOzbGW_navTitle");
+			// ⚠️ navTitle 是 dialog 的直接子元素，不是 nav 的子元素。
+			//   原来写 nav.querySelector 恒为 null → 官方的左上角「设置」大标题从没被藏掉，
+			//   和插件加的居中标题重复显示，这就是"右上角/左上角各有一个设置"的来源。
+			const navTitle = dialog.querySelector(".VOzbGW_navTitle");
 			if (navTitle) navTitle.style.display = "none";
 			// 顶部返回条：只有圆形返回按钮 + 标题，不再放 ✕
 			const backBar = document.createElement("div");
@@ -2827,33 +2517,19 @@ window.__ModuleLoader__.load({
 				const root = col ? col.querySelector(".hHd-Xa_root") : null;
 				return !!root && !root.classList.contains("hHd-Xa_collapsed");
 			}
-			function mpMask() {
-				let mask = document.querySelector(".mp-drawer-mask");
-				if (!mask) {
-					mask = document.createElement("div");
-					mask.className = "mp-drawer-mask";
-					mask.addEventListener("click", mpCloseDrawer);
-					document.body.appendChild(mask);
-				}
-				return mask;
-			}
-			function mpSetDrawerOpen(open) {
-				// ⚠️ 修复 39（2026-09-16 啾灵反馈）：抽屉/遮罩机制**只在窄屏下成立**。
-				// 宽屏下官方侧栏常驻展开，mpOfficialDrawerOpen() 恒为 true → 这里会给遮罩
-				// 加上 .mp-drawer-open（opacity:1 + pointer-events:auto + inset:0 z=39），
-				// 而抽屉的浮层 CSS 只作用于 [data-mobile] → 遮罩压在正常布局的侧栏与整页之上：
-				// 整页变暗、点「设置」点到的是遮罩、点遮罩又触发 mpCloseDrawer 把侧栏收起。
-				// 这里做**唯一收口**：非窄屏一律强制关闭（与窄屏判定相与）。
-				const on = mpIsMobile() && !!open;
-				const col = mpSidebarCol();
-				if (col) col.classList.toggle("mp-drawer-open", on);
-				// 遮罩是懒建的：宽屏下若它还不存在就不必创建（少一个节点少一份风险）；
-				// 若已存在（从窄屏切过来），下面这行负责把它的打开类摘掉。
-				if (on || document.querySelector(".mp-drawer-mask")) {
-					mpMask().classList.toggle("mp-drawer-open", on);
-				}
-			}
+			// ⚠️ 抽屉遮罩已停用（2026-11-09）。官方 0.2.2 自己处理抽屉的关闭
+			//   （实测点侧栏外部、按返回键都能正常收起），而我们的遮罩是
+			//   inset:0 + z-index:39 的全屏层，在部分机型上会盖住左上角的官方
+			//   侧栏按钮，症状就是"那个按钮点不动"。
+			//   保留函数壳只为不打断调用方，返回一个不插入文档的游离节点。
+			function mpMask() { return document.createElement("div"); }
+			// ⚠️ 已停用：不再给侧栏挂 .mp-drawer-open、不再驱动遮罩。
+			//   抽屉的开合完全交给官方按钮，插件不参与。
+			function mpSetDrawerOpen(open) { return; }
 			function mpSyncDrawer() {
+				// ⚠️ 已停用（2026-11-09）：抽屉开合彻底交给官方，插件不再同步、
+				//   不再自作主张地"视觉收起"，也不再挂遮罩。
+				return;
 				// 修复 25：关闭动画进行中，绝不能被 observer/resize 把抽屉又拉回来
 				//（官方此刻仍是 expanded，mpSetDrawerOpen 会重新加上 mp-drawer-open）。
 				if (mpClosing) return;
@@ -3420,18 +3096,8 @@ window.__ModuleLoader__.load({
 				mpShellBuilt = true;
 				// 修复 40：监听器移到这里（无条件装），回调内部各自判移动端。
 				new MutationObserver(mpAnchorBurger).observe(document.body, { childList: true, subtree: true });
-				document.addEventListener("click", (e) => {
-					const t = e.target;
-					if (!t || !t.closest) return;
-					if (!t.closest(".hHd-Xa_toggle")) return;
-					const col = mpSidebarCol();
-					if (!col || !col.classList.contains("mp-drawer-open")) return; // 抽屉没开：交官方
-					if (mpClosing) return;
-					e.preventDefault();
-					e.stopPropagation();
-					e.stopImmediatePropagation();
-					mpCloseDrawer();
-				}, { capture: true });
+				// ⚠️ 原来这里在捕获阶段拦截官方 .hHd-Xa_toggle 的点击（抢在官方 morph 之前
+				//   先滑出抽屉），抽屉交回官方后这段拦截必须去掉，否则官方收不到点击。
 				window.addEventListener("resize", () => { mpSyncMobileAttr(); mpSyncDrawer(); mpScheduleHeaderCenter(); }, { passive: true });
 				// §12：把返回键处理器交给原生。原生拦下系统返回键后调它，
 				//   返回值 = 「这一层被消费了吗」；只有 false 才退出 App。
@@ -3723,29 +3389,6 @@ window.__ModuleLoader__.load({
 		// 节流 300ms + 去重：防止历史/流式渲染时的高频 mutation 造成
 		// 全量 DOM 扫描风暴（华为 WebView 114 renderer 会 mmap OOM 崩溃）。
 		let moTimer = 0;
-		// ── 修复 23：StatsLine 闪烁（同步处理，不等节流）──
-		// 现象：底部「多少轮·多少步」数值变化时（如 130 步 → 131 步）会瞬闪一下
-		//       未缩写的原样（`2 轮 · 131 步`，尾部被截成省略号），随后才恢复缩写态。
-		// 根因：官方 StatsLine 的 span 用 key={group} 渲染，group 文本一变 React 就
-		//       重建该 span 并写回**未缩写原文**；而我们的缩写/隐藏跑在下面 300ms 的
-		//       节流回调里 → 这段窗口内页面显示的是「未修复」形态，即用户看到的闪烁。
-		// 修法：在 observer 回调里**同步**跑一次 processStatsLine()。MutationObserver
-		//       回调处于微任务阶段、先于浏览器绘制，因此 React 写入的那一帧就直接是
-		//       缩写态，中间不产生可见帧。processStatsLine 幂等（已缩写的文本再跑
-		//       结果不变、已隐藏的 span 再跑仍是 none），故不会自触发死循环；
-		//       它只做「seat 内 div 的 span 文本/display」这一小范围操作，
-		//       不构成全量 DOM 扫描，不存在原来的 OOM 风险。
-		// ⚠️ 只同步这一个函数；其余重活（trimMeta / 抽屉同步 / 设置 dialog
-		//    等）仍留在 300ms 节流里，避免流式渲染时的高频全量扫描。
-		let statsSyncQueued = false;
-		const scheduleStatsSync = () => {
-			if (statsSyncQueued) return;
-			statsSyncQueued = true;
-			queueMicrotask(() => {
-				statsSyncQueued = false;
-				processStatsLine();
-			});
-		};
 		// ── 修复 35b：轨迹详情面板「不可用」回填闪烁（同步处理，不等节流）──
 		// 现象（啾灵反馈）：点开轨迹表格某行时，面板先渲染出一帧「不可用」，300ms 后才被
 		//   mpPatchTrajectoryTiming 回填 → 每次点行都闪一下，体验不如官方原生。
@@ -3795,16 +3438,14 @@ window.__ModuleLoader__.load({
 					// 修复 35b：切行/重渲染时面板文本原地更新 → 同步回填（幂等，早退收敛）
 					scheduleTraceTiming();
 				}
-				if (t && t.closest && (t.closest("[data-composer-seat]") || t.closest("[data-composer-stats]"))) {
-					scheduleStatsSync();
-					break;
-				}
+				// 底栏用量：React 改数字后立刻缩写（微任务早于绘制，不闪原文）
+				if (t && t.closest && t.closest(".uV2eYG_dock")) mpCompactStats();
 			}
 			if (moTimer) return;
 			moTimer = setTimeout(() => {
 				moTimer = 0;
 				document.querySelectorAll(".xzv4MW_timeEnd").forEach(trimMeta);
-				processStatsLine();
+				mpCompactStats();
 				watchApproval();
 				mpSyncDrawer();
 				mpAnchorBurger(); // ⭐ 修复 47：兜底重挂（React 摘掉 header 子节点时专用 observer 若漏掉）
@@ -9740,7 +9381,7 @@ window.__ModuleLoader__.load({
 			const disposeCaretFix = setupCaretFix();   /* 修复 78 */
 			// 初始一轮
 			document.querySelectorAll(".xzv4MW_timeEnd").forEach(trimMeta);
-			processStatsLine();
+			mpCompactStats();
 			watchApproval();
 			mpBuildShell();
 			mpSyncDrawer();

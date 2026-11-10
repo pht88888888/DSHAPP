@@ -180,7 +180,7 @@ param(
     #      `webview-compat.zip` 的 `mobileui/lib/client.js` 还停在 10-29 的旧降级产物，
     #      设备上先解出新插件、随后被旧产物整份覆盖（`build=2026-10-29-a` 照旧，
     #      旧版里的 `diag is not defined` 还会炸掉整条 client bundle）。
-    [string]$CompatVersion = "48",
+    [string]$CompatVersion = "52",
 
     [string]$EngineBin,
     [string]$OutZip

@@ -1,7 +1,7 @@
 {
   "name": "dsh-preset-razor",
   "version": "1.0.3",
-  "description": "DSH agent preset「快准狠模式（通用）」：一行 loader 声明，装完即出现在新会话的预设选择器里。",
+  "description": "DSH agent preset「Fast 模式」：一行 loader 声明，装完即出现在新会话的预设选择器里。",
   "keywords": [
     "dsh",
     "dsh-bundle",

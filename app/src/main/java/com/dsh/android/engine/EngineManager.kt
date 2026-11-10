@@ -4170,6 +4170,167 @@ class EngineManager private constructor(private val context: Context) {
     }
 
     /**
+     * 给已有 profile 补上「新任务默认预设 = razor」（幂等，只补缺）。
+     *
+     * [DEFAULT_SETTINGS_PATCH] 里带了这一项，但那份只在 profile 的 patch 文件
+     * **不存在**时播种一次。已装过的设备文件早已存在，播种被跳过，所以老用户
+     * 永远拿不到这个默认值 —— 与当初 [ensureDefaultModel] 完全同一个理由。
+     *
+     * ⚠️ 只补缺，不覆盖：`agent-preset-registry` 这一行在就原样保留，用户自己
+     *   在设置页里改过默认预设属于用户意图。
+     *
+     * ⚠️ razor 是**可被用户关掉的 bundle**。真被关掉时 registry 查不到它，
+     *   `resolve()` 会抛 `Unknown agent preset: razor`。所以这里先确认 bundle
+     *   仍在 profile 的 bundles 名单里，再写默认值。
+     */
+    private fun ensureDefaultPreset(profile: String = PROFILE_NAME) {
+        val dir = File(dshHome, "profiles/$profile")
+        val patch = File(dir, PROFILE_PATCH_FILENAME)
+        val pkg = File(dir, "package.json")
+        val bundles = try {
+            if (pkg.isFile) org.json.JSONObject(pkg.readText()) else null
+        } catch (t: Throwable) {
+            Log.w(TAG, "读取 profile package.json 失败: ${t.message}")
+            return
+        }
+        val list = bundles?.optJSONObject("dsh")?.optJSONObject("profile")?.optJSONArray("bundles")
+        val razorOn = list != null && (0 until list.length()).any { list.optString(it) == PRESET_RAZOR_PACKAGE }
+        if (!razorOn) {
+            Log.i(TAG, "预设 $PRESET_RAZOR_PACKAGE 不在 bundles 名单里（用户关掉了），不设默认预设")
+            return
+        }
+        val existing = try {
+            if (patch.isFile) patch.readText() else ""
+        } catch (t: Throwable) {
+            Log.w(TAG, "读取 profile 用户配置失败: ${t.message}")
+            return
+        }
+        if (existing.lines().any { isEntryIdLine(it, PRESET_REGISTRY_NS) }) {
+            Log.i(TAG, "默认预设已在 profile 用户配置里（或用户已自选）: ${patch.absolutePath}")
+            return
+        }
+        val updated = mergeDefaultPreset(existing)
+        try {
+            patch.parentFile?.mkdirs()
+            patch.writeText(updated)
+            Log.i(TAG, "已把新任务默认预设设为 razor: ${patch.absolutePath}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "写入默认预设失败: ${t.message}")
+        }
+    }
+
+    /** 把 `agent-preset-registry` 那一条并进 profile 用户配置文本（纯函数）。 */
+    internal fun mergeDefaultPreset(body: String): String {
+        val lines = body.lines().toMutableList()
+        if (lines.any { isEntryIdLine(it, PRESET_REGISTRY_NS) }) return body
+        lines.indexOfFirst { it.isNotBlank() && it.indexOfFirst { c -> c != ' ' } == 0 && it.trim() == "[]" }
+            .takeIf { it >= 0 }?.let { lines.removeAt(it) }
+        while (lines.isNotEmpty() && lines.last().isBlank()) lines.removeAt(lines.size - 1)
+        if (lines.isNotEmpty()) lines.add("")
+        lines.addAll(defaultPresetEntryYaml(0).trimEnd('\n').lines())
+        return lines.joinToString("\n") + "\n"
+    }
+
+    /** 默认预设那一行的 YAML。 */
+    private fun defaultPresetEntryYaml(indent: Int): String {
+        val pad = " ".repeat(indent)
+        return buildString {
+            appendLine("${pad}- id: $PRESET_REGISTRY_NS")
+            appendLine("$pad  name: '$PRESET_REGISTRY_PACKAGE'")
+            appendLine("$pad  config:")
+            appendLine("$pad    default: razor")
+        }
+    }
+
+    /**
+     * 清掉 profile 用户配置里「内置 Agnes 供应商」的残留（幂等）。
+     *
+     * 早期版本把内置号池作为 `llm-pi-ai` 的一个 provider 写进用户层，并把默认
+     * 模型指向它。用户要求把内置供应商整块删掉之后，这些残留会指向一个不再
+     * 存在的凭据 —— 首次对话直接路由失败。所以每次启动清一遍。
+     *
+     * 只删**内置**那一份：`baseURL` 命中 agnes 网关的 provider，以及 `provider:
+     * agnes` 的默认模型行。用户自己配的其他 provider 与自选模型一律不动。
+     */
+    private fun stripBuiltinAgnesProfile(profile: String = PROFILE_NAME) {
+        val patch = File(dshHome, "profiles/$profile/$PROFILE_PATCH_FILENAME")
+        val existing = try {
+            if (patch.isFile) patch.readText() else return
+        } catch (t: Throwable) {
+            Log.w(TAG, "读取 profile 用户配置失败: ${t.message}")
+            return
+        }
+        val updated = stripBuiltinAgnesText(existing)
+        if (updated == existing) return
+        try {
+            patch.writeText(updated)
+            Log.i(TAG, "已清掉内置 Agnes 供应商残留: ${patch.absolutePath}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "清理内置 Agnes 供应商失败: ${t.message}")
+        }
+    }
+
+    /** [stripBuiltinAgnesProfile] 的纯函数部分（便于离线验证）。 */
+    internal fun stripBuiltinAgnesText(body: String): String {
+        val lines = body.lines()
+        // ⚠️ 只认**顶层**的 `- id:`（缩进 0）。`models:` 下面也有 `- id: agnes-3.0-flash`
+        //   这类行，缩进不为 0 —— 若一并当成段起点，llm-pi-ai 段会被从中间切断，
+        //   摘掉 `agnes:` 之后留下一段孤立的 `- id: ...`，整个 providers 从映射变成
+        //   序列，引擎直接报 `invalid config`（真机实测踩到过）。
+        val starts = lines.indices.filter { i ->
+            val raw = lines[i]
+            if (raw.isEmpty() || raw[0] == ' ' || raw[0] == '\t') return@filter false
+            val t = raw.trimStart()
+            t.startsWith("- ") && t.removePrefix("- ").trimStart().startsWith("id:")
+        }
+        if (starts.isEmpty()) return body
+        val out = mutableListOf<String>()
+        var cursor = 0
+        for ((idx, from) in starts.withIndex()) {
+            val to = if (idx + 1 < starts.size) starts[idx + 1] else lines.size
+            out.addAll(lines.subList(cursor, from))
+            val seg = lines.subList(from, to)
+            val idLine = seg.first()
+            val segText = seg.joinToString("\n")
+            val isModel = idLine.contains(DEFAULT_MODEL_NS)
+            val isLlm = idLine.contains("llm-pi-ai")
+            when {
+                // 默认模型指向内置 agnes ⇒ 整段删掉，让引擎回落到官方默认模型
+                isModel && segText.contains("provider: $KEY_PROVIDER") -> Unit
+                // llm-pi-ai：只摘掉内置 agnes 那个 provider，用户自建的照留
+                isLlm && segText.contains(AGNES_GATEWAY_MARK) ->
+                    out.addAll(dropYamlBlock(seg.map { it }, "agnes:", 6))
+                else -> out.addAll(seg)
+            }
+            cursor = to
+        }
+        if (cursor < lines.size) out.addAll(lines.subList(cursor, lines.size))
+        return out.joinToString("\n")
+    }
+
+    /** 从 [seg] 里摘掉缩进为 [indent] 的 `key:` 及其子块；其余原样保留。 */
+    private fun dropYamlBlock(seg: List<String>, key: String, indent: Int): List<String> {
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < seg.size) {
+            val line = seg[i]
+            val lead = line.length - line.trimStart().length
+            if (line.trimStart() == key && lead == indent) {
+                i++
+                while (i < seg.size) {
+                    val next = seg[i]
+                    if (next.isNotBlank() && (next.length - next.trimStart().length) <= indent) break
+                    i++
+                }
+                continue
+            }
+            out.add(line)
+            i++
+        }
+        return out
+    }
+
+    /**
      * 把「默认模型」那一行并进 profile 用户配置文本（纯函数，便于离线验证）。
      *
      * ⚠️ 判据比 [mergeKeyPoolProvider] 简单得多：**只看那一行在不在**。
@@ -7760,13 +7921,12 @@ class EngineManager private constructor(private val context: Context) {
         // 必须早于引擎启动 —— 引擎的 initProfile() 会给缺失的 patch 文件补一份空模板。
         seedDefaultSettings()
         val mobileUiPatch = writeMobileUiPatch()
-        // Agnes 多模态插件：generate_image / generate_video 两个工具 + 多模态配置页。
-        // 同样必须在 profile 解析前落盘，否则 --patch 挂不上。
-        ensureAgnesMultimodal()
-        // 把内置号池接到该插件上（写插件自己的账号池文件，只在缺失时播种一次）。
-        // 必须早于引擎启动：插件读不到账号池就会回落到它自带的默认账号。
-        seedAgnesAccounts()
-        val agnesMmPatch = writeAgnesMultimodalPatch()
+        // ── 已移除：多模态配置 + Agnes 内置号池（用户要求整块删掉）──────────
+        // 不再解包 agnes-multimodal 插件（`generate_image` / `generate_video` 与
+        // 「多模态配置」设置页一并消失），不再播种账号池，也不再往 profile 注入
+        // 内置 `agnes` 供应商。引擎侧回落到官方默认模型（deepseek-official）。
+        // 老设备 profile 里已有的 `agnes` 供应商与旧默认模型由 stripBuiltinAgnesProfile() 清掉。
+        val agnesMmPatch: File? = null
         // 内置预设 dsh-preset-razor（「快准狠模式（通用）」）。
         // 走 profile bundle（不是 overlay）⇒ 用户能在「插件 → 已安装插件」里自己关掉，
         // 默认开启。必须在 profile 解析前解包 + 登记，否则 bundle 解析不到。
@@ -7819,14 +7979,14 @@ class EngineManager private constructor(private val context: Context) {
         // `Configuration for "llm-pi-ai" is overridden by a home patch or
         // command-line overlay` —— 用户表现为「一添加第三方 API 就报错」。
         // 所以改为把内置号池**补进 profile 的用户配置层**（见 [ensureKeyPoolProvider]）。
-        ensureKeyPoolProvider()
-        // 老用户在 GUI 里手填过真密钥 ⇒ `.credentials.yaml` 里有一条
-        // `AGNES_CREDENTIAL`，它的优先级**高于**环境变量，会把网关令牌顶掉。
-        // 号池改成服务端网关后这条残留必须清掉，详见 [dropStaleBuiltinCredential]。
+        // 内置号池 / 内置供应商已整块移除，这里只做**清理**：
+        // 把老设备 profile 里残留的 `agnes` 供应商条目与指向它的默认模型删掉，
+        // 否则它们会指向一个不再存在的凭据，首次对话必然路由失败。
+        stripBuiltinAgnesProfile()
         dropStaleBuiltinCredential()
-        // 默认模型 = 内置 Agnes。引擎的出厂默认是官方模型（deepseek-official），
-        // 而本 App 的用户大多没配过第三方 API ⇒ 那个路由必然失败。详见 [ensureDefaultModel]。
-        ensureDefaultModel()
+        // 新任务默认预设 = razor（Fast 模式）。只给已有 profile 补缺，
+        // 新装设备由 DEFAULT_SETTINGS_PATCH 直接播种。
+        ensureDefaultPreset()
 
         // ⚠️ **救援 profile 也必须拿到同一套用户层配置**，否则救援界面是残废的：
         //   没有默认模型 ⇒ AI 一开口就路由失败；没有号池 ⇒ 用户得自己配 key；
@@ -7842,8 +8002,8 @@ class EngineManager private constructor(private val context: Context) {
         //     引擎读不了（`profile "rescue" does not exist`），比不建更糟。
         if (rescueProfileDir != null) {
             seedDefaultSettings(RESCUE_PROFILE_NAME)
-            ensureKeyPoolProvider(RESCUE_PROFILE_NAME)
-            ensureDefaultModel(RESCUE_PROFILE_NAME)
+            stripBuiltinAgnesProfile(RESCUE_PROFILE_NAME)
+            ensureDefaultPreset(RESCUE_PROFILE_NAME)
         }
         // uid 2000 通道：截图/点击/卸载/settings 等 app 域做不到的操作要靠它。
         // 未导入密钥时脚本自己回落为本地执行，不影响任何现有功能。

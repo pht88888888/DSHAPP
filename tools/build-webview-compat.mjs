@@ -80,7 +80,7 @@ const TARGET = argOf('target', 'chrome74');
 //      （前端产物 `index-CN7NIWNw.js` → `index-BgUyXZcc.js`、`vendor-DcuzkuQH.js`
 //      → `vendor-BUMdD3V7.js`，`index-BxpfOGf3.css` 已移除），`mobileui/` 未变。
 //      同理：不 +1 则设备上戳相等而整份跳过，降级内核仍跑旧前端。
-const COMPAT_VERSION = argOf('compat-version', '48');
+const COMPAT_VERSION = argOf("compat-version", "56");
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const ENGINE_BIN = resolve(ROOT, argOf('engine-bin', 'app/src/main/assets/engine.bin'));

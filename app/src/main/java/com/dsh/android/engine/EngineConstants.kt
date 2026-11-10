@@ -619,7 +619,7 @@ const val PRESET_RAZOR_LEGACY_DIR = "preset-razor"
 const val PRESET_RAZOR_MARKER = ".preset_razor_bundle_registered"
 
         /** 内容版本戳：改了 `preset-razor.zip` 里任何东西都必须改这里。 */
-const val PRESET_RAZOR_VERSION = "1.0.3-2"
+const val PRESET_RAZOR_VERSION = "1.0.4"
 const val PRESET_RAZOR_STAMP = ".preset_razor_version"
 
         /**
@@ -968,6 +968,9 @@ val LEGACY_KEY_BASE_URLS = setOf(
          * `*.agnes-ai.cn` 通配证书、服务器按 **Host 头**路由（不是 SNI）。
          */
 const val KEY_PROVIDER = "agnes"
+
+/** 内置 Agnes 网关的域名标记：profile 里命中它就说明是**内置**供应商，清理时据此识别。 */
+const val AGNES_GATEWAY_MARK = "agnes.jiulingssh.xyz"
 
         /** 供应商显示名 —— 主界面模型列表里分组用的就是它。 */
 const val KEY_PROVIDER_NAME = "Agnes"
@@ -1601,7 +1604,7 @@ const val PNPM_DIR = "lib/pnpm"
          *   否则 `.mobile_ui_version` 不变，新 zip 解包被整体跳过 —— 这个失败是
          *   完全静默的（见 AGENTS.md 三条最容易违反的规矩之一）。
          */
-const val MOBILE_UI_VERSION = "1.0.0-117"
+const val MOBILE_UI_VERSION = "1.0.0-125"
 const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────
@@ -1661,6 +1664,10 @@ val RESCUE_BUNDLES = listOf(
 
         /** profile 的用户 patch 层文件名（引擎的 `PROFILE_PATCH_FILENAME`）。 */
 const val PROFILE_PATCH_FILENAME = "cordis.patch.yml"
+
+/** 预设注册表那一行的 entry id / 包名（要覆盖它的 `config.default`，id 必须逐字一致）。 */
+const val PRESET_REGISTRY_NS = "agent-preset-registry"
+const val PRESET_REGISTRY_PACKAGE = "@deepseek-ai/dsh-agent-preset-registry"
 
         /**
          * 默认模型那一行的 entry id。
@@ -1744,11 +1751,6 @@ val DEFAULT_SETTINGS_PATCH = """
               name: "@deepseek-ai/dsh-client-ui-conversation"
               config:
                 busyEnter: steer
-            - id: agent-default-model
-              name: "@deepseek-ai/dsh-agent-default-model"
-              config:
-                provider: $KEY_PROVIDER
-                model: ${KEY_MODELS.first()}
         """.trimIndent() + "\n"
 
         // ── uid 2000 特权通道 ────────────────────────────────────────
