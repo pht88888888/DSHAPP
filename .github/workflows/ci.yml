@@ -2,7 +2,7 @@ name: 仓库卫生检查
 
 # 本工作流**不构建 APK** —— 构建需要约 135 MB 资产（engine.bin / node-runtime.bin /
 # bootstrap 等），它们不在仓库里（见 README「构建资产需要自备」）。
-# 这里只做不需要资产的静态检查，保证 PR 不会把密钥、凭据、大文件带进来。
+# 卫生、边界与 Node 行为测试均无需这些大资产；组件工具只在临时目录生成小型插件包。
 
 on:
   push:
@@ -15,6 +15,43 @@ permissions:
   contents: read
 
 jobs:
+  plugin-behavior:
+    name: Node 24 插件行为与边界（无需引擎资产）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 架构、插件边界与双内核协议覆盖
+        run: bash tools/check-architecture.sh
+
+      - name: 市场安装与更新行为
+        working-directory: market-plugin/dsh-android-market
+        run: npm test
+
+      - name: 独立移动业务插件行为
+        run: node --test mobile-ui-plugin/dsh-android-balance/test/mobile-features.mjs
+
+      - name: 安装远程插件既有开发依赖
+        working-directory: remote-plugin/mobile
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: 远程会话同步与状态所有权行为
+        working-directory: remote-plugin/mobile
+        run: npm test
+
+      - name: 准备固定版本客户端兼容编译工具
+        run: |
+          npm install --prefix "$RUNNER_TEMP/dsh-esbuild-tool" --no-save --no-audit --no-fund esbuild@0.25.0
+          echo "DSH_ESBUILD_BINARY=$RUNNER_TEMP/dsh-esbuild-tool/node_modules/.bin/esbuild" >> "$GITHUB_ENV"
+
+      - name: 全组件临时构建、逐文件校验与真实 npm 包测试
+        # 所有输出位于系统临时目录；不读取 engine.bin，也不覆盖 Android 资产。
+        run: node --test tools/test-plugin-components.mjs
+
   secrets-guard:
     name: 敏感文件与密钥扫描
     runs-on: ubuntu-latest
