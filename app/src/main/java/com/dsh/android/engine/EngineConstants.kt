@@ -1604,7 +1604,7 @@ const val PNPM_DIR = "lib/pnpm"
          *   否则 `.mobile_ui_version` 不变，新 zip 解包被整体跳过 —— 这个失败是
          *   完全静默的（见 AGENTS.md 三条最容易违反的规矩之一）。
          */
-const val MOBILE_UI_VERSION = "1.0.0-128"
+const val MOBILE_UI_VERSION = "1.0.0-130"
 const val MOBILE_UI_STAMP = ".mobile_ui_version"
 
         // ── 出厂默认设置 ─────────────────────────────────────────────

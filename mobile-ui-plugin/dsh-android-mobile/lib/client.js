@@ -419,6 +419,8 @@ window.__ModuleLoader__.load({
   align-items: center !important;
   justify-content: center !important;
   gap: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
   /* 修复 57：由 max-width:72vw 改为「吃掉剩余空间并可收缩」，
      让两侧控件的真实宽度决定标题的可用区。 */
   flex: 1 1 0% !important;
@@ -579,6 +581,12 @@ window.__ModuleLoader__.load({
   word-break: break-word !important;
   overflow-wrap: anywhere !important;
 }
+[data-mobile] [data-process-activity] [class*="_root_1rdzk"] {
+  min-width: 0 !important;
+  flex: 1 1 0%;
+  overflow: hidden;
+}
+[data-mobile] [data-process-activity] [class*="_text_1rdzk"],
 [data-mobile] [class*="summary"] [class*="_text_1rdzk"],
 [data-mobile] [class*="summaryText"] [class*="_text_1rdzk"] {
   white-space: nowrap !important;
@@ -3290,7 +3298,8 @@ window.__ModuleLoader__.load({
 				//   会话行 ⋮、权限切换卡片等都是普通菜单（没有该类）。
 				//   旧版带了个 `div[class*="_list_"]` 兜底 → 任何官方下拉菜单都会被
 				//   误注入「刷新」（啾灵实测：点会话行 3 个点、权限切换卡片都弹出刷新）。
-				const list = document.querySelector('[class*="_list_"][class*="_denseList_"]');
+				const more = document.querySelector('.wSkVaW_headerUtilities button[aria-label="更多操作"][aria-expanded="true"]');
+				const list = more && more.parentElement.querySelector('[role="menu"]');
 				if (!list) return;
 				// 只在菜单确实可见时注入
 				if (!list.offsetParent && list.getBoundingClientRect().height === 0) return;
@@ -3331,24 +3340,44 @@ window.__ModuleLoader__.load({
 				list.appendChild(wrap);
 			}
 
-			// 修复 30 / 33：往 ⋯ 菜单里加「对话⇄轨迹」切换项。
-			//   官方 tabs（对话/轨迹）在移动端被隐藏，两个视图的入口都收敛到这里。
-			//   ⚠️ 修复 33：原来只注入「轨迹」一项 —— 一旦切到轨迹视图，
-			//     页面上就**再没有任何可见的「对话」入口**（实测：可见含「对话」字样的
-			//     元素 = 0，⋯ 菜单里也只有「轨迹」）→ 啾灵反馈「点开轨迹之后就无法返回对话」。
-			//   现在按**当前激活的 tab 反向**注入：在对话视图显示「轨迹」，在轨迹视图显示「对话」。
-			//   幂等键用 data-mp-item="view-switch"，标签随状态重写（同一项切换，不堆两项）。
+			// 0.2.2 的轨迹标签可能不渲染，复用官方 header 的 store 与 selectView。
+			function mpConversationView() {
+				const slots = mpCtx && mpCtx.get("slots");
+				const binding = mpCtx && mpCtx.get("uiSession")?.current?.value;
+				if (!binding || !slots || typeof slots.resolveStore !== "function") return null;
+				const entry = slots.entriesOfSlot("conversation.session.header")
+					.find((e) => e.store && typeof e.inject === "function");
+				if (!entry) return null;
+				const store = slots.resolveStore(entry.store, binding);
+				return { store, face: entry.inject(binding.key, store.actions) };
+			}
+			async function mpToggleConversationView() {
+				try {
+					let view = mpConversationView();
+					if (!view) throw new Error("会话视图尚未就绪");
+					const target = view.store.getSnapshot().view === "trajectory" ? "chat" : "trajectory";
+					if (target === "trajectory") {
+						const forms = mpCtx.get("configForms");
+						const tools = forms && forms.developerTools;
+						if (tools && !tools.enabled.getSnapshot()) await tools.setEnabled(true);
+						view = mpConversationView();
+					}
+					if (!view.face.hooks.conversationViews.getSnapshot().some((v) => v.id === target)) {
+						throw new Error("请在设置 → 通用开启显示代码工作视图");
+					}
+					view.face.selectView(target);
+					document.querySelector('.wSkVaW_headerUtilities button[aria-label="更多操作"][aria-expanded="true"]')?.click();
+				} catch (e) {
+					window.alert("切换会话视图失败：" + (e && e.message || e));
+				}
+			}
+
 			function mpInjectTraceItem(list) {
 				if (!mpIsMobile()) return; // 修复 40：仅移动端；桌面端完全走官方
-				const tabs = [...document.querySelectorAll(".wSkVaW_tab")];
-				if (!tabs.length) return;
-				const isActive = (t) => (t.className || "").toString().includes("tabActive") || t.getAttribute("aria-selected") === "true";
-				const active = tabs.find(isActive);
-				// 判据：当前在轨迹 → 目标是「对话」；否则（含状态未知）→ 目标是「轨迹」
-				const inTrace = !!active && (active.textContent || "").trim() === "轨迹";
+				const view = mpConversationView();
+				if (!view) return;
+				const inTrace = view.store.getSnapshot().view === "trajectory";
 				const targetLabel = inTrace ? "对话" : "轨迹";
-				const targetTab = tabs.find((t) => (t.textContent || "").trim() === targetLabel);
-				if (!targetTab) return;
 				// 图标：对话 = 气泡；轨迹 = 折线
 				const iconSvg = inTrace
 					? '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
@@ -3356,12 +3385,7 @@ window.__ModuleLoader__.load({
 					: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
 						'<path d="M2 11.5c2.5 0 2.5-7 5-7s2.5 7 5 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
 						'<circle cx="13.8" cy="11.5" r="1.2" fill="currentColor"/></svg>';
-				mpInjectMenuItem(list, "view-switch", targetLabel, iconSvg, () => {
-					// 借用官方 tab 的 DOM click() 触发 React 状态切换
-					const t = [...document.querySelectorAll(".wSkVaW_tab")]
-						.find((x) => (x.textContent || "").trim() === targetLabel);
-					t?.click();
-				});
+				mpInjectMenuItem(list, "view-switch", targetLabel, iconSvg, mpToggleConversationView);
 				// 标签/图标随视图状态刷新（同一菜单项复用，避免重复项堆积）
 				const item = list.querySelector('[data-mp-item="view-switch"]');
 				if (item) {
