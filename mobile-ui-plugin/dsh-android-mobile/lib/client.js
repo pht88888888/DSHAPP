@@ -514,22 +514,33 @@ window.__ModuleLoader__.load({
   display: none !important;
 }
 
-/* ══ 底栏用量行的宽度兜底 ═══════════════════════════════════════════
-   官方 .uV2eYG_dock 是 flex 容器，且 min-width 为默认的 auto ——
-   在 flex 布局里这等于「我不肯收缩到内容宽度以下」。所以三组内容一旦
-   超过可用宽度，dock 自己就撑破父级，把整页的 scrollWidth 撑大，
-   表现为「界面能左右拖、左边被切掉一截」。
-
-   JS 那边已经把文案缩写了（见 mpCompactStats），这里是**第二道保险**：
-   万一 React 又把原文写回来、而 JS 还没来得及处理的极短窗口里，
-   也不允许它撑破布局。只加 min-width: 0（允许收缩）和 overflow: hidden
-   （超出的部分裁掉，不参与父级宽度计算），不改字号/内距/布局方式。 */
-[data-mobile] .uV2eYG_dock {
+/* 底栏保留官方文本与点击行为，缩写由按钮属性显示，避免修改 React 文本节点。
+   固定辅助字号并关闭 WebView 文本自动放大，运行结束与刷新后保持一致。 */
+[data-mobile] [data-composer-dock] {
   min-width: 0 !important;
+  max-width: 100%;
   overflow: hidden !important;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
 }
-[data-mobile] .uV2eYG_dock > * {
+[data-mobile] [data-composer-dock] > * {
   min-width: 0 !important;
+}
+[data-mobile] [data-composer-dock] [data-composer-stat],
+[data-mobile] [data-composer-dock] button,
+[data-mobile] [data-composer-dock] button span {
+  font-size: 12px !important;
+  line-height: 20px !important;
+}
+[data-mobile] [data-composer-stat] button[data-mp-stat-text] > span {
+  display: none !important;
+}
+[data-mobile] [data-composer-stat] button[data-mp-stat-text]::after {
+  content: attr(data-mp-stat-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ══ 消息正文/思考正文的横向溢出防护 ══════════════════════════════════
@@ -1093,72 +1104,28 @@ window.__ModuleLoader__.load({
 			el.textContent = m[1];
 		}
 
-		// ── 3b. 底栏用量文案缩写（针对官方当前 DOM 重做）──
-		// 官方这一行是三组并排，360px 视口下的**实测**数据：
-		//   dock 可用 326px（x 16 → 342）
-		//   activity  "1 轮 7 步·12246 tok/s"  label 需要 130px，实际只给 84px
-		//   usage     "216K tok·缓存命中 82%"   label 需要 141px，实际只给 92px
-		//   context   "3%"                      53px
-		// 两组都被官方自己的 text-overflow:ellipsis 截断，屏幕上分别是
-		// 「1 轮 7 步 · 12...」和「216K tok · 缓...」。
-		// 三组都完整需要约 404px，只有 326px 可用 —— 光靠官方收缩放不下。
-		//
-		// 所以这里**只压缩文案、不碰任何宽高/字号/内距**，布局仍然完全由官方决定：
-		//   activity  "1 轮 7 步·12246 tok/s"  → "1 轮 7 步"
-		//             （速度是每秒都在跳的瞬时值，信息半衰期最短；点开药丸的
-		//               弹层里仍能看到完整数据）
-		//   usage     "216K tok·缓存命中 82%"  → "216K·缓存 82%"
-		//             （"tok" 由图标表达；"缓存命中" 缩成 "缓存"）
-		// 压缩后两组分别约 50px / 100px，合计约 299px，在 326px 里放得下。
-		//
-		// 为什么改文本节点而不是 textContent：
-		//   label 的子节点是 [文本][分隔符 span][文本] 三段，React 的 fiber 记着
-		//   这三个节点。只改 .nodeValue 不动结构，React 后续更新仍然能对上；
-		//   换成 textContent 会把它拍平成一个节点，React 再更新时找不到原节点。
-		// 幂等：改完后再进来条件不成立直接返回；characterData 分支同步调用，
-		//   微任务早于绘制，所以不会闪一帧原文。
+		// 缩写读取官方 aria-label；只写自有属性，保留 React 管理的文本和分隔符。
+		// 直接覆盖 nodeValue/textContent 会破坏后续更新，出现旧数字或原文回跳。
 		function mpCompactStats() {
 			if (!mpIsMobile()) return;
-			const dock = document.querySelector(".uV2eYG_dock");
-			if (!dock) return;
-			// ⚠️ 这里**按最终文本判断，不依赖子节点结构**。
-			//   官方 label 正常是 [文本][分隔符 span][文本] 三段，但 React 在某些
-			//   重渲染路径下会把它们拍平成单个文本节点（实测：textContent 覆盖后
-			//   childNodes.length 从 3 变成 1）。早期版本要求 length===3 才处理，
-			//   一旦被拍平就永久失效、文案再也缩不回来 —— 正是用户看到的
-			//   「隔一会儿又变回原文、变宽」。现在只认文本内容，两种形态都能处理。
-			const trim = (label, rules) => {
-				if (!label) return;
-				const before = label.textContent || "";
-				let after = before;
-				for (const [re, to] of rules) after = after.replace(re, to);
-				if (after === before) return;
-				// 结构完整（三段）时优先改文本节点，保住 React 的 fiber 对应关系；
-				// 已被拍平（单节点）时就整体写回，反正没有结构可保。
-				const k = label.childNodes;
-				if (k.length === 3 && k[2] && k[2].nodeType === 3) {
-					k[2].nodeValue = "";
-					if (k[1] && k[1].nodeType === 1) k[1].style.display = "none";
-					if (k[0] && k[0].nodeType === 3) {
-						const head = after.replace(/\s*·\s*$/, "").replace(/\s+$/, "");
-						if (head) k[0].nodeValue = head;
-					}
-				} else {
-					label.textContent = after.replace(/\s*·\s*$/, "");
+			for (const stat of document.querySelectorAll('[data-composer-dock] [data-composer-stat]')) {
+				const button = stat.querySelector("button[aria-label]");
+				if (!button) continue;
+				const raw = button.getAttribute("aria-label") || "";
+				let compact = raw;
+				if (stat.getAttribute("data-composer-stat") === "activity") {
+					compact = raw.replace(/\s*[·•]?\s*[\d.,]+\s*tok\/s\s*$/i, "");
+				} else if (stat.getAttribute("data-composer-stat") === "usage") {
+					compact = raw.replace(/\s+tok\b/gi, "").replace(/缓存命中/g, "缓存");
 				}
-			};
-			// activity：删掉「·2194 tok/s」这段实时速度（每秒都在跳，信息半衰期最短；
-			//   点开药丸的弹层里仍完整）。只保留「N 轮 M 步」。
-			trim(dock.querySelector('[data-composer-stat="activity"] .bOPqQW_label'), [
-				[/\s*[·•]\s*[\d.,]+\s*tok\/s\s*$/i, ""],
-			]);
-			// usage：「219K tok·缓存命中 70%」→「219K·缓存 70%」
-			//   tok 由左侧图标表达，缓存命中缩成缓存。
-			trim(dock.querySelector('[data-composer-stat="usage"] .bOPqQW_label'), [
-				[/\s+tok(?=\s*[·•])/i, ""],
-				[/缓存命中/g, "缓存"],
-			]);
+				compact = compact.replace(/\s*[·•]\s*/g, " · ").replace(/\s*[·•]\s*$/, "").trim();
+				if (button.getAttribute("data-mp-stat-text") !== compact) {
+					button.setAttribute("data-mp-stat-text", compact);
+				}
+			}
 		}
+		// 数字更新可以只改 aria-label；原全局 observer 不监听属性，会漏掉这条路径。
+		const mpStatsObserver = new MutationObserver(mpCompactStats);
 
 		// ── 6. 侧栏点「新会话」或「会话条」后自动收回抽屉 ──
 		// ⚠️ 已停用：官方自己的抽屉会在切换会话后处理收起，插件不再代劳。
@@ -3505,14 +3472,7 @@ window.__ModuleLoader__.load({
 			// StatsLine 相关改动 → 立即（微任务）归一化，消除闪烁
 			// ⚠️ characterData 变更的 target 是**文本节点**（nodeType 3），
 			//    必须取 parentElement 再判断，否则漏掉 React 只改文本的情况。
-			//
-			// ⚠️ 底栏必须**同步**处理，不能等下面那个 300ms 节流：
-			//   官方底栏的 tok/s 是流式输出时每秒刷新多次的实时值，React 每刷新
-			//   一次就把我们缩写过的文案写回原文；文案一宽，底栏三组就超出
-			//   326px 可用宽度。用户实测看到的正是「隔一会儿又变回原文、变宽、
-			//   整页能左右拖」——因为 300ms 节流窗口里原文是可见的。
-			//   这里放在节流**之前**同步跑，改文本不触发回流（只改 nodeValue），
-			//   开销可以忽略；且写回后条件不再成立，下一轮自然早退，不会自激。
+			// 底栏挂载或重建后立即补上缩写属性；已有按钮的属性更新由 mpStatsObserver 处理。
 			let dockTouched = false;
 			for (const m of muts) {
 				let t = m.target;
@@ -9505,6 +9465,7 @@ window.__ModuleLoader__.load({
 			mpInstallClipboardBridge();
 			const disposeImePrejudge = setupImePrejudge();   /* 修复 65 */
 			mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+			mpStatsObserver.observe(document.body, { attributes: true, subtree: true, attributeFilter: ["aria-label"] });
 			// 启动爆发：apply() 执行时 React 尚未挂载，而 observer 有 300ms 节流，
 			// 导致顶栏会话标题出现偏慢。前 ~1.2s 内主动补 10 轮（120ms 间隔），
 			// 之后完全交给 observer 常态驱动，不增加稳态开销。
@@ -9574,6 +9535,7 @@ window.__ModuleLoader__.load({
 
 			return () => {
 				mo.disconnect();
+				mpStatsObserver.disconnect();
 				document.removeEventListener("click", onNewSessionClick, true);
 				document.removeEventListener("click", onSessionRowClick, true);
 				disposePressFeedback();

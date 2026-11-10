@@ -7,7 +7,7 @@
 
 | 改了什么 | 必须改 |
 |---|---|
-| `mobile-ui.zip` 内容 | `EngineConstants.MOBILE_UI_VERSION`（现 `1.0.0-127`）**且**重跑 `tools/build-webview-compat.mjs`（Linux）/ `.ps1`（Windows）并 bump `--compat-version` / `-CompatVersion`（现 `58`，见 ⑯）。**漏跑这一步的后果是「插件整份被旧降级产物覆盖」**：设备上 `已安装移动端 UI 插件 1.0.0-114` 照打，页面跑的却是上一版 |
+| `mobile-ui.zip` 内容 | `EngineConstants.MOBILE_UI_VERSION`（现 `1.0.0-128`）**且**重跑 `tools/build-webview-compat.mjs`（Linux）/ `.ps1`（Windows）并 bump `--compat-version` / `-CompatVersion`（现 `59`，见 ⑯）。**漏跑这一步的后果是「插件整份被旧降级产物覆盖」**：设备上 `已安装移动端 UI 插件 1.0.0-114` 照打，页面跑的却是上一版 |
 | `dsh-bridge/content.js` 内容 | `app/src/gecko/assets/dsh-bridge/manifest.json` 的 `version`（现 `1.0.15`），否则 GeckoView 继续用旧扩展（见 ⑦.7） |
 | `node-runtime.bin` 内容 | `TermuxBootstrap.NODE_VERSION`（`26.4.0-2`） |
 | `engine.bin` 内容 | `MainActivity.assetStamp`（`0.2.2-rc.1-1`） |
