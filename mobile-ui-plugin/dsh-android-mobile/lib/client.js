@@ -514,6 +514,67 @@ window.__ModuleLoader__.load({
   display: none !important;
 }
 
+/* ══ 底栏用量行的宽度兜底 ═══════════════════════════════════════════
+   官方 .uV2eYG_dock 是 flex 容器，且 min-width 为默认的 auto ——
+   在 flex 布局里这等于「我不肯收缩到内容宽度以下」。所以三组内容一旦
+   超过可用宽度，dock 自己就撑破父级，把整页的 scrollWidth 撑大，
+   表现为「界面能左右拖、左边被切掉一截」。
+
+   JS 那边已经把文案缩写了（见 mpCompactStats），这里是**第二道保险**：
+   万一 React 又把原文写回来、而 JS 还没来得及处理的极短窗口里，
+   也不允许它撑破布局。只加 min-width: 0（允许收缩）和 overflow: hidden
+   （超出的部分裁掉，不参与父级宽度计算），不改字号/内距/布局方式。 */
+[data-mobile] .uV2eYG_dock {
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+[data-mobile] .uV2eYG_dock > * {
+  min-width: 0 !important;
+}
+
+/* ══ 消息正文/思考正文的横向溢出防护 ══════════════════════════════════
+   症状：整个消息列表向左偏出屏幕，左侧文字被切一半，右侧留一片空白，
+   而且页面能被**横向拖动**。退出会话重新进来就恢复正常。
+
+   根因：. _text_1rdzk_17 是官方 AssistantMarkdown 的通用文本类，正文与
+   思考正文都用它，官方给的是 white-space: nowrap（不换行）。真机实测
+   过程面板里有一条文本宽 **411px**，而视口只有 360px，把滚动容器的
+   scrollWidth 撑大；浏览器为显示光标位置把 scrollLeft 自动设成非 0，
+   于是整页看起来左移。实测数据（CDP 读真实 DOM）：
+     · 一条 _text_1rdzk_17 的 getBoundingClientRect().width = 411
+     · 官方 . _root_1rdzk_1 的 width 是 max-content，在 flex 里按
+       内容原始宽度撑开，不会服从父级的 100% 约束
+
+   修法：两处一起改，缺一个都不行 ——
+     ① 文本恢复换行（normal + overflow-wrap: anywhere 兜住没有空格的长串）
+     ② 根容器 width: auto + max-width: 100%，让它服从父级宽度
+
+   ⚠️ **必须排除过程面板的单行摘要**（.lcKema_summary / .lcKema_summaryText）：
+     那两处官方设计就是 nowrap 单行 + 省略号，父行 .lcKema_row 高度固定
+     25px 且 overflow: hidden。若一并改成 normal，摘要会换行到 3~4 行
+     （实测 20px 行高 × 4 = 80px），被父行裁掉后屏幕上只剩
+     「两行被截断的半个文字」。实测对照：改前 summary h=80、内层 ws=normal；
+     改后 h=20、单行省略号、父行不再裁切。
+   ⚠️ 判据用 [class*="summary"] 而不是完整哈希类名：CSS Modules 生成的
+     类名是 <hash>_<源码变量名>，后缀段来自源码变量名，比哈希前缀稳定。
+   ⚠️ 这两个都是官方构建期哈希类名，官方升级可能变；失效后果只是
+     「又能横向拖动」，不影响功能。 */
+[data-mobile] [class*="_root_1rdzk"] {
+  width: auto !important;
+  max-width: 100% !important;
+}
+[data-mobile] [class*="_text_1rdzk"] {
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+}
+[data-mobile] [class*="summary"] [class*="_text_1rdzk"],
+[data-mobile] [class*="summaryText"] [class*="_text_1rdzk"] {
+  white-space: nowrap !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
 /* ══ 修复 71：整页能横向滚 114px，点一下「更多操作」页面就左偏 ══════════
    现象（真机复现，两次）：点右上角「⋯」打开菜单后，整个界面**左移 114px** ——
    标题栏按钮从 x=294 跑到 x=180，输入框、发送键、遥测栏一起跟着跑。
@@ -1060,28 +1121,43 @@ window.__ModuleLoader__.load({
 			if (!mpIsMobile()) return;
 			const dock = document.querySelector(".uV2eYG_dock");
 			if (!dock) return;
-			const act = dock.querySelector('[data-composer-stat="activity"] .bOPqQW_label');
-			if (act) {
-				const k = act.childNodes;
-				if (k.length === 3 && k[2] && k[2].nodeType === 3 && k[2].nodeValue) {
+			// ⚠️ 这里**按最终文本判断，不依赖子节点结构**。
+			//   官方 label 正常是 [文本][分隔符 span][文本] 三段，但 React 在某些
+			//   重渲染路径下会把它们拍平成单个文本节点（实测：textContent 覆盖后
+			//   childNodes.length 从 3 变成 1）。早期版本要求 length===3 才处理，
+			//   一旦被拍平就永久失效、文案再也缩不回来 —— 正是用户看到的
+			//   「隔一会儿又变回原文、变宽」。现在只认文本内容，两种形态都能处理。
+			const trim = (label, rules) => {
+				if (!label) return;
+				const before = label.textContent || "";
+				let after = before;
+				for (const [re, to] of rules) after = after.replace(re, to);
+				if (after === before) return;
+				// 结构完整（三段）时优先改文本节点，保住 React 的 fiber 对应关系；
+				// 已被拍平（单节点）时就整体写回，反正没有结构可保。
+				const k = label.childNodes;
+				if (k.length === 3 && k[2] && k[2].nodeType === 3) {
 					k[2].nodeValue = "";
 					if (k[1] && k[1].nodeType === 1) k[1].style.display = "none";
-				}
-			}
-			const use = dock.querySelector('[data-composer-stat="usage"] .bOPqQW_label');
-			if (use) {
-				const k = use.childNodes;
-				if (k.length === 3) {
 					if (k[0] && k[0].nodeType === 3) {
-						const head = k[0].nodeValue || "";
-						if (/\s*tok\s*$/.test(head)) k[0].nodeValue = head.replace(/\s*tok\s*$/, "");
+						const head = after.replace(/\s*·\s*$/, "").replace(/\s+$/, "");
+						if (head) k[0].nodeValue = head;
 					}
-					if (k[2] && k[2].nodeType === 3) {
-						const tail = k[2].nodeValue || "";
-						if (/^缓存命中/.test(tail)) k[2].nodeValue = tail.replace(/^缓存命中/, "缓存");
-					}
+				} else {
+					label.textContent = after.replace(/\s*·\s*$/, "");
 				}
-			}
+			};
+			// activity：删掉「·2194 tok/s」这段实时速度（每秒都在跳，信息半衰期最短；
+			//   点开药丸的弹层里仍完整）。只保留「N 轮 M 步」。
+			trim(dock.querySelector('[data-composer-stat="activity"] .bOPqQW_label'), [
+				[/\s*[·•]\s*[\d.,]+\s*tok\/s\s*$/i, ""],
+			]);
+			// usage：「219K tok·缓存命中 70%」→「219K·缓存 70%」
+			//   tok 由左侧图标表达，缓存命中缩成缓存。
+			trim(dock.querySelector('[data-composer-stat="usage"] .bOPqQW_label'), [
+				[/\s+tok(?=\s*[·•])/i, ""],
+				[/缓存命中/g, "缓存"],
+			]);
 		}
 
 		// ── 6. 侧栏点「新会话」或「会话条」后自动收回抽屉 ──
@@ -3429,6 +3505,15 @@ window.__ModuleLoader__.load({
 			// StatsLine 相关改动 → 立即（微任务）归一化，消除闪烁
 			// ⚠️ characterData 变更的 target 是**文本节点**（nodeType 3），
 			//    必须取 parentElement 再判断，否则漏掉 React 只改文本的情况。
+			//
+			// ⚠️ 底栏必须**同步**处理，不能等下面那个 300ms 节流：
+			//   官方底栏的 tok/s 是流式输出时每秒刷新多次的实时值，React 每刷新
+			//   一次就把我们缩写过的文案写回原文；文案一宽，底栏三组就超出
+			//   326px 可用宽度。用户实测看到的正是「隔一会儿又变回原文、变宽、
+			//   整页能左右拖」——因为 300ms 节流窗口里原文是可见的。
+			//   这里放在节流**之前**同步跑，改文本不触发回流（只改 nodeValue），
+			//   开销可以忽略；且写回后条件不再成立，下一轮自然早退，不会自激。
+			let dockTouched = false;
 			for (const m of muts) {
 				let t = m.target;
 				if (!t) continue;
@@ -3438,9 +3523,27 @@ window.__ModuleLoader__.load({
 					// 修复 35b：切行/重渲染时面板文本原地更新 → 同步回填（幂等，早退收敛）
 					scheduleTraceTiming();
 				}
-				// 底栏用量：React 改数字后立刻缩写（微任务早于绘制，不闪原文）
-				if (t && t.closest && t.closest(".uV2eYG_dock")) mpCompactStats();
+				if (!dockTouched && t && t.closest && t.closest(".uV2eYG_dock")) dockTouched = true;
 			}
+			// ⚠️ 还要覆盖 React **重建节点**的情况：那时 mutation 的 target 可能
+			//   是 dock 的某个祖先（childList 加进新子树），closest 判定落在
+			//   dock 之外就漏了。所以再加一条「新增节点是否落在 dock 内」的判定。
+			if (!dockTouched) {
+				for (const m of muts) {
+					const added = m.addedNodes;
+					if (!added || !added.length) continue;
+					for (let i = 0; i < added.length; i++) {
+						const n = added[i];
+						if (n.nodeType !== 1) continue;
+						if ((n.closest && n.closest(".uV2eYG_dock")) || n.querySelector && n.querySelector(".uV2eYG_dock")) {
+							dockTouched = true;
+							break;
+						}
+					}
+					if (dockTouched) break;
+				}
+			}
+			if (dockTouched) mpCompactStats();
 			if (moTimer) return;
 			moTimer = setTimeout(() => {
 				moTimer = 0;
