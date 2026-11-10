@@ -636,6 +636,18 @@ class MainActivity : AppCompatActivity() {
         }, RENDERER_RELOAD_DELAY_MS)
     }
 
+    /** 页面菜单与 UI 探针共用入口；只在主线程操作存活的内核。 */
+    private fun requestSafeReload(): Boolean {
+        if (isFinishing || isDestroyed || !::web.isInitialized) return false
+        if (rendererGaveUp) {
+            Toast.makeText(this, "界面此前反复出错，已停止自动恢复。请重开 App。", Toast.LENGTH_LONG).show()
+            return false
+        }
+        if (web.currentUrl.isNullOrEmpty()) return false
+        reloadWithRetry(attempt = 1)
+        return true
+    }
+
     /**
      * 重载界面，失败就再试一次。
      *
@@ -1136,53 +1148,52 @@ class MainActivity : AppCompatActivity() {
      * 而系统同一时刻只处理一个权限对话框 —— 并发 `launch` 会丢掉后一个。
      * 所以统一排队，串行发起。
      */
-    private val permissionSinks = ArrayDeque<(Boolean) -> Unit>()
-
-    /** 当前正在申请的权限名；`null` 表示没有请求在飞。 */
-    private var permissionInFlight: String? = null
+    private class PermissionBatch(val permission: String) {
+        val sinks = mutableListOf<(Boolean) -> Unit>()
+    }
+    private val permissionSinks = ArrayDeque<PermissionBatch>()
+    private var permissionInFlight: PermissionBatch? = null
+    private var deliveringPermissionResult = false
 
     private val runtimePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        Log.i(DshApplication.TAG, "运行时权限结果 $permissionInFlight: $granted")
-        permissionInFlight = null
-        // 本次请求的所有等待者拿同一个结论（它们问的是同一个权限）
-        while (permissionSinks.isNotEmpty()) permissionSinks.removeFirst().invoke(granted)
-        drainPermissionQueue()
+        Log.i(DshApplication.TAG, "运行时权限结果 ${permissionInFlight?.permission}: $granted")
+        finishPermissionBatch(granted)
     }
 
-    /**
-     * 发一个排队的权限请求出去（幂等：已有请求在飞就返回）。
-     *
-     * 必须串行：launcher 同一时刻只允许一次请求，并发 `launch` 会抛
-     * `IllegalStateException`，或者干脆静默丢掉后一个。
-     */
+    /** 先摘除整批，再通知；回调重入只能进入下一批。 */
+    private fun finishPermissionBatch(granted: Boolean) {
+        val batch = permissionInFlight ?: return
+        permissionInFlight = null
+        deliveringPermissionResult = true
+        try {
+            batch.sinks.forEach { sink ->
+                runCatching { sink(granted) }.onFailure {
+                    Log.w(DshApplication.TAG, "权限结果回调失败 ${batch.permission}", it)
+                }
+            }
+        } finally {
+            deliveringPermissionResult = false
+            drainPermissionQueue()
+        }
+    }
+
+    /** launcher 同时只处理一个权限；已授权与发起失败也只结算当前批。 */
     private fun drainPermissionQueue() {
-        if (permissionInFlight != null) return
-        if (permissionSinks.isEmpty()) return
-        val pending = pendingPermissionName ?: return
-        // 已经授过就直接回 true，不再弹框：系统此时也不会弹，但显式判一次
-        // 可以避免「用户点录音却看到一次无意义的闪框」。
-        if (checkSelfPermission(pending) == PackageManager.PERMISSION_GRANTED) {
-            Log.i(DshApplication.TAG, "权限 $pending 已就绪，直接放行")
-            while (permissionSinks.isNotEmpty()) permissionSinks.removeFirst().invoke(true)
+        if (permissionInFlight != null || deliveringPermissionResult || permissionSinks.isEmpty()) return
+        val batch = permissionSinks.removeFirst()
+        permissionInFlight = batch
+        if (checkSelfPermission(batch.permission) == PackageManager.PERMISSION_GRANTED) {
+            finishPermissionBatch(true)
             return
         }
-        permissionInFlight = pending
-        Log.i(DshApplication.TAG, "申请运行时权限 $pending")
-        runCatching {
-            runtimePermissionLauncher.launch(pending)
-        }.onFailure {
-            // launcher 起不来（极罕见：Activity 已销毁）时必须回调 false，
-            // 否则内核那个授权请求永远挂着，页面按钮点了毫无反应。
-            Log.w(DshApplication.TAG, "发起权限申请失败 $pending", it)
-            permissionInFlight = null
-            while (permissionSinks.isNotEmpty()) permissionSinks.removeFirst().invoke(false)
+        Log.i(DshApplication.TAG, "申请运行时权限 ${batch.permission}")
+        runCatching { runtimePermissionLauncher.launch(batch.permission) }.onFailure {
+            Log.w(DshApplication.TAG, "发起权限申请失败 ${batch.permission}", it)
+            finishPermissionBatch(false)
         }
     }
-
-    /** 队列头部等待申请的权限名（与 [permissionSinks] 一一对应）。 */
-    private var pendingPermissionName: String? = null
 
     /**
      * 内核在问「页面能不能用某项能力」—— 走这条通道（见 [CapabilityChannel]）。
@@ -1195,8 +1206,11 @@ class MainActivity : AppCompatActivity() {
             overlayHandler.post { requestRuntimePermission(permission, onResult) }
             return
         }
-        if (permissionSinks.isEmpty()) pendingPermissionName = permission
-        permissionSinks.addLast(onResult)
+        if (isFinishing || isDestroyed) { onResult(false); return }
+        val batch = permissionInFlight?.takeIf { it.permission == permission }
+            ?: permissionSinks.firstOrNull { it.permission == permission }
+            ?: PermissionBatch(permission).also { permissionSinks.addLast(it) }
+        batch.sinks.add(onResult)
         drainPermissionQueue()
     }
 
@@ -2393,7 +2407,7 @@ class MainActivity : AppCompatActivity() {
      *   通知交给 `EngineService.updateStatus()`（内部只走 NotificationManager），
      *   底色则 `runOnUiThread` 切回主线程再设。gecko 版由 [WebHost] 统一切主线程。
      */
-    private inner class StatusBridge : PageBridge {
+    private inner class StatusBridge : PageBridge, com.dsh.android.web.AnnotationSource {
         override fun onStatus(json: String) {
             val status = EngineStatus.parse(json) ?: return
             EngineService.updateStatus(this@MainActivity, status)
@@ -2517,42 +2531,7 @@ class MainActivity : AppCompatActivity() {
          */
         override fun reloadWebUi() {
             Log.i(DshApplication.TAG, "页面菜单请求刷新界面（安全重载）")
-            runOnUiThread {
-                // ⚠️ **三个前置检查都不能省**，否则这条桥方法会变成崩溃源：
-                //
-                // ① Activity 已销毁 / 正在销毁：`onDestroy` 里调了 `web.destroy()`
-                //    （见那里的注释），而 [reloadWithRetry] 第一句就读
-                //    `web.currentUrl` —— 对已 destroy 的 WebView 取 URL 会抛
-                //    IllegalStateException（"WebView.destroy() called but WebView
-                //    was used afterwards"），而这里在 UI 线程上、又在一个
-                //    @JavascriptInterface 里，异常会直接冒成崩溃。
-                //    页面在后台被系统回收时真的会走到这条路径。
-                // ② 还没初始化 Web 内核（引擎就绪前）：`::web.isInitialized` 为 false，
-                //    直接读 `web` 抛 UninitializedPropertyAccessException。
-                // ③ 已放弃自动恢复：重载没有意义，且会顶掉给用户的提示。
-                if (isFinishing || isDestroyed) {
-                    Log.i(DshApplication.TAG, "Activity 已销毁，忽略刷新请求")
-                    return@runOnUiThread
-                }
-                if (!::web.isInitialized) {
-                    Log.i(DshApplication.TAG, "Web 内核尚未初始化，忽略刷新请求")
-                    return@runOnUiThread
-                }
-                if (rendererGaveUp) {
-                    // ⚠️ **不能静默 return。** 用户点了「刷新界面」，如果什么都不发生，
-                    //   他只会以为这个菜单坏了、然后反复点，或者下拉/手势刷新 ——
-                    //   而后者会丢登录态（那正是加 [reloadWebUi] 的理由）。
-                    //   这里必须把「为什么不能刷 + 该怎么做」直接讲出来。
-                    Log.i(DshApplication.TAG, "已停止自动恢复，忽略本次刷新请求")
-                    Toast.makeText(
-                        this@MainActivity,
-                        "界面此前反复出错，已停止自动恢复。请重开 App。",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    return@runOnUiThread
-                }
-                reloadWithRetry(attempt = 1)
-            }
+            runOnUiThread { requestSafeReload() }
         }
 
         // ══ 悬浮气泡：设置页的三个接口 ══════════════════════════════════
@@ -2896,6 +2875,21 @@ class MainActivity : AppCompatActivity() {
                     else android.widget.Toast.LENGTH_LONG,
                 ).show()
             }
+        }
+
+        override fun peekAnnotation(): String {
+            val pending = pendingAnnotate ?: return ""
+            return runCatching {
+                org.json.JSONObject().apply {
+                    put("annotationId", pending.first.name)
+                    put("png", android.util.Base64.encodeToString(pending.first.readBytes(), android.util.Base64.NO_WRAP))
+                    put("text", pending.second)
+                }.toString()
+            }.getOrDefault("")
+        }
+
+        override fun acknowledgeAnnotation(annotationId: String) {
+            if (pendingAnnotate?.first?.name == annotationId) pendingAnnotate = null
         }
 
         override fun aiAnnotateResult(): String {
@@ -4775,21 +4769,18 @@ class MainActivity : AppCompatActivity() {
      *   存一份 `View` 引用会让坐标算在一具"尸体"上 —— 而那种错误的表现是
      *   「AI 点了，但点到了别的地方」，比直接失败难查得多。所以传取值函数。
      *
-     * ⚠️ [UiProbeBridge.start] 是幂等的（内部只启一次轮询），所以 Activity
-     *   重建时重复调用是安全的，且正好把 provider 换成新实例。
+     * [UiProbeBridge.attach] 替换宿主代际；销毁时按 owner 解除，旧 Activity 不会撤掉新宿主。
      */
     private fun installUiProbeBridge() {
-        UiProbeBridge.start(
+        UiProbeBridge.attach(
+            owner = this,
             dshHome = engine.dshHomeDir,
             assets = assets,
             provider = {
-                // ⚠️ 未初始化时必须返回 null 而不是抛 —— 这个方法可能在任何时刻
-                //   被后台线程调到（信箱轮询），抛异常会把那条轮询线程杀掉。
-                if (!::web.isInitialized) null else object : UiProbeBridge.UiProbeHost {
+                // provider 与宿主操作均由 UiProbeBridge 在主线程按代际调用。
+                if (isFinishing || isDestroyed || !::web.isInitialized) null else object : UiProbeBridge.UiProbeHost {
                     override fun evaluateJavascript(script: String, callback: ((String?) -> Unit)?) {
-                        // ⚠️ 必须切主线程：本方法由 `dsh-ui-cmd` 后台线程调用，
-                        //   而两个内核的 View/JS API 都要求 @UiThread。
-                        runOnUiThread { web.evaluateJavascript(script, callback) }
+                        web.evaluateJavascript(script, callback)
                     }
 
                     override fun screenGeometry(): UiProbeBridge.ScreenGeometry? {
@@ -4811,9 +4802,7 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
 
-                    override fun reload() {
-                        runOnUiThread { engine.resetUiStage(); web.reload() }
-                    }
+                    override fun reload(): Boolean = requestSafeReload()
                 }
             },
         )
@@ -4959,6 +4948,7 @@ class MainActivity : AppCompatActivity() {
         // ⚠️ 先撤掉系统栏配色的窗口宿主引用：留着它，AI 后续下发配置会对着
         //   一个已销毁的 Activity 调 setStatusBarColor（静默无效）。
         SystemBarAppearance.detach(this)
+        UiProbeBridge.detach(this)
         // ⚠️ 闪烁的帧是 postDelayed 排的，不清会在 Activity 销毁后继续打窗口属性
         //   （那些帧还持有旧 window，轻则无效、重则抛异常）。
         flashHandler.removeCallbacks(flashRunnable)

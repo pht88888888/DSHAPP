@@ -3,7 +3,15 @@
 > 本文是 [AGENTS.md](../../AGENTS.md) 的分册之一，
 索引见 [docs/agents/README.md](README.md)。
 
-## 资产版本戳（改了资产必须同步改代码常量）
+## 插件资产使用内容摘要
+
+APK 插件由 [组件清单](../../tools/plugin-components.json) 与统一构建器生成。Gradle 预构建先校验全部 zip 与 manifest，再安装资产；运行时以 manifest 摘要判定出厂内容，不再以手工 `*_VERSION` 戳作为插件升级依据。市场版本与用户禁用/卸载状态优先。具体命令与更新语义见 [内置插件与市场更新](plugin-updates.md)。
+
+引擎兼容资产使用 Chrome 73，戳包含引擎、polyfill、目标与工具版本摘要，manifest 记录逐文件摘要；仅覆盖官方 dist/engine。Android 插件客户端由组件构建器独立降级，不再写入 compat 的 mobileui 树。
+
+## 历史版本戳与其它二进制资产
+
+下表保留旧版安装路径排障资料。组件清单已覆盖的插件 zip 以新摘要规则为准；Node、engine、pnpm、扩展等非组件资产仍沿下表规则。
 
 | 改了什么 | 必须改 |
 |---|---|

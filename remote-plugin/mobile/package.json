@@ -36,7 +36,7 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "node test/smoke.mjs && node test/sidebar.mjs && node test/sync.mjs && node test/splice.mjs",
+    "test": "node test/smoke.mjs && node test/sidebar.mjs && node test/sync.mjs && node test/splice.mjs && node test/ownership.mjs",
     "smoke": "node test/smoke.mjs"
   },
   "devDependencies": {

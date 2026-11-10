@@ -15,7 +15,8 @@
 | [sandbox.md](sandbox.md) | ④ Android 没有内核级沙箱后端 | 自带 boo-sandbox-run runner 保住写边界 |
 | [ripgrep.md](ripgrep.md) | ⑤ @vscode/ripgrep 没有 android 包 | 补一个静态 rg 二进制 |
 | [pnpm.md](pnpm.md) | ⑥ Termux 里没有 pnpm | 装 pnpm 11 纯 JS 版；为什么不能用 12；core-memory 是例外 |
-| [asset-stamps.md](asset-stamps.md) | 资产版本戳 | 改了哪个资产必须同步改哪个代码常量，以及手工重打 zip 的判据 |
+| [asset-stamps.md](asset-stamps.md) | 资产版本规则 | 插件内容摘要、兼容产物与其它运行时二进制的版本戳 |
+| [plugin-updates.md](plugin-updates.md) | 内置插件与更新 | 出厂离线可用、标准 bundle、市场直接更新、状态归属与统一构建 |
 | [webview-basics.md](webview-basics.md) | ⑦ 文件选择器 / ⑦.5 下载器 | WebView 默认实现静默失败，必须自己接 |
 | [webview-gecko.md](webview-gecko.md) | ⑦.7 内置 Web 内核版（gecko flavor） | GeckoView API 差异、桥、注释陷阱 |
 | [sharp.md](sharp.md) | ⑧ sharp 没有 android 预编译二进制 | 装 wasm32 变体 |

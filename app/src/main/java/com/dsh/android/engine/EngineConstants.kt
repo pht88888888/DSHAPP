@@ -3,6 +3,7 @@ package com.dsh.android.engine.constants
 import android.content.Context
 import java.nio.file.attribute.PosixFilePermission
 import java.util.EnumSet
+import com.dsh.android.engine.BuiltinPluginSpec
 
 /**
  * 引擎常量与无状态配置数据。
@@ -219,12 +220,10 @@ const val WEBVIEW_COMPAT_STAMP_ENTRY = ".compat-stamp"
         /**
          * 降级 zip 的条目树前缀 —— 决定每个条目解到哪棵树上（见 [ensureWebViewCompat]）。
          *
-         * ⚠️ 这三个字符串必须与 `tools/build-webview-compat.ps1` 里写死的一致：
-         *    对不上时条目会被当「前缀无法识别」丢掉，症状是降级**静默不生效**。
+         * 两个前缀必须与构建工具一致；插件使用组件构建的降级产物，禁止由兼容大包覆盖。
          */
 const val COMPAT_PREFIX_DIST = "dist"
 const val COMPAT_PREFIX_ENGINE = "engine"
-const val COMPAT_PREFIX_MOBILEUI = "mobileui"
 
         /** 自编译的 android-arm64 原生插件（官方无此变体）。 */
 const val ADDON_ASSET = "node-addon-android-arm64.zip"
@@ -571,6 +570,29 @@ const val MOBILE_UI_PATCH = "mobile-ui.patch.yml"
          * 失败 → 客户端半不编入 → 界面静默退回桌面布局。详见 ensureMobileUi()。
          */
 const val MOBILE_UI_DIR = "mobile-ui"
+const val MOBILE_SETTINGS_ASSET = "mobile-settings.zip"
+const val HOST_BRIDGE_ASSET = "host-bridge.zip"
+const val BALANCE_ASSET = "balance.zip"
+
+/** 出厂 bundle 白名单；id 同资产 manifest 与 dsh.android.builtinId。 */
+internal val BUILTIN_PLUGIN_BUNDLES = listOf(
+    BuiltinPluginSpec("mobile-ui", MOBILE_UI_PACKAGE, MOBILE_UI_ASSET, MOBILE_UI_DIR, MOBILE_UI_PATCH),
+    BuiltinPluginSpec("mobile-settings", "dsh-android-mobile-settings", MOBILE_SETTINGS_ASSET),
+    BuiltinPluginSpec("host-bridge", "dsh-android-host-bridge", HOST_BRIDGE_ASSET),
+    BuiltinPluginSpec("balance", "dsh-android-balance", BALANCE_ASSET),
+    BuiltinPluginSpec("browser-pane", BROWSER_PANE_PACKAGE, BROWSER_PANE_ASSET, BROWSER_PANE_DIR, BROWSER_PANE_PATCH),
+    BuiltinPluginSpec("market", MARKET_PACKAGE, MARKET_ASSET, MARKET_DIR, MARKET_PATCH),
+    BuiltinPluginSpec("core-memory", CORE_MEMORY_PACKAGE, CORE_MEMORY_ASSET, CORE_MEMORY_LEGACY_DIR, CORE_MEMORY_PATCH, CORE_MEMORY_MARKER),
+    BuiltinPluginSpec("preset-razor", PRESET_RAZOR_PACKAGE, PRESET_RAZOR_ASSET, PRESET_RAZOR_LEGACY_DIR, PRESET_RAZOR_PATCH, PRESET_RAZOR_MARKER, entryId = "preset-razor"),
+    BuiltinPluginSpec("shell-tool", SHELL_TOOL_PACKAGE, SHELL_TOOL_ASSET, SHELL_TOOL_DIR, SHELL_TOOL_PATCH),
+    BuiltinPluginSpec("root-tool", ROOT_TOOL_PACKAGE, ROOT_TOOL_ASSET, ROOT_TOOL_DIR, ROOT_TOOL_PATCH),
+    BuiltinPluginSpec("bubble-tool", BUBBLE_TOOL_PACKAGE, BUBBLE_TOOL_ASSET, BUBBLE_TOOL_DIR, BUBBLE_TOOL_PATCH),
+    BuiltinPluginSpec("statusbar-tool", STATUSBAR_TOOL_PACKAGE, STATUSBAR_TOOL_ASSET, STATUSBAR_TOOL_DIR, STATUSBAR_TOOL_PATCH),
+    BuiltinPluginSpec("uiagent-tool", UI_TOOL_PACKAGE, UI_TOOL_ASSET, UI_TOOL_DIR, UI_TOOL_PATCH, preferenceId = "ui-tool"),
+    BuiltinPluginSpec("browser-tool", BROWSER_TOOL_PACKAGE, BROWSER_TOOL_ASSET, BROWSER_TOOL_DIR, BROWSER_TOOL_PATCH),
+    BuiltinPluginSpec("logs-tool", LOGS_TOOL_PACKAGE, LOGS_TOOL_ASSET, LOGS_TOOL_DIR, LOGS_TOOL_PATCH),
+    BuiltinPluginSpec("pet-bridge", PET_BRIDGE_PACKAGE, PET_BRIDGE_ASSET, PET_BRIDGE_DIR, PET_BRIDGE_PATCH),
+)
 
         /** Agnes 多模态插件（dsh-agnes-multimodal）：资产名、包名、overlay 文件名。 */
 const val AGNES_MM_ASSET = "agnes-multimodal.zip"

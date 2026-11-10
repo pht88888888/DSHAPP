@@ -1,6 +1,6 @@
 {
   "name": "dsh-android-mobile",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "DSH Android 客户端的移动端 UI 适配：窄屏抽屉侧栏、底部弹层、手机顶栏与安全区、消息操作精简、设置页两级化等。",
   "type": "module",
   "main": "./lib/index.js",
@@ -17,8 +17,17 @@
     "client": {
       "inject": [],
       "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "android": {
+      "builtinId": "mobile-ui"
     }
   },
   "license": "MIT",
-  "private": true
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ]
 }

@@ -3,7 +3,15 @@
 > 本文是 [AGENTS.md](../../AGENTS.md) 的分册之一，
 索引见 [docs/agents/README.md](README.md)。
 
-## 移动端 UI 插件
+## 当前职责与构建
+
+基础布局位于 `dsh-android-mobile`，设置、宿主状态连接、余额分别由 `dsh-android-mobile-settings`、`dsh-android-host-bridge`、`dsh-android-balance` 负责。布局不等待账户服务；各功能独立注册并释放资源，特权 HTTP 路由归设置宿主。
+
+插件统一从组件清单生成 zip 与摘要 manifest，客户端目标为 Chrome 73，随 APK 出厂并通过市场直接更新。不要手工压缩或重跑旧 mobileui 覆盖流程，命令和状态归属见 [内置插件与市场更新](plugin-updates.md)。
+
+## 历史 overlay 路径与既有布局约束
+
+以下保留旧版驱逐问题和布局适配的排障依据；其中手工打包、file overlay 与旧安装路径已由标准 bundle 迁移替代。
 
 源码在 `mobile-ui-plugin/dsh-android-mobile/`，打包成 `assets/mobile-ui.zip`。
 `EngineManager.ensureMobileUi()` 解包到 `$DSH_HOME/mobile-ui/dsh-android-mobile/`，

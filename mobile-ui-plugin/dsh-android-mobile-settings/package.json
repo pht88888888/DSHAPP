@@ -1,0 +1,33 @@
+{
+  "name": "dsh-android-mobile-settings",
+  "version": "1.1.0",
+  "description": "Android 业务设置：特权、悬浮球、日志诊断与交流群",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "android": {
+      "builtinId": "mobile-settings"
+    }
+  },
+  "license": "MIT",
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ]
+}

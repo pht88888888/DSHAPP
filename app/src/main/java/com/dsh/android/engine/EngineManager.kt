@@ -12,7 +12,7 @@ package com.dsh.android.engine
  *
  *  按你要做的事找入口，不要从头读：
  *
- *    装一个组件          ensureXxx()          如 ensureMobileUi / ensureNodePty
+ *    装一个组件          ensureXxx()          如 BuiltinPluginBundles / ensureNodePty
  *    起停引擎            start() / stop()
  *    判断是否健康        checkHealth()
  *    启动即崩的自愈      isolateBadBundles()   L1 自动隔离（基线 + 二分）
@@ -336,7 +336,7 @@ class EngineManager private constructor(private val context: Context) {
     /**
      * 本次引擎启动时，uid 2000（`shell`）通道是否**真的挂上了**。
      *
-     * 与 [rootToolMounted] 同构：`shell` 工具同样走 `--patch`，同样是启动时定死。
+     * 与 [rootToolMounted] 同构：`shell` 工具由 profile bundle 的启用状态决定。
      * 区别在于它的挂载判据用的是产物文件是否存在（见 [writePrivilegedPatch]），
      * 而 root 用的是端到端探测结果。
      */
@@ -769,214 +769,86 @@ class EngineManager private constructor(private val context: Context) {
         }
     }
 
-    /**
-     * 把前端 bundle 换成按旧内核降级编译的版本（幂等）。
-     *
-     * **为什么 polyfill 不够**：[ensureWebCompat] 那种运行时垫片只能补**缺失的 API**，
-     * 而官方前端还用了**新语法** —— 最典型的是 class static block（`static { ... }`，
-     * Chromium 94+）。语法缺口发生在**解析阶段**，整份 chunk 一行都不执行，
-     * 垫片根本没机会跑。表现是 HTML/CSS 都正常、`#root` 永远为空，
-     * 页面侧连个错误都报不出来。
-     *
-     * 真机实测（用户反馈的 vivo Y52s / Android 10，**WebView 内核 83**）：
-     *   index  : class static block ×2（需 94）、逻辑赋值 ??= ×25（需 85）
-     *   vendor : private method ×3（需 84）、逻辑赋值 ×7（需 85）
-     *   CSS    : inset ×18（需 87）
-     *
-     * **降级范围是「三棵树」，不是只有 dist**（v2 起）。前端分两部分下发，
-     * 各自独立编译，只降 dist 会漏掉全部插件：
-     *
-     * | zip 条目前缀 | 落到哪 | 为什么 |
-     * |---|---|---|
-     * | `dist/`     | `engine/…/dsh-web-frontend/dist/` | 官方 shell |
-     * | `engine/`   | `engine/node_modules/@deepseek-ai/` | 71 个插件的 client bundle |
-     * | `mobileui/` | `$DSH_HOME/mobile-ui/dsh-android-mobile/` | App 自己注入的插件 |
-     *
-     * ⚠️ **这是线上真实踩到的坑**（用户反馈 `groups.toSorted is not a function`，
-     *    模型选择器整块打不开；同一类缺口的 `dsh-client-ui-settings-models`
-     *    则让「模型」设置页**完全空白**）。v1 只降了 dist，实测 71 个插件 bundle 里
-     *    有 68 个在 chrome74 下有语法缺口 —— 覆盖率不到 5%。
-     *
-     * ⚠️ **`mobileui/` 必须晚于 [ensureMobileUi] 执行**：[ensureMobileUi] 里
-     *    版本戳不一致时会 `target.deleteRecursively()` 整个重解包，**会把降级产物抹掉**。
-     *    所以在 [start] 里的调用顺序是 `ensureMobileUi()` → `ensureWebViewCompat()`
-     *    （而 `dist`/`engine` 两棵树没有这个问题，谁先谁后都行）。
-     *
-     * ⚠️ 幂等靠 `dist/.webview-compat-stamp` 与 zip 内 `.compat-stamp` 比对。
-     *    **戳文件写在 dist 里而不是别处**：引擎升级会重新解包 dist，戳跟着一起没，
-     *    于是自动重打 —— 正是想要的。文件名带内容 hash（`index-5SrrfWpU.js`），
-     *    引擎升级后旧资产必然对不上，必须重跑脚本重新生成。
-     *    ⚠️ 换降级范围/目标必须 bump `-CompatVersion`，否则老设备命中「戳一致 → 跳过」，
-     *    新纳入的那部分**永远不生效**（静默，最难查的那种）。
-     */
+    /** 兼容包只覆盖引擎 dist/engine；出厂和市场插件由各自构建保证语法兼容。 */
     private fun ensureWebViewCompat() {
-        // 内置内核版整个跳过：这一整套的存在理由是「设备上的系统 WebView 太旧」，
-        // 而内置内核的版本在编译期就定了（GeckoView 140），永远不可能过旧。
-        // 跑了反而有害 —— 前端会被换成按 chrome73 降级、砍掉语法糖的版本。
-        if (BuildConfig.BUILT_IN_WEB_ENGINE) {
-            Log.i(TAG, "内置 Web 内核版：不需要 WebView 降级前端，跳过")
-            return
-        }
-
+        if (BuildConfig.BUILT_IN_WEB_ENGINE) return
         val dist = File(engineDir, "node_modules/@deepseek-ai/dsh-web-frontend/dist")
-        if (!dist.isDirectory) {
-            Log.w(TAG, "引擎尚未解包，跳过 WebView 降级资产")
-            return
-        }
-
+        if (!dist.isDirectory) return
         try {
-            // ── 第一遍：**只读戳、只数前缀**，不持有任何条目内容 ──────────
-            //
-            // ⚠️ **原来是「把 zip 全部条目读进 LinkedHashMap<String, ByteArray>」
-            //   再决定要不要落盘 —— 这是个会真炸的 OOM 风险，已改掉。**
-            //
-            //   实测本资产解压后共 **32.2 MB**（234 个条目，单个最大 8.7 MB 的
-            //   client.excel.js）。旧写法等于每次启动都在堆上摊开 32 MB 字节数组，
-            //   而且**连「戳一致、什么都不用做」的那条路径也要先摊开**才判断得出来 ——
-            //   绝大多数启动都属于这一类，等于纯白付。
-            //
-            //   触发条件在真机上很现实：低内存机（2~3 GB）、Dalvik 堆上限 192~256 MB，
-            //   再叠加引擎/WebView 的常驻占用，32 MB 的瞬时分配足以 OutOfMemoryError。
-            //   而这里 catch 的是 Throwable，OOM 会被吞成一行 W，表现为
-            //   「降级没打上 → 老内核白屏」，排查方向完全跑偏。
-            //
-            //   改成两遍扫描后：跳过路径**零字节分配**；落盘路径一次只持有**单个条目**。
-            var stampInZip = ""
-            val prefixCounts = HashMap<String, Int>()
-            var totalEntries = 0
-            java.util.zip.ZipInputStream(context.assets.open(WEBVIEW_COMPAT_ASSET).buffered()).use { zis ->
-                var entry = zis.nextEntry
+            var manifest: JSONObject? = null
+            var stamp = ""
+            java.util.zip.ZipInputStream(context.assets.open(WEBVIEW_COMPAT_ASSET).buffered()).use { zip ->
+                var entry = zip.nextEntry
                 while (entry != null) {
-                    if (!entry.isDirectory) {
-                        if (entry.name == WEBVIEW_COMPAT_STAMP_ENTRY) {
-                            stampInZip = zis.readBytes().toString(Charsets.UTF_8).trim()
-                        } else {
-                            totalEntries++
-                            val p = entry.name.substringBefore('/')
-                            prefixCounts[p] = (prefixCounts[p] ?: 0) + 1
-                        }
+                    when (entry.name) {
+                        ".compat-manifest.json" -> manifest = JSONObject(zip.readBytes().toString(Charsets.UTF_8))
+                        WEBVIEW_COMPAT_STAMP_ENTRY -> stamp = zip.readBytes().toString(Charsets.UTF_8).trim()
                     }
-                    // ⚠️ closeEntry 会自行 skip 掉当前条目未读的数据，**不占内存** ——
-                    //   所以「不读内容也能前进」是成立的，不需要先读出来再丢掉。
-                    zis.closeEntry()
-                    entry = zis.nextEntry
+                    zip.closeEntry()
+                    entry = zip.nextEntry
                 }
             }
-
-            if (totalEntries == 0) {
-                Log.w(TAG, "WebView 降级资产是空的，跳过")
-                return
+            val metadata = requireNotNull(manifest) { "compat manifest 缺失" }
+            check(metadata.getInt("schemaVersion") == 1 && metadata.getString("target") == "chrome73") { "compat manifest 不兼容" }
+            check(context.assets.open(ASSET_NAME).use { sha256(it) } == metadata.getString("engineDigest")) { "compat 来源 engine.bin 不一致" }
+            check(context.assets.open(POLYFILL_FILE).use { sha256(it) } == metadata.getString("polyfillDigest")) { "compat polyfill 来源不一致" }
+            check(stamp.isNotEmpty()) { "compat stamp 缺失" }
+            val hashes = metadata.getJSONObject("files")
+            val outputs = LinkedHashMap<String, File>()
+            for (name in hashes.keys()) {
+                val root = when (name.substringBefore('/')) {
+                    COMPAT_PREFIX_DIST -> dist
+                    COMPAT_PREFIX_ENGINE -> File(engineDir, "node_modules/@deepseek-ai")
+                    else -> error("compat 禁止覆盖该前缀: $name")
+                }
+                val output = File(root, name.substringAfter('/'))
+                check(output.canonicalPath.startsWith(root.canonicalPath + File.separator)) { "compat 路径越界: $name" }
+                outputs[name] = output
             }
-
-            val engineModules = File(engineDir, "node_modules/@deepseek-ai")
-            val mobileUiRoot = File(dshHome, "$MOBILE_UI_DIR/$MOBILE_UI_PACKAGE")
-
-            // ⚠️ **两棵树各判各的戳，不能只看 dist 那一个。**
-            // [ensureMobileUi] 在版本戳不一致时会 `deleteRecursively()` 整个重解包
-            // mobile-ui 目录 —— 降级产物连同它自己的戳一起被抹掉。若这里仍按 dist 的戳
-            // 判定「已就位」就整体跳过，结果就是**新装的 mobile-ui 是没降级的原版**，
-            // 在老内核上静默退回桌面布局。两戳分开后，重解包会自动触发重降级。
-            val distUpToDate = File(dist, WEBVIEW_COMPAT_STAMP).let {
-                it.isFile && it.readText().trim() == stampInZip
-            }
-            val wantsMobile = (prefixCounts[COMPAT_PREFIX_MOBILEUI] ?: 0) > 0
-            val mobileStamp = File(mobileUiRoot, WEBVIEW_COMPAT_STAMP)
-            val mobileUpToDate = !wantsMobile ||
-                (mobileStamp.isFile && mobileStamp.readText().trim() == stampInZip)
-
-            if (distUpToDate && mobileUpToDate) {
+            val installedStamp = File(dist, WEBVIEW_COMPAT_STAMP)
+            if (installedStamp.isFile && installedStamp.readText().trim() == stamp &&
+                outputs.all { (name, file) -> file.isFile && file.inputStream().use { sha256(it) } == hashes.getString(name) }) {
                 webViewCompatApplied = true
-                // 幂等跳过也要打日志：否则「降级到底在不在」只能靠翻文件系统确认，
-                // 而真机上排查白屏时这条信息恰恰最关键（见 MainActivity 的门槛判定）。
-                Log.i(TAG, "WebView 降级前端已就位，跳过（$stampInZip）")
                 return
             }
-
-            val counts = LinkedHashMap<String, Int>()
-            var distWrote = false
-            var mobileWrote = false
-
-            // ── 第二遍：逐条流式落盘，一次只持有**一个条目** ──────────────
-            //
-            // ⚠️ 不要退回到「先把 entries 全读进 Map 再写」：见上面第一遍的说明，
-            //   那是 32 MB 的堆分配。这里每条写完立刻丢掉，峰值 ≈ 最大单条（8.7 MB）。
-            java.util.zip.ZipInputStream(context.assets.open(WEBVIEW_COMPAT_ASSET).buffered()).use { zis ->
-                var entry = zis.nextEntry
+            val written = HashSet<String>()
+            java.util.zip.ZipInputStream(context.assets.open(WEBVIEW_COMPAT_ASSET).buffered()).use { zip ->
+                var entry = zip.nextEntry
                 while (entry != null) {
-                    if (!entry.isDirectory && entry.name != WEBVIEW_COMPAT_STAMP_ENTRY) {
-                        val name = entry.name
-                        // 条目前缀决定落到哪棵树。前缀本身就是防目录穿越的第一道闸：
-                        // 认不出的前缀直接丢弃，绝不按 zip 里的路径原样拼。
-                        val prefix = name.substringBefore('/')
-                        var root: File? = null
-                        var rel = ""
-                        when (prefix) {
-                            COMPAT_PREFIX_DIST -> if (!distUpToDate) {
-                                root = dist
-                                rel = name.removePrefix("$COMPAT_PREFIX_DIST/")
-                                distWrote = true
-                            }
-                            COMPAT_PREFIX_ENGINE -> if (!distUpToDate) {
-                                root = engineModules
-                                rel = name.removePrefix("$COMPAT_PREFIX_ENGINE/")
-                                distWrote = true
-                            }
-                            COMPAT_PREFIX_MOBILEUI -> if (!mobileUpToDate) {
-                                root = mobileUiRoot
-                                rel = name.removePrefix("$COMPAT_PREFIX_MOBILEUI/")
-                                mobileWrote = true
-                            }
-                            else -> {
-                                Log.w(TAG, "跳过前缀无法识别的降级条目: $name")
-                            }
-                        }
-
-                        if (root != null) {
-                            val out = File(root, rel)
-                            when {
-                                // 防目录穿越：资产是我们自己打的，但解包路径仍按约定校验
-                                !out.canonicalPath.startsWith(root.canonicalPath + File.separator) -> {
-                                    Log.w(TAG, "跳过越界的资产条目: $name")
-                                }
-                                // mobile-ui 那棵树要等 [ensureMobileUi] 先解包出目录才能写。
-                                // 真缺了就跳过（下次启动会重试，因为戳没写），
-                                // 不要把整趟降级带崩 —— dist/engine 两棵树跟它无关，照常生效。
-                                prefix == COMPAT_PREFIX_MOBILEUI && !mobileUiRoot.isDirectory -> {
-                                    mobileWrote = false
-                                }
-                                else -> {
-                                    out.parentFile?.mkdirs()
-                                    // 流式拷贝：不把整条读成 ByteArray
-                                    out.outputStream().use { zis.copyTo(it) }
-                                    counts[prefix] = (counts[prefix] ?: 0) + 1
-                                }
-                            }
-                        }
+                    if (!entry.isDirectory && entry.name != WEBVIEW_COMPAT_STAMP_ENTRY && entry.name != ".compat-manifest.json") {
+                        val output = requireNotNull(outputs[entry.name]) { "compat 未登记条目: ${entry.name}" }
+                        check(written.add(entry.name)) { "compat 重复条目: ${entry.name}" }
+                        output.parentFile?.mkdirs()
+                        val temporary = File(output.parentFile, output.name + ".compat-tmp")
+                        try {
+                            temporary.outputStream().use { zip.copyTo(it) }
+                            check(temporary.inputStream().use { sha256(it) } == hashes.getString(entry.name)) { "compat 摘要不符: ${entry.name}" }
+                            Files.move(temporary.toPath(), output.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                        } finally { temporary.delete() }
                     }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
+                    zip.closeEntry()
+                    entry = zip.nextEntry
                 }
             }
-
-            // 戳只在对应树真的写了之后才落盘，否则会把「没写成功」记成「已完成」
-            if (distWrote || distUpToDate) {
-                File(dist, WEBVIEW_COMPAT_STAMP).writeText(stampInZip)
-            }
-            if (mobileWrote) {
-                File(mobileUiRoot, WEBVIEW_COMPAT_STAMP).writeText(stampInZip)
-            } else if (wantsMobile && !mobileUpToDate) {
-                Log.w(TAG, "移动端 UI 插件尚未就位，其降级条目顺延到下次启动")
-            }
-
+            check(written.size == outputs.size) { "compat 文件不完整: ${written.size}/${outputs.size}" }
+            installedStamp.writeText(stamp)
             webViewCompatApplied = true
-            Log.i(
-                TAG,
-                "已应用 WebView 降级前端: ${counts.entries.joinToString(", ") { "${it.key}=${it.value}" }} 个文件（$stampInZip）",
-            )
-        } catch (t: Throwable) {
-            // 打不上就维持原样：新内核本来就不需要它，旧内核也只是回到白屏
-            Log.w(TAG, "应用 WebView 降级前端失败: ${t.message}")
+            Log.i(TAG, "已应用 WebView 降级前端: ${written.size} 个文件（$stamp）")
+        } catch (error: Exception) {
+            webViewCompatApplied = false
+            Log.w(TAG, "应用 WebView 降级前端失败: ${error.message}")
         }
+    }
+
+    private fun sha256(input: java.io.InputStream): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(8192)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     /**
@@ -1304,37 +1176,23 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 找不到锚点就跳过（引擎升级后结构变了也不让启动失败，届时日志里有提示）。
      */
-    private fun patchProcessInspector() {
-        val dir = File(engineDir, "node_modules/@deepseek-ai/dsh-subprocess-local/lib")
-        if (!dir.isDirectory) {
-            Log.w(TAG, "未找到 subprocess-local，跳过进程检查器平台补丁")
-            return
-        }
-
-        // 实现体在一个带 hash 的 chunk 里（runner-launch-<hash>.js），名字随版本变，
-        // 所以按内容找而不是按文件名找。
-        // ⚠️ 必须先判「已打过补丁」再判「原文在不在」：打完之后原文就不存在了，
-        //    顺序反了会把已完成的状态误报成「未找到」。
-        val candidates = dir.listFiles { f -> f.isFile && f.name.startsWith("runner-launch-") && f.name.endsWith(".js") }
-            ?.toList().orEmpty()
-        val sources = candidates.map { it to it.readText() }
-        if (sources.any { (_, text) -> text.contains(INSPECTOR_ANDROID_ANCHOR) }) {
-            return
-        }
-        val entry = sources.firstOrNull { (_, text) -> text.contains(INSPECTOR_GUARD) }?.first
-        if (entry == null) {
-            Log.w(TAG, "未找到进程检查器的平台判断，跳过补丁")
-            return
-        }
-
-        try {
-            val source = entry.readText()
-            entry.writeText(source.replace(INSPECTOR_GUARD, INSPECTOR_ANDROID_ANCHOR))
-            Log.i(TAG, "已放行 subprocess-local 的 android 进程检查器: ${entry.name}")
-        } catch (t: Throwable) {
-            Log.w(TAG, "放行 subprocess-local 的 android 进程检查器失败: ${t.message}")
+    private fun applyEngineFilePatch(id: String) {
+        val result = EngineFilePatches.apply(engineDir, id)
+        when (result.status) {
+            EngineFilePatches.Status.APPLIED -> Log.i(TAG, "引擎补丁 ${result.id}: ${result.detail}; ${result.targets}")
+            EngineFilePatches.Status.ALREADY -> Unit
+            EngineFilePatches.Status.MISSING,
+            EngineFilePatches.Status.MISMATCH,
+            EngineFilePatches.Status.FAILURE -> {
+                Log.w(TAG, "引擎补丁 ${result.id} ${result.status}: ${result.detail}; ${result.targets}")
+                if (id == "image-mime" && result.status == EngineFilePatches.Status.MISMATCH) {
+                    EventLog.record("image.patch-skipped", mapOf("file" to "client.js"))
+                }
+            }
         }
     }
+
+    private fun patchProcessInspector() = applyEngineFilePatch("process-inspector")
 
     /**
      * 把 `terminal-bash` 硬编码的 `/bin/bash` 换成 Termux 的 bash（幂等）。
@@ -1418,30 +1276,7 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 找不到锚点就跳过（引擎升级后结构变了也不让启动失败，届时日志里有提示）。
      */
-    private fun patchTerminalShell() {
-        val entry = File(engineDir, "node_modules/@deepseek-ai/dsh-terminal-bash/lib/index.js")
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到 terminal-bash，跳过默认 shell 补丁: ${entry.absolutePath}")
-            return
-        }
-
-        try {
-            val source = entry.readText()
-            // ⚠️ 必须先判「已打过补丁」再判「原文在不在」：打完之后原文就不存在了，
-            //    顺序反了会把已完成的状态误报成「未找到」。
-            if (source.contains(TERMINAL_SHELL_ANCHOR)) {
-                return
-            }
-            if (!source.contains(TERMINAL_SHELL_GUARD)) {
-                Log.w(TAG, "terminal-bash 的默认 shell 结构与预期不符，跳过补丁")
-                return
-            }
-            entry.writeText(source.replace(TERMINAL_SHELL_GUARD, TERMINAL_SHELL_ANCHOR))
-            Log.i(TAG, "已把 terminal-bash 的默认 shell 换成 ${'$'}PREFIX/bin/bash: ${entry.name}")
-        } catch (t: Throwable) {
-            Log.w(TAG, "修正 terminal-bash 的默认 shell 失败: ${t.message}")
-        }
-    }
+    private fun patchTerminalShell() = applyEngineFilePatch("terminal-shell")
 
     /**
      * 撤回「把选择工作区对话框的起始目录改成 `/sdcard`」那次改动（幂等）。
@@ -1480,27 +1315,7 @@ class EngineManager private constructor(private val context: Context) {
      * 直接返回。官方若改了这一行，两个锚点都不匹配 ⇒ 跳过并打日志，不会让
      * 启动失败（`home` 字段本来就该是 `homedir()`，不改才是对的）。
      */
-    private fun restoreDirectoryPickerStart() {
-        val entry = File(
-            engineDir,
-            "node_modules/@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js"
-        )
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到目录选择器后端，跳过起始目录还原: ${entry.absolutePath}")
-            return
-        }
-
-        try {
-            val source = entry.readText()
-            if (!source.contains(PICKER_START_ANCHOR)) {
-                return
-            }
-            entry.writeText(source.replace(PICKER_START_ANCHOR, PICKER_START_GUARD))
-            Log.i(TAG, "已还原目录选择器的起始目录（改由主目录下的入口链接提供）")
-        } catch (t: Throwable) {
-            Log.w(TAG, "还原目录选择器起始目录失败: ${t.message}")
-        }
-    }
+    private fun restoreDirectoryPickerStart() = applyEngineFilePatch("directory-picker-restore")
 
     /**
      * 在引擎 HOME 下建两个「选择工作区」的入口链接（幂等）。
@@ -1611,47 +1426,7 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 找不到锚点就跳过（引擎升级后结构变了也不让启动失败，届时日志里有提示）。
      */
-    private fun patchAttachmentDurability() {
-        val entry = File(engineDir, "node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js")
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到附件模块入口，跳过目录 fsync 容错: ${entry.absolutePath}")
-            return
-        }
-
-        try {
-            var source = entry.readText()
-            var changed = false
-
-            // ① open 的 EACCES/EPERM 兜底（SELinux 拒绝祖先目录 open）。
-            if (!source.contains(ATTACH_SYNC_ANCHOR)) {
-                if (source.contains(ATTACH_SYNC_GUARD)) {
-                    source = source.replace(ATTACH_SYNC_GUARD, ATTACH_SYNC_ANCHOR)
-                    changed = true
-                } else {
-                    Log.w(TAG, "附件模块的目录 open 结构与预期不符，跳过该处容错")
-                }
-            }
-
-            // ② **真正的根因**：只读分区上目录 fsync 返回 EINVAL。
-            //    原版 `sync()` 只有 try/finally、没有 catch，EINVAL 直接穿透，
-            //    整条附件落盘失败 → 用户看到「会话忙」，且**只有发图片会中招**
-            //    （纯文字不走附件落盘）。
-            if (!source.contains(ATTACH_FSYNC_ANCHOR)) {
-                if (source.contains(ATTACH_FSYNC_GUARD)) {
-                    source = source.replace(ATTACH_FSYNC_GUARD, ATTACH_FSYNC_ANCHOR)
-                    changed = true
-                } else {
-                    Log.w(TAG, "附件模块的目录 fsync 结构与预期不符，跳过该处容错")
-                }
-            }
-
-            if (!changed) return
-            entry.writeText(source)
-            Log.i(TAG, "已放行附件模块的目录 fsync（open+sync）: dsh-attachment-local")
-        } catch (t: Throwable) {
-            Log.w(TAG, "放行附件模块的祖先目录 fsync 失败: ${t.message}")
-        }
-    }
+    private fun patchAttachmentDurability() = applyEngineFilePatch("attachment-durability")
 
     /**
      * 放宽「发图格式白名单」—— 原版只认 4 个精确的 MIME 字符串。
@@ -1688,72 +1463,7 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 找不到锚点就跳过（引擎升级后结构变了也不让启动失败）。
      */
-    private fun patchImageMediaType() {
-        val entry = File(
-            engineDir,
-            "node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js",
-        )
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到会话 UI 入口，跳过发图格式补丁: ${entry.absolutePath}")
-            return
-        }
-
-        try {
-            val source = entry.readText()
-            // 已打过补丁：补丁体里那句 startsWith 就是标记（原版没有它）。
-            if (source.contains("return value.startsWith(\"image/\")")) {
-                return
-            }
-            /*
-             * ⚠️ **按行处理，不按固定缩进匹配**（2026-10-27 真机取证）。
-             *
-             * 原来这里是 `source.contains(IMG_TYPE_GUARD)` 再 `replace`，
-             * 而 GUARD 里写死了 3 个制表符 —— 真机上该行是 **6 个空格**缩进，
-             * 于是恒不匹配、补丁从未生效（每次启动都记一条"结构与预期不符"）。
-             *
-             * 现在只找**包含语句主体**的那一行，把它的行首空白取出来，
-             * 用同一份空白去缩进多行替换体。这样缩进换了也不影响。
-             */
-            val lines = source.split("\n").toMutableList()
-            val exact = lines.indexOfFirst { it.trimEnd().endsWith(IMG_TYPE_GUARD.trimEnd()) }
-            /*
-             * ⚠️ 精确行尾匹配失败时**不能直接放弃**（反馈 `20261105-214500-76ef28`
-             * 「照片无法发出去，改格式也不行」）：引擎一升级，这条语句可能被
-             * 改写（换个判断顺序、拆成两行、多一个 mime），而用户那边的表现
-             * 就是白名单又收紧了 —— 补丁静默跳过，谁也不知道。
-             *
-             * 退一步找「同一行里既有 return、又同时列了 image/png 与 image/gif」，
-             * 这个组合足够特定，不会误伤数组定义（那种没有 return）。
-             */
-            val idx = if (exact >= 0) {
-                exact
-            } else {
-                lines.indexOfFirst { line ->
-                    line.contains("return") && line.contains("\"image/png\"") && line.contains("\"image/gif\"")
-                }
-            }
-            if (idx < 0) {
-                Log.w(
-                    TAG,
-                    "发图格式判断结构与预期不符，跳过补丁（找不到以 " +
-                        "`${IMG_TYPE_GUARD.take(40)}…` 结尾的行，也没有 return+image/png+image/gif 的行）",
-                )
-                EventLog.record("image.patch-skipped", mapOf("file" to entry.name))
-                return
-            }
-            // 取那一行的行首空白（可能为空）。
-            val indent = lines[idx].takeWhile { it == ' ' || it == '\t' }
-            val replacement = IMG_TYPE_ANCHOR.split("\n").joinToString("\n") { indent + it }
-            lines[idx] = replacement
-            entry.writeText(lines.joinToString("\n"))
-            Log.i(
-                TAG,
-                "已放宽发图格式白名单: dsh-client-ui-conversation（行 ${idx + 1}，缩进 ${indent.length} 字符）",
-            )
-        } catch (t: Throwable) {
-            Log.w(TAG, "放宽发图格式白名单失败: ${t.message}")
-        }
-    }
+    private fun patchImageMediaType() = applyEngineFilePatch("image-mime")
 
     /**
      * 从引擎打印的 URL 里取出端口号，取不到给空串。
@@ -1929,32 +1639,7 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 找不到锚点就跳过（引擎升级后结构变了也不让启动失败，届时日志里有提示）。
      */
-    private fun patchLlmDeepseekToolOrder() {
-        val entry = File(engineDir, "node_modules/@deepseek-ai/dsh-llm-deepseek/lib/index.js")
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到 DeepSeek Messages 适配器，跳过 tool_use 顺序补丁: ${entry.absolutePath}")
-            return
-        }
-
-        try {
-            val source = entry.readText()
-            if (source.contains(TOOL_ORDER_ANCHOR_HEAD)) {
-                return
-            }
-            if (!source.contains(TOOL_ORDER_GUARD_HEAD) || !source.contains(TOOL_ORDER_GUARD_TAIL)) {
-                Log.w(TAG, "DeepSeek Messages 适配器的 assistant 映射结构与预期不符，跳过 tool_use 顺序补丁")
-                return
-            }
-            entry.writeText(
-                source
-                    .replace(TOOL_ORDER_GUARD_HEAD, TOOL_ORDER_ANCHOR_HEAD)
-                    .replace(TOOL_ORDER_GUARD_TAIL, TOOL_ORDER_ANCHOR_TAIL),
-            )
-            Log.i(TAG, "已修正 DeepSeek Messages 的 tool_use 块顺序: dsh-llm-deepseek")
-        } catch (t: Throwable) {
-            Log.w(TAG, "修正 DeepSeek Messages 的 tool_use 块顺序失败: ${t.message}")
-        }
-    }
+    private fun patchLlmDeepseekToolOrder() = applyEngineFilePatch("deepseek-tool-order")
 
     /**
      * 修正 pi-ai 适配器在**第三方路由不返回 tool_call id** 时写出的空 tool-call id（幂等）。
@@ -2003,32 +1688,7 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 找不到锚点就跳过（引擎升级后结构变了也不让启动失败，届时日志里有提示）。
      */
-    private fun patchLlmPiAiToolCallId() {
-        val entry = File(engineDir, "node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js")
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到 pi-ai 适配器，跳过空 tool-call id 补丁: ${entry.absolutePath}")
-            return
-        }
-
-        try {
-            val source = entry.readText()
-            if (source.contains(PI_AI_TOOLID_ANCHOR_START)) {
-                return
-            }
-            if (!source.contains(PI_AI_TOOLID_GUARD_START) || !source.contains(PI_AI_TOOLID_GUARD_END)) {
-                Log.w(TAG, "pi-ai 适配器的 toolcall 事件结构与预期不符，跳过空 tool-call id 补丁")
-                return
-            }
-            entry.writeText(
-                source
-                    .replace(PI_AI_TOOLID_GUARD_START, PI_AI_TOOLID_ANCHOR_START)
-                    .replace(PI_AI_TOOLID_GUARD_END, PI_AI_TOOLID_ANCHOR_END),
-            )
-            Log.i(TAG, "已修正 pi-ai 的空 tool-call id: dsh-llm-pi-ai")
-        } catch (t: Throwable) {
-            Log.w(TAG, "修正 pi-ai 的空 tool-call id 失败: ${t.message}")
-        }
-    }
+    private fun patchLlmPiAiToolCallId() = applyEngineFilePatch("pi-ai-tool-id")
 
     /**
      * 修正 `dsh-llm` 组装 tool-call 块时**兜不住空串**的 id 兜底（幂等）。
@@ -2050,28 +1710,7 @@ class EngineManager private constructor(private val context: Context) {
      *
      * 找不到锚点就跳过。
      */
-    private fun patchLlmToolCallIdFallback() {
-        val entry = File(engineDir, "node_modules/@deepseek-ai/dsh-llm/lib/index.js")
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到 dsh-llm 组装器，跳过 tool-call id 兜底补丁: ${entry.absolutePath}")
-            return
-        }
-
-        try {
-            val source = entry.readText()
-            if (source.contains(LLM_TOOLID_ANCHOR)) {
-                return
-            }
-            if (!source.contains(LLM_TOOLID_GUARD)) {
-                Log.w(TAG, "dsh-llm 组装器的 tool-call 组装结构与预期不符，跳过 tool-call id 兜底补丁")
-                return
-            }
-            entry.writeText(source.replace(LLM_TOOLID_GUARD, LLM_TOOLID_ANCHOR))
-            Log.i(TAG, "已修正 dsh-llm 组装器的空 tool-call id 兜底: dsh-llm")
-        } catch (t: Throwable) {
-            Log.w(TAG, "修正 dsh-llm 组装器的空 tool-call id 兜底失败: ${t.message}")
-        }
-    }
+    private fun patchLlmToolCallIdFallback() = applyEngineFilePatch("llm-tool-id")
 
     /**
      * 安装 pnpm 到 `$PREFIX/bin`（幂等）。
@@ -2452,28 +2091,7 @@ class EngineManager private constructor(private val context: Context) {
      * 只替换那一处判断，不动其它任何逻辑；找不到锚点就跳过（引擎升级后结构变了
      * 也不要因此让启动失败，届时日志里会有明确提示）。
      */
-    private fun patchFlockPlatform() {
-        val flock = File(engineDir, "node_modules/@deepseek-ai/node-addon-system/lib/flock.js")
-        if (!flock.isFile) {
-            Log.w(TAG, "未找到 flock 入口，跳过 android 平台放行: ${flock.absolutePath}")
-            return
-        }
-
-        try {
-            val source = flock.readText()
-            if (source.contains(FLOCK_ANDROID_ANCHOR)) {
-                return
-            }
-            if (!source.contains(FLOCK_PLATFORM_GUARD)) {
-                Log.w(TAG, "flock 平台判断结构与预期不符，跳过 android 平台放行")
-                return
-            }
-            flock.writeText(source.replace(FLOCK_PLATFORM_GUARD, FLOCK_ANDROID_ANCHOR))
-            Log.i(TAG, "已放行 flock 的 android 平台: ${flock.name}")
-        } catch (t: Throwable) {
-            Log.w(TAG, "放行 flock 的 android 平台失败: ${t.message}")
-        }
-    }
+    private fun patchFlockPlatform() = applyEngineFilePatch("flock-platform")
 
     /**
      * 让引擎**不再因为一个插件的未捕获异常而整个进程退出**（幂等）。
@@ -2510,303 +2128,8 @@ class EngineManager private constructor(private val context: Context) {
      * ⚠️ 只在 Android 上这么干。桌面端「大声失败后退出」是合理语义，
      *   那边没有「用户装第三方插件」这条路径。
      */
-    private fun patchFailLoudExit() {
-        // ── 第 1 步：installFailLoud 里的 proc.exit(1) ──
-        val boot = File(engineDir, "node_modules/@deepseek-ai/dsh-app-boot/lib/index.js")
-        if (!boot.isFile) {
-            Log.w(TAG, "未找到 dsh-app-boot 入口，跳过引擎抗崩溃补丁: ${boot.absolutePath}")
-        } else {
-            try {
-                val source = boot.readText()
-                if (!source.contains(FAIL_LOUD_ANDROID_MARK)) {
-                    if (!source.contains(FAIL_LOUD_EXIT_GUARD)) {
-                        Log.w(TAG, "installFailLoud 结构与预期不符，跳过引擎抗崩溃补丁")
-                    } else {
-                        boot.writeText(source.replace(FAIL_LOUD_EXIT_GUARD, FAIL_LOUD_ANDROID_ANCHOR))
-                        Log.i(TAG, "已让引擎不再因插件的未捕获异常而退出进程: ${boot.name}")
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "应用引擎抗崩溃补丁失败: ${t.message}")
-            }
-        }
+    private fun patchFailLoudExit() = applyEngineFilePatch("fail-loud")
 
-        // ── 第 2 步：profile-boot 的 release 回调（不做就白改）──
-        // ⚠️ 文件名带构建 hash（profile-boot-<hash>.js），换引擎版本会变，
-        //   所以先按已知名找，找不到就按前缀扫目录兜底。
-        val dshLib = File(engineDir, "node_modules/@deepseek-ai/dsh/lib")
-        val profileBoot = File(dshLib, "profile-boot-BZ2ZjNWi.js").takeIf { it.isFile }
-            ?: dshLib.listFiles()
-                ?.firstOrNull { it.isFile && it.name.startsWith("profile-boot-") && it.name.endsWith(".js") }
-        if (profileBoot == null || !profileBoot.isFile) {
-            Log.w(TAG, "未找到 profile-boot，跳过引擎抗崩溃补丁第 2 步: ${dshLib.absolutePath}")
-            return
-        }
-        try {
-            val source = profileBoot.readText()
-            if (source.contains(FAIL_LOUD_RELEASE_MARK)) {
-                return
-            }
-            if (!source.contains(FAIL_LOUD_RELEASE_GUARD)) {
-                Log.w(TAG, "profile-boot 的 release 回调结构与预期不符，跳过第 2 步")
-                return
-            }
-            // ⚠️ 走原子写入：这是引擎启动必经的文件，写坏了引擎直接起不来，
-            //   而报错信息不会指向「文件被写了一半」这件事。
-            if (!writeTextAtomically(
-                    profileBoot,
-                    source.replace(FAIL_LOUD_RELEASE_GUARD, FAIL_LOUD_RELEASE_ANCHOR),
-                )
-            ) {
-                Log.w(TAG, "profile-boot 补丁未能落盘，保持原样（下次启动重试）")
-                return
-            }
-            Log.i(TAG, "已让引擎在插件崩溃后保留进程: ${profileBoot.name}")
-        } catch (t: Throwable) {
-            Log.w(TAG, "应用引擎抗崩溃补丁第 2 步失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 安装移动端 UI 适配插件（幂等）。
-     *
-     * DSH 自带的前端是桌面布局：侧栏常驻、顶栏按鼠标悬停设计、消息操作按钮
-     * 一长排。窄屏手机上这些要么挤成一团，要么根本点不到。
-     *
-     * 做法与桌面端一致：把一个声明了 `dsh.client` 的插件包落盘，再用 `--patch`
-     * 传一层 overlay 把它挂上。客户端半由 `@deepseek-ai/dsh-client-modules`
-     * 自动编入浏览器侧的 combo bundle，宿主半（lib/index.js）只是占位 —— 包必须
-     * 有 Node 侧入口，否则 Cordis import 浏览器代码会当场抛 `window is not defined`。
-     *
-     * 插件自身用 `[data-mobile]` 属性作用域 + `matchMedia` 判据，只在窄屏且
-     * 非鼠标设备时生效，宽屏/桌面窗口下官方布局一字不变。
-     *
-     * ## ⚠️ 为什么解到 `$DSH_HOME/mobile-ui/`，而不是 profile 的 `node_modules`
-     *
-     * 这是**踩过的坑**。原先解到 `profiles/web/node_modules/dsh-android-mobile`，
-     * 而该包**不在** profile 的 `dependencies` 里（写进去会让 DSH 去 registry 拉
-     * 这个本地包，桌面端同样刻意不写）。后果是：**用户只要用插件管理器装一次
-     * 插件，pnpm 就按「多余依赖」把它挪进 `node_modules/.ignored/`**。
-     *
-     * 包一挪走，`--patch` 里那个按包名解析的 `name` 就找不到模块，客户端半不再
-     * 编入浏览器 —— 而 `injectStyles()` 注入的 `<style>` 随插件卸载被一并移除，
-     * **整个移动端适配（53 条 `[data-mobile]` 规则）全部消失**，界面静默退回
-     * 桌面布局。表现就是：侧栏不再是抽屉而是常驻 56px 图标条（正文只剩 304px），
-     * 且工具卡片/执行过程里的长文本左右两端都被裁出屏幕。
-     *
-     * 更要命的是它**不报错**：宿主半照常 apply，页面上甚至残留着上一轮渲染的
-     * `.mp-nav-btn` / `.mp-drawer-mask` 元素，只是 CSS 没了（`position` 全是
-     * `static`），看着像"插件装了一半"。
-     *
-     * 所以现在把包放在 pnpm 管不到的地方，并在 overlay 里用 `file://` 绝对 URL
-     * 挂载 —— `dsh-client-modules.locatePkgJson()` 显式支持 pathLike 说明符
-     * （`.` / `file:` / 绝对路径），从模块向上找到最近的 `package.json` 即认定为
-     * 该包。这样 pnpm 怎么装插件都不会再动到它。
-     */
-    private fun ensureMobileUi() {
-        val target = File(dshHome, "$MOBILE_UI_DIR/$MOBILE_UI_PACKAGE")
-        val clientJs = File(target, "lib/client.js")
-        val stamp = File(target, MOBILE_UI_STAMP)
-
-        // 版本戳一致才跳过：插件随 APK 升级而变，只看文件存在会留下旧版
-        if (clientJs.isFile && clientJs.length() > 0 &&
-            stamp.isFile && stamp.readText().trim() == MOBILE_UI_VERSION
-        ) {
-            return
-        }
-
-        /*
-         * ⚠️ **解包必须是原子的：先解到临时目录，全部成功后再整体换上去。**
-         *
-         * 原来的写法是 `target.deleteRecursively()` 之后直接往 `target` 里解。
-         * 这有个很硬的问题：**一旦解包中途失败，旧版本已经被删掉了**。
-         * 失败原因在真机上都是现实存在的 ——
-         *   · 磁盘不足（这个 zip 解出来约 1.2 MB，但 dshHome 在共享存储上，
-         *     用户把它塞满是很常见的事，`copyTo` 中途抛 IOException）；
-         *   · 用户在解包过程中把 App 切走，进程被系统回收；
-         *   · 存储被卸载（SD 卡用户）。
-         * 结果是 `lib/client.js` 缺失或只有半个文件 —— 插件加载失败，
-         * 界面**静默退回桌面布局**，而用户完全不知道发生了什么，
-         * 下次启动还会因为「clientJs 不完整」再删一遍。反复几次仍然如此。
-         *
-         * 现在改成：解到 `<pkg>.tmp` → 全部写完并落戳 → 删旧 → 改名替换。
-         * 任何一步失败都只留下一个可丢弃的 `.tmp`，**旧版本原样可用**。
-         * 这是本项目所有资产解包都应该遵守的规矩（engine.bin 那条同理）。
-         */
-        val tmp = File(target.parentFile, "$MOBILE_UI_PACKAGE.tmp")
-        try {
-            // 清掉上次失败的残留（它一定是不完整的，没有保留价值）
-            tmp.deleteRecursively()
-            tmp.mkdirs()
-            if (!tmp.isDirectory) {
-                throw java.io.IOException("无法创建临时目录: ${tmp.absolutePath}")
-            }
-            java.util.zip.ZipInputStream(context.assets.open(MOBILE_UI_ASSET).buffered()).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory) {
-                        // 防目录穿越：zip 条目名不允许跑出临时目录
-                        val out = File(tmp, entry.name)
-                        val basePath = tmp.canonicalPath + File.separator
-                        if (!out.canonicalPath.startsWith(basePath)) {
-                            Log.w(TAG, "mobile-ui.zip 条目越界，已丢弃: ${entry.name}")
-                        } else {
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                    }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
-                }
-            }
-            // 先确认解出来的东西真的完整，再换掉旧版本
-            val tmpClient = File(tmp, "lib/client.js")
-            if (!tmpClient.isFile || tmpClient.length() <= 0L) {
-                throw java.io.IOException("解包结果缺少 lib/client.js")
-            }
-            File(tmp, MOBILE_UI_STAMP).writeText(MOBILE_UI_VERSION)
-            // 换上去：删旧 → 改名。两步之间窗口极短，且此时新版本已完整就绪。
-            target.deleteRecursively()
-            if (!tmp.renameTo(target)) {
-                // rename 失败（跨设备挂载等）就退化成拷贝，仍然保证新版本可用
-                tmp.copyRecursively(target, overwrite = true)
-                tmp.deleteRecursively()
-            }
-            Log.i(TAG, "已安装移动端 UI 插件 $MOBILE_UI_PACKAGE $MOBILE_UI_VERSION (${clientJs.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就不阻断启动：宁可给桌面布局，也不要白屏。
-            // ⚠️ 旧版本**仍然完好**（上面没有提前删它），下次启动会重试。
-            Log.w(TAG, "安装移动端 UI 插件失败（旧版本保持可用）: ${t.message}")
-            tmp.deleteRecursively()
-        }
-
-        // 清理旧位置：早先版本解到 profile 的 node_modules 下，留在那里既没用，
-        // 又会被插件清单扫到；pnpm 也可能把它当成待驱逐的"多余依赖"。
-        File(dshHome, "profiles/web/node_modules/$MOBILE_UI_PACKAGE").deleteRecursively()
-    }
-
-    /**
-     * 写出挂载移动端 UI 插件的 overlay，返回其路径；不可用时返回 null。
-     *
-     * 走 `--patch` 而不是改 profile 自己的 `cordis.patch.yml`：那个文件由 DSH
-     * 初始化并可能承载用户配置，覆写它会丢东西；而 `--patch` 层在 profile 层
-     * **之后**应用，优先级更高，且完全由本 App 拥有，升级时整体覆盖即可。
-     *
-     * `name` 用 `file://` 绝对 URL 而不是裸包名 —— 包在 pnpm 管辖之外，按包名
-     * 解析不到（原因见 ensureMobileUi() 的注释）。YAML 里带 `:` 的标量必须加引号。
-     */
-    private fun writeMobileUiPatch(): File? {
-        val patch = File(dshHome, MOBILE_UI_PATCH)
-        val entry = File(dshHome, "$MOBILE_UI_DIR/$MOBILE_UI_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            Log.w(TAG, "移动端 UI 插件入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            // 手工拼 `file://` + 绝对路径（三斜杠）而不是 File.toURI()：后者给的是
-            // `file:/data/...`（单斜杠），虽然多数解析器能接受，但 ESM 侧要的是标准
-            // 文件 URL。路径全为 ASCII 且无保留字符，不需要百分号编码。
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载移动端 UI 适配插件；插件包随 APK 分发，已解到 .dsh/${MOBILE_UI_DIR}。
-                # 用 file:// 绝对路径挂载：包刻意放在 profile 的 node_modules 之外，
-                # 否则用户每次用插件管理器装东西都会被 pnpm 挪进 .ignored/。
-                - insert:
-                    - id: $MOBILE_UI_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入移动端 UI overlay 失败: ${t.message}")
-            null
-        }
-    }
-
-    /**
-     * 解出**右侧栏「AI 浏览器」入口**插件（`browser-pane.zip` →
-     * `$DSH_HOME/browser-pane/dsh-android-browser-pane/`）。
-     *
-     * 该插件是**客户端插件**（`dsh.client` 声明 + `lib/client.js`），在官方右侧
-     * 边栏里注册一项「AI 浏览器」：点开就调原生 `openAiBrowser()` 打开
-     * [com.dsh.android.browser.AiBrowserView]。
-     *
-     * ## 为什么单独成包，而不是并进 `dsh-android-mobile`
-     *
-     * 那个包的 `lib/client.js` 在 dev 与 main 两条分支上差 17 万字节，而
-     * `assets/mobile-ui.zip` 是**跨工作树共享的符号链接资产** —— 往它里面加东西
-     * 就必须重打整包，一次重打会把另一条分支的移动端修复整个回退掉。
-     * 独立成包互不干扰，代价只是多一个 8 KB 的 zip。
-     *
-     * ⚠️ 与 `bubble-tool` / `uiagent-tool` 那类**工具插件**不同，这个包是
-     *   **客户端插件**：它必须在**引擎启动之前**解包落盘，因为引擎启动时才会
-     *   扫描 `dsh.client` 声明并把客户端代码编进前端 bundle。解晚一步就是
-     *   「文件在、侧栏里没有这一项」，而且没有任何报错。
-     */
-    private fun ensureBrowserPane() {
-        val target = File(dshHome, "$BROWSER_PANE_DIR/$BROWSER_PANE_PACKAGE")
-        val clientJs = File(target, "lib/client.js")
-        try {
-            target.deleteRecursively()
-            java.util.zip.ZipInputStream(context.assets.open(BROWSER_PANE_ASSET).buffered()).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory) {
-                        val out = File(target, entry.name)
-                        out.parentFile?.mkdirs()
-                        out.outputStream().use { zis.copyTo(it) }
-                    }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
-                }
-            }
-            Log.i(TAG, "已安装侧栏浏览器入口插件 $BROWSER_PANE_PACKAGE (${clientJs.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是侧栏里少一项（没有别的入口可退，但启动不该因此失败）
-            Log.w(TAG, "安装侧栏浏览器入口插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载侧栏浏览器入口的 overlay，返回其路径；入口不存在时返回 null。
-     *
-     * 与 [writeMobileUiPatch] 完全同构（`file://` 绝对路径 + `insert`）。
-     */
-    private fun writeBrowserPanePatch(): File? {
-        val patch = File(dshHome, BROWSER_PANE_PATCH)
-        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
-        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
-        if (!isBuiltinPluginEnabled(context, "browser-pane")) {
-            if (patch.isFile) patch.delete()
-            Log.i(TAG, "侧栏浏览器入口已被用户关闭，跳过挂载")
-            return null
-        }
-        val entry = File(dshHome, "$BROWSER_PANE_DIR/$BROWSER_PANE_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            if (patch.isFile) patch.delete()
-            Log.w(TAG, "侧栏浏览器入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载右侧栏「AI 浏览器」入口插件；插件包随 APK 分发，已解到 .dsh/${BROWSER_PANE_DIR}。
-                - insert:
-                    - id: $BROWSER_PANE_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入侧栏浏览器入口 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入侧栏浏览器入口 overlay 失败: ${t.message}")
-            null
-        }
-    }
 
     /**
      * 解出 Agnes 多模态插件（`generate_image` / `generate_video` + 多模态配置页）。
@@ -3086,518 +2409,8 @@ class EngineManager private constructor(private val context: Context) {
      * ⚠️ 锚点找不到就跳过并打日志，**不让启动失败** —— 引擎升级后官方那句
      * persona 原文若变了，届时按新文本更新 [PRESET_CORDIS_PERSONA_GUARD] 即可。
      */
-    private fun patchPresetCordisPersona() {
-        val entry = File(engineDir, PRESET_CORDIS_PRESET_PATH)
-        if (!entry.isFile) {
-            Log.w(TAG, "未找到创造模式预设文件，跳过提示词补丁: ${entry.absolutePath}")
-            return
-        }
+    private fun patchPresetCordisPersona() = applyEngineFilePatch("preset-cordis-persona")
 
-        try {
-            val source = entry.readText()
-            if (source.contains(PRESET_CORDIS_PERSONA_ANCHOR_HEAD)) return
-            if (!source.contains(PRESET_CORDIS_PERSONA_GUARD)) {
-                Log.w(TAG, "创造模式预设的 persona 结构与预期不符，跳过提示词补丁")
-                return
-            }
-            entry.writeText(source.replace(PRESET_CORDIS_PERSONA_GUARD, PRESET_CORDIS_PERSONA_PATCH))
-            Log.i(TAG, "已把快准狠约束并入创造模式: ${entry.name}")
-        } catch (t: Throwable) {
-            Log.w(TAG, "创造模式提示词补丁失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 把内置预设 dsh-preset-razor 解到 `$DSH_HOME/node_modules/dsh-preset-razor/`（幂等）。
-     *
-     * 与 [ensureCoreMemory] 同一套做法、同一套理由 —— 这两个是**唯一走 profile bundle
-     * 的内置包**，其余（mobile-ui / market / bubble…）仍走 `--patch` overlay：
-     *
-     * - 位置必须是 `$DSH_HOME/node_modules/`：bundle 名靠 Node 的向上查找解析
-     *   （`createRequire().resolve.paths()`），require 只查 `node_modules` 这一层，
-     *   查不到兄弟目录。**也不能**放 `profiles/web/node_modules/` —— 那是 pnpm 的地盘，
-     *   会被当「多余依赖」挪进 `.ignored/`。
-     * - 目录名**必须**是包名 `dsh-preset-razor`：解析是按
-     *   `<某个 node_modules>/<包名>/package.json` 找的。
-     *
-     * 幂等判据是版本戳而不是「文件在不在」：预设随 APK 升级而变，只看文件存在
-     * 会让老设备永远停在旧版提示词（旧提示词里那句已被 0.2.1 删掉的
-     * `你的工作目录是 {{cwd}}。` 正是本次要淘汰的东西）。
-     */
-    private fun ensurePresetRazor() {
-        val target = presetRazorDir()
-        val upstream = File(target, "cordis.patch.yml")
-        val stamp = File(target, PRESET_RAZOR_STAMP)
-
-        if (upstream.isFile && upstream.length() > 0 &&
-            stamp.isFile && stamp.readText().trim() == PRESET_RAZOR_VERSION
-        ) {
-            return
-        }
-
-        try {
-            target.deleteRecursively()
-            java.util.zip.ZipInputStream(context.assets.open(PRESET_RAZOR_ASSET).buffered()).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory) {
-                        val out = File(target, entry.name)
-                        out.parentFile?.mkdirs()
-                        out.outputStream().use { zis.copyTo(it) }
-                    }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
-                }
-            }
-            stamp.writeText(PRESET_RAZOR_VERSION)
-            Log.i(TAG, "已安装内置预设 $PRESET_RAZOR_PACKAGE $PRESET_RAZOR_VERSION (${upstream.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上不阻断启动：只是少了这个预设
-            Log.w(TAG, "安装内置预设失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 把内置预设 dsh-preset-razor 登记成 profile 的一个 **bundle**，让它在
-     * 「插件 → 已安装插件」列表里出现、并能被用户单独开关（默认开启）。
-     *
-     * ## 为什么不再是 `--patch` overlay 里的 `- insert:`
-     *
-     * 与 [registerCoreMemoryBundle] 完全同因：overlay 插进来的条目**没有身份** ——
-     * 官方 plugin-manager 的列表只认 `dsh.profile.bundles`（`listBundles()`）与 Loader
-     * 里由 bundle 层贡献的行，overlay 的行不在任何一份清单里。于是插件页看不到它，
-     * 用户既关不掉、也不知道它存在。
-     *
-     * 改成 bundle 之后，「关掉」= 从 `dsh.profile.bundles` 摘掉这个名字，包本身留在
-     * `node_modules`，随时能再打开。
-     *
-     * ## ⚠️ 幂等判据必须「只看缺失才补」，不能「每次都补齐」
-     *
-     * 这是**与改造前最大的语义差别**。overlay 是 App 每次启动整体覆盖的，用户改不动；
-     * 而 bundle 名单是**用户与 App 共写**的同一份文件。若写成「不在就加上」，用户
-     * 在插件页关掉它、重启 App，这里又会把它加回去 —— 变成「关不掉」。
-     *
-     * 所以判据是「**从来没见过它**才补」：见标记文件 [PRESET_RAZOR_MARKER]。
-     * 一旦登记过（标记文件在），此后只在用户保留它时维持现状，绝不自动复活。
-     * 用户想再打开，在插件页把它打开即可，那时的写入由官方插件管理器完成。
-     *
-     * ## ⚠️ `dependencies` 也要写
-     *
-     * 官方 `listBundles()` 的 `installed`、`removable`、版本比较都读
-     * `manifest.dependencies`，只写 `bundles` 会让这一行在插件页**根本不渲染**
-     * （`listed` 的判据是 `installed || official || error`）。
-     * 依赖值用 `link:` 指向真实目录，pnpm 认得这种本地链接、也不会去 registry 找。
-     *
-     * ⚠️ 用户关掉后**不删**这一行 —— 它是包的存在声明，不是启用开关。
-     */
-    private fun registerPresetRazorBundle() {
-        val manifest = File(dshHome, "profiles/$PROFILE_NAME/package.json")
-        val marker = File(dshHome, PRESET_RAZOR_MARKER)
-        if (!File(presetRazorDir(), "package.json").isFile) {
-            Log.w(TAG, "内置预设包不存在，跳过 bundle 登记: ${presetRazorDir().absolutePath}")
-            return
-        }
-        if (!manifest.isFile) {
-            // profile 还没初始化：官方启动时会用 PROFILE_TEMPLATES.web 建好，
-            // 那时只带两个核心 bundle，下一次启动这里再补。
-            Log.i(TAG, "profile 清单尚不存在，内置预设的 bundle 登记推迟到下次启动")
-            return
-        }
-        try {
-            val json = JSONObject(manifest.readText())
-            val dsh = json.optJSONObject("dsh") ?: JSONObject().also { json.put("dsh", it) }
-            val profile = dsh.optJSONObject("profile") ?: JSONObject().also { dsh.put("profile", it) }
-            val bundles = profile.optJSONArray("bundles") ?: JSONArray().also { profile.put("bundles", it) }
-
-            var listed = false
-            for (i in 0 until bundles.length()) {
-                if (bundles.optString(i) == PRESET_RAZOR_PACKAGE) { listed = true; break }
-            }
-
-            var changed = false
-            if (!listed && !marker.isFile) {
-                // 第一次见到它：补进名单（老用户升级上来也走这一支）
-                bundles.put(PRESET_RAZOR_PACKAGE)
-                changed = true
-                Log.i(TAG, "已把内置预设登记为 profile bundle（默认开启，可在插件页关闭）")
-            }
-            if (!marker.isFile) {
-                marker.parentFile?.mkdirs()
-                marker.writeText("registered")
-            }
-
-            val deps = json.optJSONObject("dependencies") ?: JSONObject().also { json.put("dependencies", it) }
-            if (!deps.has(PRESET_RAZOR_PACKAGE)) {
-                deps.put(PRESET_RAZOR_PACKAGE, "link:${presetRazorDir().absolutePath}")
-                changed = true
-            }
-
-            if (changed) manifest.writeText(json.toString(2) + "\n")
-        } catch (t: Throwable) {
-            // 登记失败不阻断启动：只是预设不出现在选择器里
-            Log.w(TAG, "登记内置预设 bundle 失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 清掉老版本留下的两处 razor 残留（幂等）。
-     *
-     * 1. `$DSH_HOME/preset-razor.patch.yml` —— 改造前每次启动被 `--patch` 挂上的
-     *    主机 overlay。若还在，同一个预设会被**挂载两次**（`insert` 行不按 id 去重），
-     *    registry 直接报 `Duplicate agent preset: razor` 并让其中一个挂载失败。
-     * 2. `$DSH_HOME/preset-razor/` —— 改造前的解包目录（`preset-razor/dsh-preset-razor/`）。
-     *    包已经搬到 `$DSH_HOME/node_modules/dsh-preset-razor/`，旧目录不再被任何东西
-     *    引用；留着只会让排查时看到两份同名包、分不清哪份在生效。
-     */
-    private fun removeLegacyPresetRazor() {
-        val overlay = File(dshHome, PRESET_RAZOR_PATCH)
-        if (overlay.isFile && overlay.delete()) {
-            Log.i(TAG, "已清理旧的内置预设 overlay（改由 profile bundle 挂载）")
-        }
-        val legacyDir = File(dshHome, PRESET_RAZOR_LEGACY_DIR)
-        if (legacyDir.isDirectory && legacyDir.deleteRecursively()) {
-            Log.i(TAG, "已清理旧的内置预设解包目录: ${legacyDir.absolutePath}")
-        }
-    }
-
-
-    /**
-     * 把跨会话持久记忆插件 dsh-core-memory 解到 `$DSH_HOME/core-memory/dsh-core-memory/`（幂等）。
-     *
-     * 与 [ensureMobileUi] / [ensureAgnesMultimodal] 同一套做法、同一套理由：包解到
-     * `$DSH_HOME` 下而不是 profile 的 `node_modules`（那里归 pnpm 管，本包不在 profile
-     * 的 `dependencies` 里，用户每装一次插件就会被挪进 `node_modules/.ignored/`，
-     * overlay 里的包名随即解析失败）。
-     *
-     * ⚠️ **`lib/persona.js` 必须一起解出来**：`lib/index.js` 用相对路径
-     * `from './persona.js'` 导入它（宿主半的回复风格逻辑全在那里）。少这一个文件，
-     * 插件在 `import` 阶段就 `ERR_MODULE_NOT_FOUND`，宿主半整个不激活 —— 而且报错
-     * 只在引擎启动日志里出现一次，界面上表现为「记忆功能完全不存在」。
-     *
-     * 幂等判据是版本戳而不是「文件在不在」：插件随 APK 升级而变，只看文件存在
-     * 会让老设备永远停在旧版。
-     */
-    private fun ensureCoreMemory() {
-        val target = coreMemoryDir()
-        val clientJs = File(target, "lib/client.js")
-        val stamp = File(target, CORE_MEMORY_STAMP)
-
-        if (clientJs.isFile && clientJs.length() > 0 &&
-            stamp.isFile && stamp.readText().trim() == CORE_MEMORY_VERSION
-        ) {
-            return
-        }
-
-        try {
-            target.deleteRecursively()
-            java.util.zip.ZipInputStream(context.assets.open(CORE_MEMORY_ASSET).buffered()).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory) {
-                        val out = File(target, entry.name)
-                        out.parentFile?.mkdirs()
-                        out.outputStream().use { zis.copyTo(it) }
-                    }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
-                }
-            }
-            stamp.writeText(CORE_MEMORY_VERSION)
-            Log.i(TAG, "已安装跨会话记忆插件 $CORE_MEMORY_PACKAGE $CORE_MEMORY_VERSION (${clientJs.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上不阻断启动：只是少了记忆能力
-            Log.w(TAG, "安装跨会话记忆插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 清掉改造前解在 `$DSH_HOME/core-memory/` 的那一份（幂等）。
-     *
-     * 包目录从 `$DSH_HOME/core-memory/dsh-core-memory/` 搬到了
-     * `$DSH_HOME/node_modules/dsh-core-memory/`（理由见 [coreMemoryDir]）。老设备上
-     * 旧目录还在 —— 它不再被任何东西引用，留着只是一个永远不更新的死副本，
-     * 将来排查「为什么改了插件没生效」时极易看错。
-     *
-     * ⚠️ 只删这一层，**不碰 `$DSH_HOME/memory/`** —— 那里面是用户真正的记忆数据，
-     * 与包目录无关，关掉插件也**不该**删。
-     */
-    private fun removeLegacyCoreMemoryDir() {
-        val legacy = File(dshHome, CORE_MEMORY_LEGACY_DIR)
-        if (legacy.isDirectory && legacy.deleteRecursively()) {
-            Log.i(TAG, "已清理旧位置的跨会话记忆插件目录: $CORE_MEMORY_LEGACY_DIR")
-        }
-    }
-
-    /**
-     * dsh-core-memory 的包目录：`$DSH_HOME/node_modules/dsh-core-memory`。
-     *
-     * ## 为什么是这个位置（三个候选逐个否掉后的结论）
-     *
-     * `loadProfileDirectory()` → `resolveBundleDir()` 解析 bundle 名时只认两个锚点：
-     * dsh 安装目录、`<profileDir>/package.json`。后者走 `createRequire().resolve.paths()`
-     * —— 也就是 **Node 的向上查找**：`profiles/web/node_modules` → `profiles/node_modules`
-     * → `$DSH_HOME/node_modules` → …。所以放在 `$DSH_HOME/node_modules` 下能被解析到。
-     *
-     * | 候选 | 结论 |
-     * |---|---|
-     * | `profiles/web/node_modules/`（与第三方插件同级） | ❌ pnpm 会把它挪进 `.ignored/`。AGENTS.md ⑥ 的老坑，移动端 UI 插件就被这么驱逐过 |
-     * | `$DSH_HOME/core-memory/`（改造前的位置） | ❌ require 向上只查到 `$DSH_HOME/node_modules`，查不到这个兄弟目录 ⇒ bundle 解析失败 |
-     * | **`$DSH_HOME/node_modules/`** | ✅ 能被解析，且**不在 pnpm workspace 内**（`pnpm-workspace.yaml` 的 `packages: [.]` 只覆盖 `profiles/web`），pnpm 看不到它 |
-     *
-     * ⚠️ 目录名**必须**是 `dsh-core-memory`：Node 的解析是按包名找
-     * `<某个 node_modules>/<包名>/package.json`，目录名对不上就找不到。
-     */
-    private fun coreMemoryDir(): File =
-        File(dshHome, "node_modules/$CORE_MEMORY_PACKAGE")
-
-    /**
-     * 内置预设的包目录：`$DSH_HOME/node_modules/dsh-preset-razor`。
-     *
-     * 与 [coreMemoryDir] 同一套理由：bundle 名靠 Node 的向上查找解析，只查
-     * `node_modules` 这一层；且**不能**放 `profiles/web/node_modules/`（pnpm 的地盘，
-     * 会被挪进 `.ignored/`）。目录名必须是包名，解析是按
-     * `<某个 node_modules>/<包名>/package.json` 找的。
-     */
-    private fun presetRazorDir(): File =
-        File(dshHome, "node_modules/$PRESET_RAZOR_PACKAGE")
-
-    /**
-     * 引擎起来之后**再补一次**内置 bundle 登记。
-     *
-     * ## 为什么需要这一步（2026-10-29 真机复现，用户报「内置 memory 和 razor 消失了」）
-     *
-     * [registerPresetRazorBundle] / [registerCoreMemoryBundle] 都在 [start] 里、
-     * **引擎启动之前**调用，而 `profiles/web/package.json` 是**引擎自己创建的**。
-     * 于是首次启动必然命中那个分支：
-     *
-     *     已安装内置预设 dsh-preset-razor 1.0.3-1 (21666 字节)
-     *     profile 清单尚不存在，内置预设的 bundle 登记推迟到下次启动
-     *
-     * 设计上「下次启动再补」，但用户的测试习惯是**卸载 → 重装 → 试一次**：
-     * 每次都是全新环境、每次都在第一启动，那个「下次」永远不会到来
-     * ⇒ 「快准狠模式」与「跨会话记忆」在插件列表里**完全消失**。
-     * 而包其实早就解好了（日志里字节数都对），纯粹是登记没发生。
-     *
-     * ## 为什么放在引擎就绪之后是安全的
-     *
-     * 两个 register 函数本身完全幂等（按 `bundles` 是否已含 + marker 文件双重判定，
-     * 只在真改动时 `writeText`）。引擎此时已经读完 profile，改文件不会影响本次运行，
-     * 但**下一次启动**就能正常解析到 bundle —— 而那时 profile 一定已存在。
-     *
-     * ## ⚠️ 为什么不干脆把主调用挪到这里
-     *
-     * 因为引擎**本次**启动就要读 profile：如果 bundle 只能在引擎起来后登记，
-     * 那本次运行仍然看不到这些插件（首次安装后连预设选择器都是空的）。
-     * 两处都调：启动前试一次（profile 已存在的老用户立刻生效），
-     * 就绪后再补一次（首次安装的用户下一次启动生效）。
-     */
-    private fun registerBuiltinBundlesAfterReady() {
-        try {
-            registerPresetRazorBundle()
-            registerCoreMemoryBundle()
-        } catch (t: Throwable) {
-            // 补登记失败绝不能影响引擎可用性：本次照常运行，下次启动会再试。
-            Log.w(TAG, "引擎就绪后补登记内置 bundle 失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 把 dsh-core-memory 登记成 profile 的一个 **bundle**，让它在「插件 → 已安装插件」
-     * 列表里出现、并能被用户单独开关。
-     *
-     * ## 为什么不再是 `--patch` overlay 里的 `- insert:`
-     *
-     * 改造前它是主机 overlay 的一行 `insert`。那种挂载方式**没有身份**：官方
-     * plugin-manager 的列表只认 `dsh.profile.bundles`（`listBundles()`）与 Loader 里
-     * 由 bundle 层贡献的行，overlay 插进来的条目不在任何一份清单里 —— 于是插件页
-     * 看不到它，用户既关不掉、也不知道它存在。用户原话：「有的用户他可能不太想用
-     * 这个插件」。
-     *
-     * 改成 bundle 之后，「关掉」= 从 `dsh.profile.bundles` 摘掉这个名字，包本身留在
-     * `node_modules`、记忆数据留在 `$DSH_HOME/memory`，随时能再打开。
-     *
-     * ## ⚠️ 幂等判据必须「只看缺失才补」，不能「每次都补齐」
-     *
-     * 这是**与改造前最大的语义差别**。overlay 是 App 每次启动整体覆盖的，用户改不动；
-     * 而 bundle 名单是**用户与 App 共写**的同一份文件。若写成「不在就加上」，用户
-     * 在插件页关掉它、重启 App，这里又会把它加回去 —— 变成「关不掉」。
-     *
-     * 所以判据是「**从来没见过它**才补」：见标记文件 [CORE_MEMORY_MARKER]。
-     * 一旦登记过（标记文件在），此后只在用户保留它时维持现状，绝不自动复活。
-     * 用户想再打开，在插件页把它打开即可，那时的写入由官方插件管理器完成。
-     *
-     * ## ⚠️ `dependencies` 也要写
-     *
-     * `loadProfileDirectory()` 解析 bundle 名时的锚点是「dsh 安装目录」和
-     * 「`<profileDir>/package.json`」。包在 `$DSH_HOME/node_modules/` 下，靠 Node 的
-     * 向上查找命中；但官方 `listBundles()` 的 `installed`、`removable`、版本比较都读
-     * `manifest.dependencies`，只写 `bundles` 会让这一行在插件页**根本不渲染**。
-     * 依赖值用 `link:` 指向真实目录，pnpm 认得这种本地链接、也不会去 registry 找。
-     */
-    private fun registerCoreMemoryBundle() {
-        val manifest = File(dshHome, "profiles/$PROFILE_NAME/package.json")
-        val marker = File(dshHome, CORE_MEMORY_MARKER)
-        if (!File(coreMemoryDir(), "package.json").isFile) {
-            Log.w(TAG, "跨会话记忆插件包不存在，跳过 bundle 登记: ${coreMemoryDir().absolutePath}")
-            return
-        }
-        if (!manifest.isFile) {
-            // profile 还没初始化：官方启动时会用 PROFILE_TEMPLATES.web 建好，
-            // 那时只带两个核心 bundle，下一次启动这里再补。
-            Log.i(TAG, "profile 清单尚不存在，跨会话记忆插件的 bundle 登记推迟到下次启动")
-            return
-        }
-
-        try {
-            val json = JSONObject(manifest.readText())
-            val dsh = json.optJSONObject("dsh") ?: JSONObject().also { json.put("dsh", it) }
-            val profile = dsh.optJSONObject("profile") ?: JSONObject().also { dsh.put("profile", it) }
-            val bundles = profile.optJSONArray("bundles") ?: JSONArray().also { profile.put("bundles", it) }
-
-            var listed = false
-            for (i in 0 until bundles.length()) {
-                if (bundles.optString(i, "") == CORE_MEMORY_PACKAGE) {
-                    listed = true
-                    break
-                }
-            }
-
-            var changed = false
-            if (!listed && !marker.isFile) {
-                // 第一次见到它：补进名单（老用户升级上来也走这一支，见 [CORE_MEMORY_MARKER] 注释）
-                bundles.put(CORE_MEMORY_PACKAGE)
-                changed = true
-                Log.i(TAG, "已把跨会话记忆插件登记为 profile bundle（可在插件页关闭）")
-            }
-            if (!marker.isFile) {
-                marker.parentFile?.mkdirs()
-                marker.writeText("registered")
-            }
-
-            // 依赖项：解析锚点之一，也让官方列表能算出版本与可移除性。
-            // 用户关掉后**不删**这一行 —— 它是包的存在声明，不是启用开关。
-            val deps = json.optJSONObject("dependencies") ?: JSONObject().also { json.put("dependencies", it) }
-            if (!deps.has(CORE_MEMORY_PACKAGE)) {
-                deps.put(CORE_MEMORY_PACKAGE, "link:${coreMemoryDir().absolutePath}")
-                changed = true
-            }
-
-            if (changed) manifest.writeText(json.toString(2) + "\n")
-        } catch (t: Throwable) {
-            // 登记失败不阻断启动：记忆功能退化成「不挂载」，与包缺失同级
-            Log.w(TAG, "登记跨会话记忆插件 bundle 失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 清掉老版本留下的 dsh-core-memory 主机 overlay（幂等）。
-     *
-     * 改造前它是 `$DSH_HOME/core-memory.patch.yml` 里的一行 `insert`，每次启动被
-     * `--patch` 挂上。现在改走 profile bundle，这份 overlay 若还在，同一个包会被
-     * **挂载两次** —— `insert` 行不按 id 去重，结果是记忆工具重复注册、核心记忆在
-     * 系统提示里出现两遍。
-     *
-     * ⚠️ 不能只在「不再生成它」就算了：老设备上那份文件**已经存在**，App 不生成
-     * 不代表 `--patch` 不传它 —— 传不传由 applyOverlays 里那一串列表决定，而列表
-     * 现在已不含 core-memory 这一项。但文件本身仍要删，否则它会被别的路径读到。
-     */
-    private fun removeCoreMemoryOverlay() {
-        val stale = File(dshHome, CORE_MEMORY_PATCH)
-        if (stale.isFile && stale.delete()) {
-            Log.i(TAG, "已清理旧的跨会话记忆 overlay（改由 profile bundle 挂载）")
-        }
-    }
-
-    /**
-     * 解出插件市场（dsh-android-market）到 `$DSH_HOME/market/`。
-     *
-     * 与 [ensureCoreMemory] / [ensureMobileUi] 同一套做法、同一套理由：包解到
-     * `$DSH_HOME` 下而不是 profile 的 `node_modules`（那里归 pnpm 管，本包不在 profile
-     * 的 `dependencies` 里，用户每装一次插件就会被挪进 `node_modules/.ignored/`，
-     * overlay 里的包名随即解析失败）。
-     *
-     * ⚠️ **`lib/collect.mjs` 与 `lib/seed.json` 必须一起解出来**：宿主半
-     * `lib/index.js` 用相对路径 `from './collect.mjs'` 导入采集核心，并用
-     * `new URL('./seed.json', import.meta.url)` 定位离线种子。少任何一个，
-     * 插件在 `import` 阶段就 `ERR_MODULE_NOT_FOUND`，宿主半整个不激活 ——
-     * 报错只在引擎启动日志里出现一次，界面上表现为「设置页里没有插件市场」。
-     *
-     * 幂等判据是版本戳而不是「文件在不在」：插件随 APK 升级而变，只看文件存在
-     * 会让老设备永远停在旧版（尤其是 `lib/seed.json` 那份离线目录）。
-     */
-    private fun ensureMarket() {
-        val target = File(dshHome, "$MARKET_DIR/$MARKET_PACKAGE")
-        val clientJs = File(target, "lib/client.js")
-        val stamp = File(target, MARKET_STAMP)
-
-        if (clientJs.isFile && clientJs.length() > 0 &&
-            stamp.isFile && stamp.readText().trim() == MARKET_VERSION
-        ) {
-            return
-        }
-
-        try {
-            target.deleteRecursively()
-            java.util.zip.ZipInputStream(context.assets.open(MARKET_ASSET).buffered()).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory) {
-                        val out = File(target, entry.name)
-                        out.parentFile?.mkdirs()
-                        out.outputStream().use { zis.copyTo(it) }
-                    }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
-                }
-            }
-            stamp.writeText(MARKET_VERSION)
-            Log.i(TAG, "已安装插件市场 $MARKET_PACKAGE $MARKET_VERSION (${clientJs.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上不阻断启动：只是少了市场，官方的「输入包名安装」照常可用
-            Log.w(TAG, "安装插件市场失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载 dsh-android-market 的 overlay，返回其路径；不可用时返回 null。
-     *
-     * 与其它 `writeXxxPatch` 同构：`--patch` 在 profile 层**之后**应用，优先级
-     * 更高，且完全由本 App 拥有，升级时整体覆盖即可。`name` 用 `file://` 绝对
-     * URL，因为包在 pnpm 管辖之外、按裸包名解析不到。
-     *
-     * ⚠️ 浏览器半（设置页的「插件市场」分节）由 `dsh-client-modules` 通过 package.json
-     * 的 `dsh.client` 声明 + `exports["./client"]` 自动编入，**不需要**在这里声明。
-     *
-     * ⚠️ 与 `plugin-manager` 那条 overlay 是**不同 id 的条目**（那边 `- id:` 覆盖 config，
-     * 这边 `- insert:` 加新条目），两者不互相覆盖，所以先后顺序不影响正确性 ——
-     * 调用点上把它排在 `writePluginManagerPatch()` 附近只是就近分组。
-     */
-    private fun writeMarketPatch(): File? {
-        val patch = File(dshHome, MARKET_PATCH)
-        val entry = File(dshHome, "$MARKET_DIR/$MARKET_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            Log.w(TAG, "插件市场入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载插件市场；插件包随 APK 分发，已解到 .dsh/${MARKET_DIR}。
-                # 用 file:// 绝对路径挂载：包刻意放在 profile 的 node_modules 之外，
-                # 否则用户每次用插件管理器装东西都会被 pnpm 挪进 .ignored/。
-                - insert:
-                    - id: $MARKET_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入插件市场 overlay 失败: ${t.message}")
-            null
-        }
-    }
 
     /**
      * 把 link()/linkat() 的语义转译层解到真实文件路径（幂等），返回其路径。
@@ -4499,46 +3312,6 @@ class EngineManager private constructor(private val context: Context) {
         }
     }
 
-    /**
-     * 解出 uid 2000 特权工具插件（`shell-tool.zip` → `$DSH_HOME/shell-tool/dsh-android-shell/`）。
-     *
-     * 该插件在 `apply()` 里注册一个名为 `shell` 的**独立工具**，它永远以 uid 2000
-     * 执行；`bash` 工具则永远保持 app 身份。两者的机制与取舍见插件源码头部注释
-     * （`mobile-ui-plugin/dsh-android-shell/lib/index.js`）。
-     *
-     * ⚠️ **为什么解到 `$DSH_HOME/shell-tool/` 而不是 profile 的 `node_modules`**：
-     * 与移动端 UI 插件同一个坑 —— 那个目录归 pnpm 管，而本包不在 profile 的
-     * `dependencies` 里，用户每装一次插件就会被挪进 `node_modules/.ignored/`。
-     * 详见 [ensureMobileUi]。
-     *
-     * 与移动端 UI 插件不同，这里**不做版本戳**：`lib/index.js` 每次启动覆盖写，
-     * 逻辑与 linkcompat/boosandbox 那类「每次覆盖」的资产一致 —— 包很小（单文件），
-     * 比对哈希不值当。
-     */
-    private fun ensurePrivilegedPlugin() {
-        val target = File(dshHome, "$SHELL_TOOL_DIR/$SHELL_TOOL_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(SHELL_TOOL_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装 uid 2000 特权工具插件 $SHELL_TOOL_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是没有 shell 工具，不该拖垮引擎启动
-            Log.w(TAG, "安装 uid 2000 特权工具插件失败: ${t.message}")
-        }
-    }
 
     /**
      * 解出 root 执行通道（`dsh-android-root.mjs`，每次启动覆盖写）。
@@ -4566,481 +3339,6 @@ class EngineManager private constructor(private val context: Context) {
         }
     }
 
-    /**
-     * 解出 root 特权工具插件（`root-tool.zip` → `$DSH_HOME/root-tool/dsh-android-root/`）。
-     *
-     * 结构、放置位置与不做版本戳的理由与 [ensurePrivilegedPlugin] 完全一致
-     * （⚠️ 同样**不能**放进 profile 的 `node_modules` —— 会被 pnpm 挪走）。
-     */
-    private fun ensureRootPlugin() {
-        val target = File(dshHome, "$ROOT_TOOL_DIR/$ROOT_TOOL_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(ROOT_TOOL_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装 root 特权工具插件 $ROOT_TOOL_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            Log.w(TAG, "安装 root 特权工具插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载 root 特权工具的 overlay，返回其路径；不可用时返回 null。
-     *
-     * @param available 是否**确实能拿到 uid 0**（由 [RootAccess.detect] 端到端探测得出，
-     *   不是「存在 su 文件」）。不可用时把上次留下的 overlay 删掉 —— 与
-     *   [writePrivilegedPatch] 同理：留着一个指向不存在文件的 overlay 只会制造噪音，
-     *   更糟的是让模型以为这台设备有 root。
-     */
-    private fun writeRootPatch(available: Boolean): File? {
-        val patch = File(dshHome, ROOT_TOOL_PATCH)
-        val entry = File(dshHome, "$ROOT_TOOL_DIR/$ROOT_TOOL_PACKAGE/lib/index.js")
-        if (!available || !entry.isFile) {
-            if (patch.isFile) patch.delete()
-            if (!available) Log.i(TAG, "未检测到可用 root，跳过挂载 root 工具")
-            else Log.w(TAG, "root 特权工具入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载 root 特权工具插件：注册一个独立的 `root` 工具，
-                # 由模型按需选择；`bash` 与 `shell` 都不受影响。
-                - insert:
-                    - id: $ROOT_TOOL_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入 root 特权工具 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入 root 特权工具 overlay 失败: ${t.message}")
-            null
-        }
-    }
-
-    /**
-     * 解出悬浮球控制工具插件（`bubble-tool.zip` → `$DSH_HOME/bubble-tool/dsh-android-bubble/`）。
-     *
-     * 该插件在 `apply()` 里注册一个名为 `bubble` 的**独立工具**，模型可以据此
-     * 改悬浮窗的状态、大小、形状、配色、面板与头像 —— 也就是把原先只有**页面侧**
-     * 插件够得着的那条能力，接到模型的工具列表里。
-     *
-     * ⚠️ **为什么解到 `$DSH_HOME/bubble-tool/` 而不是 profile 的 `node_modules`**：
-     * 与 [ensureMobileUi] / [ensurePrivilegedPlugin] 同一个坑 —— 那个目录归 pnpm 管，
-     * 而本包不在 profile 的 `dependencies` 里，用户每装一次插件就会被挪进
-     * `node_modules/.ignored/`。
-     *
-     * 与 `shell-tool` 一样**不做版本戳**：包很小（单文件），每次启动覆盖写。
-     */
-    private fun ensureBubbleTool() {
-        val target = File(dshHome, "$BUBBLE_TOOL_DIR/$BUBBLE_TOOL_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(BUBBLE_TOOL_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装悬浮球控制工具插件 $BUBBLE_TOOL_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是没有 bubble 工具，不该拖垮引擎启动
-            Log.w(TAG, "安装悬浮球控制工具插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载悬浮球控制工具的 overlay，返回其路径；入口不存在时返回 null。
-     *
-     * 与 [writePrivilegedPatch] / [writeRootPatch] 同构。**没有「能力探测」这一步**：
-     * 悬浮球不需要任何特权（用户开了开关并授权悬浮窗就够），所以只要文件在就挂载 ——
-     * 真正能不能显示由 `FloatingBubble` 自己在运行时判断，工具照常返回它读到的状态。
-     */
-    private fun writeBubbleToolPatch(): File? {
-        val patch = File(dshHome, BUBBLE_TOOL_PATCH)
-        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
-        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
-        if (!isBuiltinPluginEnabled(context, "bubble-tool")) {
-            if (patch.isFile) patch.delete()
-            Log.i(TAG, "悬浮球控制工具已被用户关闭，跳过挂载")
-            return null
-        }
-        val entry = File(dshHome, "$BUBBLE_TOOL_DIR/$BUBBLE_TOOL_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            if (patch.isFile) patch.delete()
-            Log.w(TAG, "悬浮球控制工具入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载悬浮球控制工具插件：注册一个独立的 `bubble` 工具，
-                # 让模型能改悬浮窗的状态/大小/形状/配色/头像。
-                - insert:
-                    - id: $BUBBLE_TOOL_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入悬浮球控制工具 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入悬浮球控制工具 overlay 失败: ${t.message}")
-            null
-        }
-    }
-
-    /**
-     * 解出系统栏配色工具插件（`statusbar-tool.zip` → `$DSH_HOME/statusbar-tool/dsh-android-statusbar/`）。
-     *
-     * 该插件在 `apply()` 里注册一个名为 `statusbar` 的**独立工具**，让模型能改
-     * **状态栏（顶部）**与**导航栏（底部）**的配色 —— 也就是把原先只有 App 自己
-     * （页面底色驱动）够得着的那两条栏，接到模型的工具列表里。
-     *
-     * ⚠️ **为什么解到 `$DSH_HOME/statusbar-tool/` 而不是 profile 的 `node_modules`**：
-     * 与 [ensureBubbleTool] 同一个坑 —— 那个目录归 pnpm 管，而本包不在 profile 的
-     * `dependencies` 里，用户每装一次插件就会被挪进 `node_modules/.ignored/`。
-     *
-     * 与 `bubble-tool` 一样**不做版本戳**：包很小（两个文件），每次启动覆盖写。
-     */
-    private fun ensureStatusBarTool() {
-        val target = File(dshHome, "$STATUSBAR_TOOL_DIR/$STATUSBAR_TOOL_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(STATUSBAR_TOOL_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装系统栏配色工具插件 $STATUSBAR_TOOL_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是没有 statusbar 工具，不该拖垮引擎启动
-            Log.w(TAG, "安装系统栏配色工具插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载系统栏配色工具的 overlay，返回其路径；入口不存在时返回 null。
-     *
-     * 与 [writeBubbleToolPatch] 同构。**没有「能力探测」这一步**：改系统栏配色
-     * 不需要任何特权或授权，只要文件在就挂载。
-     */
-    private fun writeStatusBarToolPatch(): File? {
-        val patch = File(dshHome, STATUSBAR_TOOL_PATCH)
-        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
-        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
-        if (!isBuiltinPluginEnabled(context, "statusbar-tool")) {
-            if (patch.isFile) patch.delete()
-            Log.i(TAG, "系统栏配色工具已被用户关闭，跳过挂载")
-            return null
-        }
-        val entry = File(dshHome, "$STATUSBAR_TOOL_DIR/$STATUSBAR_TOOL_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            if (patch.isFile) patch.delete()
-            Log.w(TAG, "系统栏配色工具入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载系统栏配色工具插件：注册一个独立的 `statusbar` 工具，
-                # 让模型能改状态栏（顶部）与导航栏（底部）的配色。
-                - insert:
-                    - id: $STATUSBAR_TOOL_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入系统栏配色工具 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入系统栏配色工具 overlay 失败: ${t.message}")
-            null
-        }
-    }
-
-    /**
-     * 解出 UI 调试工具插件（`uiagent-tool.zip` → `$DSH_HOME/uiagent-tool/dsh-android-uiagent/`）。
-     *
-     * 该插件在 `apply()` 里注册一个名为 `ui` 的**独立工具**，让模型能枚举界面上的
-     * 可交互元素（带屏幕精确坐标）、点击、输入、滚动、读文本 —— 也就是把「操作并
-     * 观察这个 App 的界面」接到模型的工具列表里。真实执行者是 [UiProbeBridge]
-     * 与页面探针 `assets/ui-probe.js`。
-     *
-     * ⚠️ **必须解到 `$DSH_HOME/uiagent-tool/` 而不是 profile 的 `node_modules`**：
-     *   与 [ensureBubbleTool] 同一个坑 —— 那个目录归 pnpm 管，而本包不在 profile
-     *   的 `dependencies` 里，用户每装一次插件就会被挪进 `node_modules/.ignored/`。
-     *
-     * 与 `shell-tool` / `bubble-tool` 一样**不做版本戳**：包很小（两个文件），
-     * 每次启动覆盖写。
-     */
-    private fun ensureUiTool() {
-        val target = File(dshHome, "$UI_TOOL_DIR/$UI_TOOL_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(UI_TOOL_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装 UI 调试工具插件 $UI_TOOL_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是没有 ui 工具，不该拖垮引擎启动
-            Log.w(TAG, "安装 UI 调试工具插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载 UI 调试工具的 overlay，返回其路径；入口不存在时返回 null。
-     *
-     * 与 [writeBubbleToolPatch] 同构。**没有「能力探测」这一步**：ui 工具不需要
-     * 任何特权（只要界面加载出来了就能用），所以文件在就挂载 —— 真正能不能用
-     * 由 [UiProbeBridge] 在运行时判断（`probeReady`），工具照常返回它读到的状态。
-     */
-    private fun writeUiToolPatch(): File? {
-        val patch = File(dshHome, UI_TOOL_PATCH)
-        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
-        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
-        if (!isBuiltinPluginEnabled(context, "ui-tool")) {
-            if (patch.isFile) patch.delete()
-            Log.i(TAG, "UI 调试工具已被用户关闭，跳过挂载")
-            return null
-        }
-        val entry = File(dshHome, "$UI_TOOL_DIR/$UI_TOOL_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            if (patch.isFile) patch.delete()
-            Log.w(TAG, "UI 调试工具入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载 UI 调试工具插件：注册一个独立的 `ui` 工具，
-                # 让模型能枚举/点击/输入/滚动这个 App 的界面（带屏幕精确坐标）。
-                - insert:
-                    - id: $UI_TOOL_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入 UI 调试工具 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入 UI 调试工具 overlay 失败: ${t.message}")
-            null
-        }
-    }
-
-    /**
-     * 解出**浏览器工具**插件（`browser-tool.zip` → `$DSH_HOME/browser-tool/dsh-android-browser/`）。
-     *
-     * 该插件在 `apply()` 里注册一个名为 `browser` 的**独立工具**，让模型能：
-     * 打开网页、读页面结构（可见文本 + 带编号的可交互元素）、点按钮、填表单、
-     * 截图、管理标签页。真实执行者是 [com.dsh.android.browser.BrowserBridge]
-     * 与 [com.dsh.android.browser.AiBrowserView]。
-     *
-     * ⚠️ **必须解到 `$DSH_HOME/browser-tool/` 而不是 profile 的 `node_modules`**：
-     *   与 [ensureBubbleTool] 同一个坑 —— 那个目录归 pnpm 管，而本包不在 profile
-     *   的 `dependencies` 里，用户每装一次插件就会被挪进 `node_modules/.ignored/`。
-     *
-     * 与其它工具插件一样**不做版本戳**：包很小（两个文件），每次启动覆盖写。
-     */
-    private fun ensureBrowserTool() {
-        val target = File(dshHome, "$BROWSER_TOOL_DIR/$BROWSER_TOOL_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(BROWSER_TOOL_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装浏览器工具插件 $BROWSER_TOOL_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是没有 browser 工具，不该拖垮引擎启动
-            Log.w(TAG, "安装浏览器工具插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载浏览器工具的 overlay，返回其路径；入口不存在时返回 null。
-     *
-     * 与 [writeUiToolPatch] 同构。**没有「能力探测」这一步**：浏览器不需要
-     * 任何特权，只要插件入口在就挂载 —— 浏览器实例由
-     * [com.dsh.android.ui.MainActivity.ensureAiBrowser] 在模型第一次调用时按需创建。
-     */
-    private fun writeBrowserToolPatch(): File? {
-        val patch = File(dshHome, BROWSER_TOOL_PATCH)
-        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
-        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
-        if (!isBuiltinPluginEnabled(context, "browser-tool")) {
-            if (patch.isFile) patch.delete()
-            Log.i(TAG, "浏览器工具已被用户关闭，跳过挂载")
-            return null
-        }
-        val entry = File(dshHome, "$BROWSER_TOOL_DIR/$BROWSER_TOOL_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            if (patch.isFile) patch.delete()
-            Log.w(TAG, "浏览器工具入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载浏览器工具插件：注册一个独立的 `browser` 工具，
-                # 让模型能用自己的 WebView 上网、登录、读页面、点按钮。
-                - insert:
-                    - id: $BROWSER_TOOL_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入浏览器工具 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入浏览器工具 overlay 失败: ${t.message}")
-            null
-        }
-    }
-
-    /**
-     * 解出**日志工具**插件（`logs-tool.zip` → `$DSH_HOME/logs-tool/dsh-android-logs/`）。
-     *
-     * 该插件在 `apply()` 里注册一个名为 `logs` 的**独立工具**，让模型能：
-     * 读最近日志（可按级别/来源/关键字筛）、列崩溃现场并读全文、看一条摘要、
-     * 生成诊断包。
-     *
-     * ## 为什么必须由原生侧供数
-     *
-     * 模型跑在 **Node 进程**里，而日志的权威副本有两处它都够不着：
-     * ① 原生侧的内存环形缓冲（`LogStore.entries()`，最新、同步入队）；
-     * ② `filesDir/logs/` 下的文件与崩溃现场（`crash/`）。
-     * 它虽然能读文件系统（同域、共享目录），但**「文件在哪、叫什么、怎么筛」**
-     * 这套知识不该让模型去猜 —— 猜错的表现是「日志里没有」，而它看起来像查过了。
-     *
-     * ⚠️ **为什么解到 `$DSH_HOME/logs-tool/` 而不是 profile 的 `node_modules`**：
-     *   与 [ensureBubbleTool] 同一个坑 —— 那个目录归 pnpm 管，而本包不在 profile 的
-     *   `dependencies` 里，用户每装一次插件就会被挪进 `node_modules/.ignored/`。
-     *
-     * 与其它工具插件一样**不做版本戳**：包很小（两个文件），每次启动覆盖写。
-     */
-    private fun ensureLogsTool() {
-        val target = File(dshHome, "$LOGS_TOOL_DIR/$LOGS_TOOL_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(LOGS_TOOL_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装日志工具插件 $LOGS_TOOL_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是没有 logs 工具，不该拖垮引擎启动
-            Log.w(TAG, "安装日志工具插件失败: ${t.message}")
-        }
-    }
-
-    /**
-     * 写出挂载日志工具的 overlay，返回其路径；入口不存在时返回 null。
-     *
-     * 与 [writeBubbleToolPatch] / [writeUiToolPatch] 同构。
-     */
-    private fun writeLogsToolPatch(): File? {
-        val patch = File(dshHome, LOGS_TOOL_PATCH)
-        // 用户关掉了这个插件 ⇒ 不挂载，并删掉可能存在的旧 overlay
-        //（否则上一次启动写的那个会继续生效，用户会以为开关没起作用）。
-        if (!isBuiltinPluginEnabled(context, "logs-tool")) {
-            if (patch.isFile) patch.delete()
-            Log.i(TAG, "日志工具已被用户关闭，跳过挂载")
-            return null
-        }
-        val entry = File(dshHome, "$LOGS_TOOL_DIR/$LOGS_TOOL_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            if (patch.isFile) patch.delete()
-            Log.w(TAG, "日志工具入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载日志工具插件：注册一个独立的 `logs` 工具，
-                # 让模型能读运行日志 / 看崩溃现场 / 生成诊断包。
-                - insert:
-                    - id: $LOGS_TOOL_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入日志工具 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入日志工具 overlay 失败: ${t.message}")
-            null
-        }
-    }
 
     /**
      * 写出**定向隔离层** `$DSH_HOME/quarantine.patch.yml`（L1.5 的执行端）。
@@ -5245,82 +3543,6 @@ class EngineManager private constructor(private val context: Context) {
         return false
     }
 
-    /**
-     * 解出桌面宠物的**状态桥**插件（`pet-bridge.zip` → `$DSH_HOME/pet-bridge/dsh-android-pet/`）。
-     *
-     * 该插件订阅引擎的 `session/event`（`@deepseek-ai/dsh-session` 声明的 post-commit
-     * 事件流），把「AI 现在在干什么」翻译成运行状态写进 `$DSH_HOME/bubble-state.json`，
-     * 由 [BubbleCommandBridge] 读走喂给悬浮球 —— 悬浮球据此换动作，成为桌面宠物。
-     *
-     * ## 为什么不并进 `dsh-android-bubble`
-     *
-     * 两者生命周期完全不同：[BUBBLE_TOOL_PACKAGE] 只在**模型调用 `bubble` 工具**时
-     * 被用到，而这个桥**每一轮回复都在跑**。并在一起会让「只想让 AI 改外观」的用户
-     * 也长期挂着一个事件订阅者，而且 `inject: ['tools']` 是工具插件需要的、状态桥
-     * 不需要 —— 多声明的服务就是多一个"引擎没它就整个不激活"的机会。
-     *
-     * 与悬浮球工具插件一样**不做版本戳**：包很小（两个文件），每次启动覆盖写。
-     */
-    private fun ensurePetBridge() {
-        val target = File(dshHome, "$PET_BRIDGE_DIR/$PET_BRIDGE_PACKAGE")
-        val entry = File(target, "lib/index.js")
-        try {
-            context.assets.open(PET_BRIDGE_ASSET).use { input ->
-                java.util.zip.ZipInputStream(input.buffered()).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        if (!e.isDirectory) {
-                            val out = File(target, e.name)
-                            out.parentFile?.mkdirs()
-                            out.outputStream().use { zis.copyTo(it) }
-                        }
-                        zis.closeEntry()
-                        e = zis.nextEntry
-                    }
-                }
-            }
-            Log.i(TAG, "已安装桌面宠物状态桥插件 $PET_BRIDGE_PACKAGE (${entry.length()} 字节)")
-        } catch (t: Throwable) {
-            // 装不上就只是宠物不会自己动，不该拖垮引擎启动
-            Log.w(TAG, "安装桌面宠物状态桥插件失败: ${t.message}")
-        }
-    }
-
-
-    /**
-     * 写出挂载状态桥的 overlay，返回其路径；入口不存在时返回 null。
-     *
-     * ⚠️ **与悬浮球工具是两条独立 overlay，不是一个**：那条走 [writeBubbleToolPatch]，
-     *   缺了它模型仍然能用 `bubble` 工具；这条缺了则宠物不会自己动。合在一起的话
-     *   任一侧失败会让另一侧也失效，而两者的失败原因毫无关系。
-     */
-    private fun writePetBridgePatch(): File? {
-        val patch = File(dshHome, PET_BRIDGE_PATCH)
-        val entry = File(dshHome, "$PET_BRIDGE_DIR/$PET_BRIDGE_PACKAGE/lib/index.js")
-        if (!entry.isFile) {
-            if (patch.isFile) patch.delete()
-            Log.w(TAG, "桌面宠物状态桥入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载桌面宠物状态桥：订阅 session/event，把运行状态写进
-                # ${'$'}DSH_HOME/bubble-state.json，让悬浮球按状态换动作。
-                - insert:
-                    - id: $PET_BRIDGE_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入桌面宠物状态桥 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入桌面宠物状态桥 overlay 失败: ${t.message}")
-            null
-        }
-    }
 
     /**
      * 解出无线调试用的 adb 工具链（`adb-wireless-arm64.zip` → `filesDir/adbwire/`）。
@@ -5414,46 +3636,6 @@ class EngineManager private constructor(private val context: Context) {
         }
     }
 
-    /**
-     * 写出挂载 uid 2000 特权工具的 overlay，返回其路径；不可用时返回 null。
-     *
-     * 走 `--patch` 与移动端 UI 插件同样的理由（不改用户自己的 profile 配置、
-     * 优先级更高、完全由本 App 拥有）。`name` 用 `file://` 绝对 URL，因为包
-     * 刻意放在 pnpm 管辖之外，按包名解析不到。
-     *
-     * @param available 特权通道是否可用。不可用时**不挂载** —— 插件本身在
-     *   没有 `DSH_PRIV_RUNNER` 时也不会注册工具，但少挂一层就少一处噪音。
-     */
-    private fun writePrivilegedPatch(available: Boolean): File? {
-        val patch = File(dshHome, SHELL_TOOL_PATCH)
-        val entry = File(dshHome, "$SHELL_TOOL_DIR/$SHELL_TOOL_PACKAGE/lib/index.js")
-        if (!available || !entry.isFile) {
-            // 通道不可用：把上次可能留下的 overlay 删掉，否则引擎会挂上一个
-            // 因为找不到文件而报错的模块（或者更糟，挂上旧的残留版本）。
-            if (patch.isFile) patch.delete()
-            if (!available) Log.i(TAG, "uid 2000 通道不可用，跳过挂载 shell 工具")
-            else Log.w(TAG, "uid 2000 特权工具入口不存在，跳过挂载: ${entry.absolutePath}")
-            return null
-        }
-        return try {
-            val url = "file://${entry.absolutePath}"
-            patch.writeText(
-                """
-                # 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。
-                # 挂载 uid 2000 特权工具插件：注册一个独立的 `shell` 工具，
-                # 由模型按需选择；`bash` 工具不受影响，永远走 app 身份。
-                - insert:
-                    - id: $SHELL_TOOL_PACKAGE
-                      name: '$url'
-                """.trimIndent() + "\n"
-            )
-            Log.i(TAG, "已写入 uid 2000 特权工具 overlay: ${patch.name}")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入 uid 2000 特权工具 overlay 失败: ${t.message}")
-            null
-        }
-    }
 
     /**
      * 首次安装时把本 App 的推荐设置播种进 profile 的用户 patch 层（幂等）。
@@ -5495,68 +3677,13 @@ class EngineManager private constructor(private val context: Context) {
      * 改一项，hook `window.fetch` 抓到 `settings/mutate` 的 payload 与落盘结果，
      * 再用 `settings/describe` 核对 schema 里的可选项与 `base`/`user` 分层。
      */
-    /**
-     * 确保救援 profile 存在且**可用**（P2，见 `docs/RESCUE-BOOT-PLAN.md` §4.4.1）。
-     *
-     * ## 为什么 App 要自己写这个 profile
-     *
-     * 引擎**不会**为 `rescue` 初始化 profile：`dsh-app-boot/lib/index.js` L973-975
-     * 只认 `PROFILE_TEMPLATES` 里的五个内置名字，别的名字直接抛
-     * `dsh: profile "rescue" does not exist; create it with 'dsh plugin --profile rescue add <package>'`。
-     *
-     * 而 `initProfile()`（同文件 L576）其实只需要一个 `package.json` ——
-     * 它自己也是这么写的（`{name, private, dependencies:{}, dsh:{profile:{bundles}}}`）。
-     * 所以 App 照同一格式写一份即可。真机实测（CDY-TN90 / Android 10）确认可用：
-     * `--profile rescue --dump-config` 打出完整条目表，
-     * `--profile rescue --no-open --port 0` 打出 `dsh web: http://127.0.0.1:<port>/?token=…`。
-     *
-     * ## ⚠️ 三条要害
-     *
-     * 1. **模板不能取自用户的 `profiles/web/package.json`** —— 那份文件正是
-     *    可能已经坏掉的东西（用户装了 40 个插件、某个拖挂了核心插件）。
-     *    拿它当模板等于把病灶复制进救援环境。所以 bundles 逐字取自引擎的
-     *    `PROFILE_TEMPLATES.web.bundles`，见 [RESCUE_BUNDLES]。
-     * 2. **只在文件不存在时写**（与引擎 `initProfile` 同一判据）：救援 profile
-     *    一旦被写坏，用户/AI 可能正在里面修东西，每次启动覆盖会把他们的活抹掉。
-     * 3. **写失败要如实报出来**：救援 profile 建不出来 ⇒ 救援启动一定失败。
-     *    这时**不能**假装没事继续走救援路径，必须让调用方回落到 L3（安全模式）。
-     *    返回 null 就是「建不出来」的信号。
-     *
-     * @return 写好的 profile 目录；null = 建不出来（调用方应回落 L3）。
-     */
-    private fun ensureRescueProfile(): File? {
-        val dir = File(dshHome, "profiles/$RESCUE_PROFILE_NAME")
-        val manifest = File(dir, "package.json")
-        if (manifest.isFile) return dir
 
-        return try {
-            dir.mkdirs()
-            // ⚠️ 格式逐字对齐引擎 `initProfile()` 的输出（含 2 空格缩进与结尾换行）：
-            //   引擎会读回这份文件（`readProfileManifest`），格式不一致虽然多数情况
-            //   仍能解析，但没有理由给自己制造差异。`name` 也用引擎的命名规则
-            //   `dsh-profile-<目录名>`。
-            val json = JSONObject()
-                .put("name", "dsh-profile-$RESCUE_PROFILE_NAME")
-                .put("private", true)
-                .put("dependencies", JSONObject())
-                .put(
-                    "dsh",
-                    JSONObject().put(
-                        "profile",
-                        JSONObject().put("bundles", JSONArray(RESCUE_BUNDLES)),
-                    ),
-                )
-            // 同 [stripThirdPartyBundles] 的理由：`JSONObject` 会把 `/` 转义成 `\/`，
-            // 那在 JSON 里合法但看起来像坏了。这里全是 `@deepseek-ai/...` 包名，
-            // 转义后一眼就能看出不对，还原回去。
-            manifest.writeText(json.toString(2).replace("\\/", "/") + "\n")
-            Log.i(TAG, "已创建救援 profile: ${manifest.absolutePath}（bundles=${RESCUE_BUNDLES.joinToString(", ")}）")
-            dir
-        } catch (t: Throwable) {
-            Log.e(TAG, "创建救援 profile 失败（救援启动将不可用）: ${t.message}")
-            null
-        }
-    }
+
+    private fun isBundleEnabled(name: String): Boolean = try {
+        val bundles = JSONObject(File(dshHome, "profiles/$PROFILE_NAME/package.json").readText())
+            .getJSONObject("dsh").getJSONObject("profile").getJSONArray("bundles")
+        (0 until bundles.length()).any { bundles.optString(it) == name }
+    } catch (_: Exception) { false }
 
     private fun seedDefaultSettings(profile: String = PROFILE_NAME) {
         val profileDir = File(dshHome, "profiles/$profile")
@@ -7806,12 +5933,17 @@ class EngineManager private constructor(private val context: Context) {
         //
         //   体检（[preflight]）只处理 `web` profile，它的结论不该影响救援 profile
         //   的可用性 —— 恰恰相反：**web 坏掉时救援必须还能起来**，那正是它存在的理由。
-        //   所以这里独立建、独立判失败（见 [ensureRescueProfile] 的 @return）。
+        //   所以这里独立建、独立判失败（见 BuiltinPluginBundles.initializeProfile()）。
         //
         //   建不出来 ⇒ 救援这条路不可用。这时**不能**假装没事继续（那会让
         //   L2 的失败变成"救援模式也起不来"这种更糟的表现），而是记下来，
         //   让降级决策直接跳到 L3（安全模式）。见 [rescueAvailable]。
-        val rescueProfileDir = ensureRescueProfile()
+        ensureNativeAddon()
+        ensureSystemAddon()
+        val builtinBundles = BuiltinPluginBundles(context, engineDir, dshHome, nodeBin, bootstrap.prefixDir)
+        val rescueProfileDir = builtinBundles.initializeProfile(RESCUE_PROFILE_NAME)
+        // web 初始化失败留给既有 preflight 修复；不得阻断独立救援 profile。
+        builtinBundles.initializeProfile(PROFILE_NAME)
         rescueAvailable = rescueProfileDir != null
         if (!rescueAvailable) {
             Log.e(TAG, "救援 profile 不可用 —— 降级阶梯将跳过 L2 直接到 L3")
@@ -7862,6 +5994,22 @@ class EngineManager private constructor(private val context: Context) {
             Log.i(TAG, "启动前体检已修复损坏的插件配置，继续启动")
         }
 
+        if (targetProfile == PROFILE_NAME) {
+            // preflight 可能重解包 engine，先恢复模板导入依赖。
+            ensureNativeAddon()
+            ensureSystemAddon()
+            if (builtinBundles.initializeProfile(PROFILE_NAME) == null || !builtinBundles.ensure()) {
+                _state.value = State.Failed("内置插件登记失败，详见引擎日志")
+                return@withContext
+            }
+            try {
+                BuiltinPluginUpdatePatch.apply(engineDir, dshHome, BUILTIN_PLUGIN_BUNDLES.associate { it.id to it.packageName }) { Log.i(TAG, it) }
+            } catch (error: IllegalStateException) {
+                Log.e(TAG, "内置插件市场更新适配失败: ${error.message}")
+                _state.value = State.Failed("内置插件市场更新适配失败: ${error.message}")
+                return@withContext
+            }
+        }
         // 前端补丁要在 WebView 首次加载前落盘，所以放在启动引擎这一步里
         ensureWebCompat()
         // HTTP header 净化垫片：配置里混进中文时，undici 会抛一句只带字符下标的
@@ -7885,8 +6033,6 @@ class EngineManager private constructor(private val context: Context) {
         patchTerminalShell()
         // 附件模块的目录 fsync 会走到 /data/user/0（SELinux 拒绝 open）→ 附件发不出去
         patchAttachmentDurability()
-        // 发图格式白名单只认 4 个精确 MIME → image/jpg、heic、剪贴板粘贴全被误拒
-        patchImageMediaType()
         // ⚠️ 用户自己做的插件在运行期抛出未捕获异常时，installFailLoud 会 proc.exit(1)
         //   把整个引擎杀掉 → 反复重启 → App 再也打不开（三级降级阶梯对此无效，
         //   因为这条路径下 RescueBoot.recordFailure 一次都不会被调用）。见其 KDoc。
@@ -7905,34 +6051,18 @@ class EngineManager private constructor(private val context: Context) {
         restoreDirectoryPickerStart()
         // 手机存储与 app 私有目录在 Android 上互不可达，靠 HOME 下两个链接做入口
         ensurePickerRoots()
-        // 移动端 UI 适配插件：必须在 profile 解析前落盘，否则 --patch 挂不上
-        ensureMobileUi()
-        // 右侧栏「AI 浏览器」入口（客户端插件）。必须在引擎启动前解包：
-        // 引擎启动时才扫描 dsh.client 声明并编译前端 bundle，晚一步就是
-        // 「文件在、侧栏里没有这一项」，且没有任何报错。
-        ensureBrowserPane()
-        val browserPanePatch = writeBrowserPanePatch()
-        // 降级 bundle：polyfill 只补 API，语法缺口得靠换 bundle 覆盖 dist 与各插件。
-        // ⚠️ **必须在 ensureMobileUi() 之后**：那一支在版本戳不一致时会
-        // `deleteRecursively()` 重解包 mobile-ui 目录，先降级会被它整个抹掉。
-        // （dist / engine 两棵树与该顺序无关，只是顺手放在一起。）
+        // 插件已在统一登记阶段就位；此处只处理引擎自己的兼容产物。
         ensureWebViewCompat()
+        // 兼容产物会覆盖会话 UI 源码，发图格式补丁必须在覆盖后应用。
+        patchImageMediaType()
         // 出厂默认设置：只写 profile 的用户 patch 层，且只在它不存在时写一次。
         // 必须早于引擎启动 —— 引擎的 initProfile() 会给缺失的 patch 文件补一份空模板。
         seedDefaultSettings()
-        val mobileUiPatch = writeMobileUiPatch()
         // ── 已移除：多模态配置 + Agnes 内置号池（用户要求整块删掉）──────────
         // 不再解包 agnes-multimodal 插件（`generate_image` / `generate_video` 与
         // 「多模态配置」设置页一并消失），不再播种账号池，也不再往 profile 注入
         // 内置 `agnes` 供应商。引擎侧回落到官方默认模型（deepseek-official）。
         // 老设备 profile 里已有的 `agnes` 供应商与旧默认模型由 stripBuiltinAgnesProfile() 清掉。
-        val agnesMmPatch: File? = null
-        // 内置预设 dsh-preset-razor（「快准狠模式（通用）」）。
-        // 走 profile bundle（不是 overlay）⇒ 用户能在「插件 → 已安装插件」里自己关掉，
-        // 默认开启。必须在 profile 解析前解包 + 登记，否则 bundle 解析不到。
-        ensurePresetRazor()
-        removeLegacyPresetRazor()
-        registerPresetRazorBundle()
         // 内置**中文 skill**：落到 $DSH_HOME/skills（全局发现根，每个预设都扫得到），
         // 让 AI 做主题/桌面宠物时不必重新摸一遍 DSH 结构。
         ensurePresetSkills()
@@ -7951,17 +6081,6 @@ class EngineManager private constructor(private val context: Context) {
         // 且 registry 的出厂默认位本来就会选中它）。用户关掉之后，由用户在预设页自己
         // 选一个默认 —— 那是用户意图，App 不替他决定，也不留一个悬空的 default。
 
-        // 跨会话持久记忆插件：核心记忆常驻注入 + 归档记忆检索 + 回复风格设置页。
-        // 走 profile bundle（不是 overlay）⇒ 用户能在「插件 → 已安装插件」里自己关掉。
-        ensureCoreMemory()
-        removeLegacyCoreMemoryDir()
-        removeCoreMemoryOverlay()
-        registerCoreMemoryBundle()
-        // 插件市场：从 npm 按关键词收录插件，在设置页浏览/搜索/一键安装。
-        // 安装动作复用官方 pluginManager 的 Remote 服务，本插件不自己碰 pnpm。
-        // 同样必须在 profile 解析前落盘，否则 --patch 挂不上。
-        ensureMarket()
-        val marketPatch = writeMarketPatch()
         // 沙箱：Android 无内核级后端，用自带 runner 保住 workspace-write 的写边界
         val sandboxPatch = writeSandboxPatch(ensureSandbox())
         // 默认工作区：Android 落不进引擎的平台分支，必须显式给 documentsDirectory
@@ -8024,44 +6143,11 @@ class EngineManager private constructor(private val context: Context) {
         // 「只开了无线调试、没做 adb tcpip」的设备上也能用。见 ensureAdbWireless()。
         val adbWireless = ensureAdbWireless()
         // 把该通道注册成独立的 `shell` 工具（**不是**改 bash 的行为）：
-        // 默认走 app 身份，模型读工具描述后自己决定要不要用 2000。见 ensurePrivilegedPlugin()。
-        ensurePrivilegedPlugin()
-        val privPatch = writePrivilegedPatch(privRunner != null)
-        shellToolMounted = privPatch != null
-        // 悬浮球控制工具：把「改悬浮窗」接到模型的工具列表里。
-        // ⚠️ 必须早于引擎启动（overlay 要在 profile 解析前落盘），且**与特权无关**——
-        //   悬浮球不需要任何身份，只要求用户开过开关并授权过悬浮窗。
-        ensureBubbleTool()
-        val bubblePatch = writeBubbleToolPatch()
-        // 系统栏配色工具：把「改状态栏/导航栏颜色」接到模型的工具列表里。
-        // ⚠️ 与 bubble 工具**完全并列且独立**（不同信箱、不同能力），同样与特权无关：
-        //   改系统栏配色不需要任何授权。必须早于引擎启动（overlay 要在 profile 解析前落盘）。
-        ensureStatusBarTool()
-        val statusBarPatch = writeStatusBarToolPatch()
-        // UI 调试工具：把「看/点这个 App 的界面」接到模型的工具列表里。
-        // ⚠️ 与 bubble 工具**完全并列且独立**（不同信箱、不同能力）。
-        //   同样必须早于引擎启动：overlay 要在 profile 解析前落盘。
-        ensureUiTool()
-        val uiToolPatch = writeUiToolPatch()
-        // 浏览器工具：把「上网 / 登录 / 读页面 / 点按钮」接到模型的工具列表里。
-        // ⚠️ 与 ui 工具**完全并列且独立**：ui 操作的是本 App 自己的界面，
-        //   browser 操作的是一个独立的第二个 WebView（别的网站）。同样必须
-        //   早于引擎启动：overlay 要在 profile 解析前落盘。
-        ensureBrowserTool()
-        val browserToolPatch = writeBrowserToolPatch()
-        // 日志工具：把「读日志 / 看崩溃现场 / 生成诊断包」接到模型的工具列表里。
-        // ⚠️ 与上面三个工具**完全并列且独立**（不同信箱、不同能力），同样与特权无关：
-        //   读日志不需要任何授权。必须早于引擎启动（overlay 要在 profile 解析前落盘）。
-        ensureLogsTool()
-        val logsToolPatch = writeLogsToolPatch()
+        shellToolMounted = targetProfile == PROFILE_NAME && privRunner != null && isBundleEnabled(SHELL_TOOL_PACKAGE)
         // 定向隔离层（L1.5）：把上次定位到的坏插件条目在 patch 层禁掉。
         // ⚠️ 读的是 `RescueBoot` 的持久化状态，**不依赖**本轮启动的任何中间结果，
         //   所以放在这里（早于引擎启动、晚于所有 `- insert:` overlay 的生成）就够。
         val quarantinePatch = writeQuarantinePatch()
-        // 桌面宠物状态桥：把引擎的 `session/event` 转成悬浮球的动作切换。
-        // ⚠️ 与上面那条**并列且独立**：那条给模型 `bubble` 工具，这条让宠物自己会动。
-        ensurePetBridge()
-        val petPatch = writePetBridgePatch()
         // 悬浮球命令信箱：`bubble` 工具把命令写进 `$DSH_HOME/bubble-cmd.json`，
         // 这里轮询读走交给原生。**必须早于引擎启动** —— 否则模型第一次调工具时
         // 信箱还没人守，命令会一直等不到回执。
@@ -8084,9 +6170,8 @@ class EngineManager private constructor(private val context: Context) {
         //   所以信箱必须在**引擎启动之前**就已经有人守。
         RescueCommandBridge.start(dshHome)
         // 让模型知道「有特权身份可选、什么时候该用、用了会失去什么」。
-        // ⚠️ 判据用**挂载结果**（`privPatch != null`）而不是 `privRunner != null`：
-        //   前者才是「`shell` 工具真的注册了」。见 ensurePrivilegedPrompt 的 @param。
-        ensurePrivilegedPrompt(privPatch != null)
+        // 判据同时包含 profile bundle 开关与 runner 是否就位。
+        ensurePrivilegedPrompt(shellToolMounted)
 
         // root（uid 0）通道：**先端到端探测**再决定挂不挂。
         // ⚠️ 顺序是硬性的 —— 探测要起 su 进程（可能弹授权框），必须早于引擎进程
@@ -8094,16 +6179,14 @@ class EngineManager private constructor(private val context: Context) {
         // ⚠️ 探测结果有 24h 缓存，所以稳态下这里只是一次文件读。
         val rootRunner = ensureRootShell()
         val rootState = RootAccess.detect(context)
-        ensureRootPlugin()
-        val rootPatch = writeRootPatch(rootRunner != null && rootState.granted)
-        rootToolMounted = rootPatch != null
-        if (rootState.granted) {
-            Log.i(TAG, "root 可用（${rootState.detail}），已挂载 root 工具")
+        rootToolMounted = targetProfile == PROFILE_NAME && rootRunner != null && rootState.granted && isBundleEnabled(ROOT_TOOL_PACKAGE)
+        if (rootToolMounted) {
+            Log.i(TAG, "root 可用（${rootState.detail}），root bundle 已启用")
         } else {
             Log.i(TAG, "root 不可用（${rootState.state}: ${rootState.detail}），root 工具未挂载")
         }
         // 让模型知道「这台设备有没有 root」，否则它会去猜、去反复试
-        ensureRootPrompt(rootPatch != null)
+        ensureRootPrompt(rootToolMounted)
 
         // pnpm 要落到 $PREFIX/bin，必须等 Termux 环境就位之后再装
         ensurePnpm()
@@ -8117,21 +6200,9 @@ class EngineManager private constructor(private val context: Context) {
         // ⚠️ overlay 的顺序是**语义**的一部分（`--patch` 可重复、按顺序应用，
         //   后应用的覆盖先应用的）。这里的顺序与改造前逐项一致，别顺手调。
         val overlays = listOfNotNull(
-            mobileUiPatch,
-            browserPanePatch,
-            agnesMmPatch,
-            marketPatch,
             sandboxPatch,
             workspacePatch,
             pluginManagerPatch,
-            privPatch,
-            rootPatch,
-            bubblePatch,
-            statusBarPatch,
-            petPatch,
-            uiToolPatch,
-            logsToolPatch,
-            browserToolPatch,
             // ⚠️ **必须排在最后**：这一层只做 `disabled: true`，而它要禁用的条目
             //   正是前面那些 `- insert:` 插进来的。`--patch` 按顺序应用，排在
             //   插入之前会让 patch 匹配不到目标 id（官方行为：warn 后跳过，静默失效）。
@@ -8243,6 +6314,7 @@ class EngineManager private constructor(private val context: Context) {
             put("DSH_SHIZUKU_SOCKET", ShizukuChannel.socketName(context))
             // root 通道脚本的路径，供 root 插件读取（见 [ensureRootPlugin]）。
             // 同上：走环境变量而不是拼 JS 字面量。
+            put("DSH_ROOT_AVAILABLE", if (rootToolMounted) "1" else "")
             rootRunner?.let { put("DSH_ROOT_RUNNER", it.absolutePath) }
             // 无线调试用的 adb 工具链目录，runner 靠它决定要不要启用无线通道。
             // 缺失时 runner 只走 legacy 5555，行为与改动前完全一致。
@@ -8552,14 +6624,12 @@ class EngineManager private constructor(private val context: Context) {
                 _state.value = State.Ready(url)
                 Log.i(TAG, "引擎就绪: $url")
                 startHeapWatch(proc)
-                registerBuiltinBundlesAfterReady()
                 return@withContext
             }
             _state.value = State.Ready(url)
             Log.i(TAG, "引擎就绪: $url")
             startHeapWatch(proc)
             // profile 如今一定已存在 ⇒ 补登记内置 bundle（见该函数的 KDoc）。
-            registerBuiltinBundlesAfterReady()
             // ⚠️ 引擎**真的起来了** ⇒ 清掉上次的失败记录。
             //
             //   见 RescueBoot 的类注释：这份记录是「上次为什么起不来」的唯一线索，
@@ -9314,7 +7384,7 @@ class EngineManager private constructor(private val context: Context) {
                 .getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)
                 .getBoolean(id, true)
 
-        /** 设置某个内置插件的开关。下次引擎启动时生效（overlay 是启动期参数）。 */
+        /** 旧版原生开关，仅作为首次 bundle 迁移的默认值保留。 */
         fun setBuiltinPluginEnabled(context: Context, id: String, enabled: Boolean) {
             context.applicationContext
                 .getSharedPreferences(PLUGIN_PREFS, Context.MODE_PRIVATE)

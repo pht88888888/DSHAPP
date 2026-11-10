@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 		 * 失败时恢复 `package.json` 与 `pnpm-lock.yaml`。自己再写一遍只会重复踩
 		 * AGENTS.md ⑥ 里那些坑（pnpm 驱逐「多余依赖」、`--allow-build` 泄漏包名）。
 		 *
-		 * 所以安装就是一句 `scope.remote.pluginManager.installBundle(name)`。
+		 * 安装固定精确版本；已安装插件通过官方 `updateBundle` 更新并保留启用状态。
 		 *
 		 * ## ⚠️ 取服务必须用 `scope` 上的，不能用外层 `ctx`
 		 *
@@ -80,9 +80,31 @@ window.__ModuleLoader__.load({
 			repo: "仓库",
 			errorPrefix: "安装失败：",
 			removeErrorPrefix: "卸载失败：",
-			okApplied: "已安装并启用",
-			okRestart: "已安装，重启 App 后生效",
-			okOverridden: "已安装，但被更高优先级的配置覆盖",
+			okApplied: "服务端已应用，页面插件由热更新同步",
+			okRestart: "版本已保存，需要重启引擎后生效",
+			okOverridden: "版本已保存，但被更高优先级的配置覆盖",
+			update: "更新",
+			updating: "更新中…",
+			checking: "检查更新中…",
+			checkUpdates: "检查更新",
+			currentVersion: "当前 v{version}",
+			updateTarget: "更新至 v{version}",
+			versionMismatch: "目标 v{target}，实际 v{actual}；请重新检查安装状态",
+			installedUnavailable: "无法读取已安装状态，暂不能安装或更新，请重试",
+			managerUnavailable: "插件管理器不可用",
+			cancelled: "操作已取消",
+			restored: "旧版恢复结果：",
+			updateCheckFailed: "检查更新失败：",
+			localSource: "本地或内置版本",
+			operationFailed: "操作失败：",
+			restartReason: "原因：",
+			warnings: "提示：",
+			approvedRetry: "允许脚本并安装选定版本",
+			verifyFailed: "版本已保存，但读取安装状态失败，请重试核对",
+			clientSynced: "页面插件已热更新",
+			clientPending: "页面插件尚未确认同步，可刷新页面后检查",
+			pageReload: "当前页面需要刷新后加载新版",
+			clientFailed: "页面插件加载失败：",
 			loadFailed: "读取市场目录失败：",
 			retry: "重试",
 			detail: "详情",
@@ -160,9 +182,31 @@ window.__ModuleLoader__.load({
 			repo: "Repository",
 			errorPrefix: "Install failed: ",
 			removeErrorPrefix: "Remove failed: ",
-			okApplied: "Installed and enabled",
-			okRestart: "Installed; restart the app to apply",
-			okOverridden: "Installed, but overridden by higher-priority configuration",
+			okApplied: "Applied on the host; client plugins sync through hot updates",
+			okRestart: "Version saved; restart the engine to apply",
+			okOverridden: "Version saved, but overridden by higher-priority configuration",
+			update: "Update",
+			updating: "Updating…",
+			checking: "Checking updates…",
+			checkUpdates: "Check updates",
+			currentVersion: "Current v{version}",
+			updateTarget: "Update to v{version}",
+			versionMismatch: "Requested v{target}, installed v{actual}; check installation again",
+			installedUnavailable: "Could not read installed bundles; retry before installing or updating",
+			managerUnavailable: "Plugin manager unavailable",
+			cancelled: "Operation cancelled",
+			restored: "Previous version restore result: ",
+			updateCheckFailed: "Update check failed: ",
+			localSource: "Local or built-in version",
+			operationFailed: "Operation failed: ",
+			restartReason: "Reason: ",
+			warnings: "Notes: ",
+			approvedRetry: "Allow scripts and install selected version",
+			verifyFailed: "Version saved, but installation could not be read; retry to verify",
+			clientSynced: "Client plugin hot update confirmed",
+			clientPending: "Client sync is not yet confirmed; refresh the page to check",
+			pageReload: "Refresh this page to load the new version",
+			clientFailed: "Client plugin failed: ",
 			errCode: {
 				"invalid-spec": "Invalid package spec",
 				"unknown-plugin": "Not in the official plugin inventory",
@@ -505,12 +549,33 @@ window.__ModuleLoader__.load({
 			const t = typeof props.t === "function" ? props.t : (key) => MARKET_ZH[key] ?? key;
 
 			const [catalog, setCatalog] = React.useState({ phase: "loading" });
-			const [installed, setInstalled] = React.useState({ names: new Set(), phase: "idle" });
+			const [installed, setInstalled] = React.useState({ bundles: new Map(), phase: "idle" });
+			const [updates, setUpdates] = React.useState({});
+			const busy = React.useRef(new Set());
+			const mounted = React.useRef(true);
+			React.useEffect(() => {
+				mounted.current = true;
+				return () => { mounted.current = false; };
+			}, []);
 			const [query, setQuery] = React.useState("");
 			const [tab, setTab] = React.useState("all");
 			/** 每个包名 → 它的操作状态（安装中/失败/成功/待批脚本）。 */
 			const [ops, setOps] = React.useState({});
 			const [expanded, setExpanded] = React.useState({});
+			const [, setClientRevision] = React.useState(0);
+			React.useEffect(() => {
+				const modules = scope.get("modules");
+				if (!modules || !modules.entries) return;
+				const notify = () => setClientRevision((value) => value + 1);
+				const offState = modules.entries.state.subscribe(notify);
+				const offRelease = modules.entries.releaseChange.subscribe(notify);
+				return () => { offState(); offRelease(); };
+			}, [scope]);
+			const clientRevision = (name) => {
+				const modules = scope.get("modules");
+				const row = modules && modules.manifest.modules.find((entry) => entry.id === name);
+				return row && row.rev;
+			};
 
 			/**
 			 * 读一次市场目录。
@@ -548,33 +613,60 @@ window.__ModuleLoader__.load({
 			 * 读一次「已装插件」清单。
 			 *
 			 * 走官方 `pluginManager.listBundles()`：这是**唯一**能反映真实安装状态的
-			 * 来源（市场目录只说明 npm 上有什么）。取不到就退化成空集合 ——
-			 * 界面会少一个「已安装」徽章，但不影响浏览与安装。
+			 * 来源（市场目录只说明 npm 上有什么）。取不到时保留上次清单，
+			 * 暂停安装与更新，避免把已安装插件误当成未安装。
 			 */
 			const loadInstalled = React.useCallback(() => {
 				const manager = scope && scope.remote && scope.remote.pluginManager;
 				if (!manager || typeof manager.listBundles !== "function") {
-					setInstalled({ names: new Set(), phase: "unavailable" });
-					return;
+					setInstalled((prev) => ({ ...prev, phase: "unavailable" }));
+					return Promise.resolve();
 				}
-				manager
+				return manager
 					.listBundles()
 					.then((result) => {
 						if (!result || !result.ok) {
-							setInstalled({ names: new Set(), phase: "unavailable" });
+							setInstalled((prev) => ({ ...prev, phase: "unavailable" }));
 							return;
 						}
-						const names = new Set();
+						const bundles = new Map();
 						for (const b of result.value ?? []) {
-							if (b && b.installed && b.name) names.add(b.name);
+							if (b && b.installed && b.name) bundles.set(b.name, b);
 						}
-						setInstalled({ names, phase: "ready" });
+						if (mounted.current) setInstalled({ bundles, phase: "ready" });
+						return bundles;
 					})
-					.catch(() => setInstalled({ names: new Set(), phase: "unavailable" }));
+					.catch(() => {
+						if (mounted.current) setInstalled((prev) => ({ ...prev, phase: "unavailable" }));
+					});
+			}, [scope]);
+
+			const checkUpdates = React.useCallback(async (bundles) => {
+				const manager = scope && scope.remote && scope.remote.pluginManager;
+				if (!manager || typeof manager.listVersions !== "function" || !bundles) return;
+				const queue = [...bundles.values()].filter((bundle) => bundle.updatable);
+				let cursor = 0;
+				const worker = async () => {
+					while (cursor < queue.length && mounted.current) {
+						const bundle = queue[cursor++];
+						setUpdates((prev) => ({ ...prev, [bundle.name]: { phase: "checking", installed: bundle.version } }));
+						try {
+							const reply = await manager.listVersions(bundle.name);
+							if (!reply || !reply.ok) throw new Error(marketErrorText(reply && reply.error, t));
+							const value = reply.value;
+							if (!value || value.status !== "listed") throw new Error(value && value.reason || "Invalid version list");
+							const target = value.versions.find((version) => version.bundle && !version.incompatible && !version.deprecated && !version.prerelease);
+							if (mounted.current) setUpdates((prev) => ({ ...prev, [bundle.name]: { phase: "ready", installed: value.installed, target: target && target.version, registry: value.registry } }));
+						} catch (error) {
+							if (mounted.current) setUpdates((prev) => ({ ...prev, [bundle.name]: { phase: "error", message: String(error.message || error) } }));
+						}
+					}
+				};
+				await Promise.all([worker(), worker(), worker()]);
 			}, [scope]);
 
 			React.useEffect(() => loadCatalog(false), [loadCatalog]);
-			React.useEffect(loadInstalled, [loadInstalled]);
+			React.useEffect(() => { loadInstalled().then(checkUpdates); }, [loadInstalled, checkUpdates]);
 
 			/**
 			 * 装一个插件。
@@ -583,17 +675,21 @@ window.__ModuleLoader__.load({
 			 * 官方服务会在 pnpm 运行前把这些包的脚本权限记进当前 profile。
 			 */
 			const install = React.useCallback(
-				(name, approvedBuilds) => {
+				(name, targetVersion, approvedBuilds, enabled = true, registry) => {
 					const manager = scope && scope.remote && scope.remote.pluginManager;
 					if (!manager || typeof manager.installBundle !== "function") {
 						setOps((prev) => ({ ...prev, [name]: { phase: "error", message: "插件管理器不可用" } }));
 						return;
 					}
-					setOps((prev) => ({ ...prev, [name]: { phase: "installing" } }));
-					const options = { enabled: true };
+					if (busy.current.has(name) || !targetVersion || installed.phase !== "ready") return;
+					busy.current.add(name);
+					const previousRevision = clientRevision(name);
+					setOps((prev) => ({ ...prev, [name]: { phase: "installing", targetVersion, previousRevision } }));
+					const options = { enabled, saveExact: true };
+					if (registry !== undefined) options.registry = registry;
 					if (approvedBuilds && approvedBuilds.length > 0) options.approvedBuilds = approvedBuilds;
 					manager
-						.installBundle(name, options)
+						.installBundle(name + "@" + targetVersion, options)
 						.then((result) => {
 							if (!result || !result.ok) {
 								setOps((prev) => ({
@@ -615,35 +711,79 @@ window.__ModuleLoader__.load({
 							if (value.pendingBuilds && value.pendingBuilds.length > 0) {
 								setOps((prev) => ({
 									...prev,
-									[name]: { phase: "pending", builds: value.pendingBuilds },
+									[name]: { phase: "pending", builds: value.pendingBuilds, targetVersion, enabled, registry },
 								}));
 								return;
 							}
-							if (value.application === "failed" || value.error) {
+							if (value.application === "failed" || value.application === "cancelled" || value.error) {
 								setOps((prev) => ({
 									...prev,
 									[name]: { phase: "error", message: marketErrorText(value.error, t, value) },
 								}));
 								return;
 							}
-							setOps((prev) => ({ ...prev, [name]: { phase: "done", application: value.application } }));
-							loadInstalled();
+							return loadInstalled().then((bundles) => {
+								const actual = bundles && bundles.get(name);
+								if (!actual || actual.version !== targetVersion || value.version && value.version !== targetVersion) {
+									setOps((prev) => ({ ...prev, [name]: { phase: "error", message: actual ? marketFill(t("versionMismatch"), { target: targetVersion, actual: value.version && value.version !== targetVersion ? value.version : actual.version || "?" }) : t("verifyFailed") } }));
+									return;
+								}
+								setOps((prev) => ({ ...prev, [name]: { phase: "done", application: value.application, restartReason: value.restartReason, warnings: value.warnings, previousRevision } }));
+							});
 						})
 						.catch((error) => {
 							setOps((prev) => ({
 								...prev,
 								[name]: { phase: "error", message: String((error && error.message) || error) },
 							}));
-						});
+						})
+						.finally(() => { busy.current.delete(name); });
 				},
-				[scope, loadInstalled],
+				[scope, loadInstalled, installed.phase],
 			);
+
+			const update = React.useCallback(async (name, target) => {
+				const manager = scope && scope.remote && scope.remote.pluginManager;
+				const bundle = installed.bundles.get(name);
+				if (!manager || !bundle || !bundle.updatable || !target || !target.target || busy.current.has(name)) return;
+				busy.current.add(name);
+				const previousRevision = clientRevision(name);
+				setOps((prev) => ({ ...prev, [name]: { phase: "updating", targetVersion: target.target, previousRevision } }));
+				try {
+					const reply = await manager.updateBundle(name, target.target, { registry: target.registry });
+					if (!reply || !reply.ok) throw new Error(marketErrorText(reply && reply.error, t));
+					const outcome = reply.value || {};
+					const value = outcome.result || {};
+					const restore = outcome.restore;
+					const bundles = await loadInstalled();
+					if (value.pendingBuilds && value.pendingBuilds.length) {
+						setOps((prev) => ({ ...prev, [name]: { phase: "error", message: marketErrorText(value.error, t, value) + " · " + value.pendingBuilds.join(", "), restore } }));
+						return;
+					}
+					if (value.application === "failed" || value.application === "cancelled" || value.error || outcome.step !== "install") {
+						setOps((prev) => ({ ...prev, [name]: { phase: "error", message: value.application === "cancelled" ? t("cancelled") : marketErrorText(value.error, t, value), restore } }));
+						return;
+					}
+					const actual = bundles && bundles.get(name);
+					if (!actual || actual.version !== target.target || value.version && value.version !== target.target) {
+						throw new Error(actual ? marketFill(t("versionMismatch"), { target: target.target, actual: value.version && value.version !== target.target ? value.version : actual.version || "?" }) : t("verifyFailed"));
+					}
+					setOps((prev) => ({ ...prev, [name]: { phase: "done", application: value.application, restartReason: value.restartReason, warnings: value.warnings, previousRevision } }));
+					setUpdates((prev) => ({ ...prev, [name]: { phase: "ready", installed: actual.version } }));
+				} catch (error) {
+					setOps((prev) => ({ ...prev, [name]: { phase: "error", message: String(error.message || error) } }));
+				} finally {
+					busy.current.delete(name);
+				}
+			}, [scope, installed, loadInstalled]);
 
 			/** 卸载一个已装插件。走官方 `removeBundle()`，同样不自己碰 pnpm。 */
 			const remove = React.useCallback(
 				(name) => {
 					const manager = scope && scope.remote && scope.remote.pluginManager;
 					if (!manager || typeof manager.removeBundle !== "function") return;
+					if (busy.current.has(name)) return;
+					busy.current.add(name);
 					setOps((prev) => ({ ...prev, [name]: { phase: "removing" } }));
 					manager
 						.removeBundle(name)
@@ -663,7 +803,7 @@ window.__ModuleLoader__.load({
 								return;
 							}
 							const value = result.value ?? {};
-							if (value.application === "failed" || value.error) {
+							if (value.application === "failed" || value.application === "cancelled" || value.error) {
 								setOps((prev) => ({
 									...prev,
 									[name]: { phase: "error", message: marketErrorText(value.error, t, value) },
@@ -682,14 +822,17 @@ window.__ModuleLoader__.load({
 								...prev,
 								[name]: { phase: "error", message: String((error && error.message) || error) },
 							}));
-						});
+						})
+						.finally(() => { busy.current.delete(name); });
 				},
 				[scope, loadInstalled],
 			);
 
 			const data = catalog.data;
-			const plugins = (data && data.plugins) || [];
-			const installedNames = installed.names;
+			const catalogPlugins = (data && data.plugins) || [];
+			const catalogNames = new Set(catalogPlugins.map((plugin) => plugin.name));
+			const plugins = [...catalogPlugins, ...[...installed.bundles.values()].filter((bundle) => !catalogNames.has(bundle.name)).map((bundle) => ({ name: bundle.name, version: bundle.version, description: bundle.description, installable: true }))];
+			const installedNames = new Set(installed.bundles.keys());
 
 			// 过滤 + 分区。搜索是**本地**的：目录一次就全在手里（几百条），
 			// 再往宿主半发一次请求没有意义，还会让每次按键都有网络延迟。
@@ -716,6 +859,8 @@ window.__ModuleLoader__.load({
 			const renderCard = (p) => {
 				const op = ops[p.name] || { phase: "idle" };
 				const isInstalled = installedNames.has(p.name);
+				const bundle = installed.bundles.get(p.name);
+				const available = updates[p.name];
 				const open = !!expanded[p.name];
 				const day = marketDay(p.publishedAt);
 				const risks = p.risks || [];
@@ -726,8 +871,8 @@ window.__ModuleLoader__.load({
 				if (!p.installable) badges.push(marketBadge(React, MARKET_TONE.broken, t("notInstallable")));
 
 				const actions = [];
-				if (op.phase === "installing") {
-					actions.push(React.createElement("span", { key: "busy", style: S.meta }, t("installing")));
+				if (op.phase === "installing" || op.phase === "updating") {
+					actions.push(React.createElement("span", { key: "busy", style: S.meta }, t(op.phase)));
 				} else if (op.phase === "removing") {
 					actions.push(React.createElement("span", { key: "busy", style: S.meta }, t("removing")));
 				} else if (op.phase === "pending") {
@@ -739,13 +884,20 @@ window.__ModuleLoader__.load({
 								key: "allow",
 								type: "button",
 								style: S.btnSmPrimary,
-								onClick: () => install(p.name, op.builds),
+								onClick: () => install(p.name, op.targetVersion, op.builds, op.enabled, op.registry),
 							},
-							t("allowAndRetry"),
+							t("approvedRetry"),
 						),
 					);
 				} else if (isInstalled) {
-					actions.push(
+					if (bundle.updatable) {
+						actions.push(React.createElement("button", {
+							key: "update", type: "button", style: S.btnSmPrimary,
+							disabled: installed.phase !== "ready" || available && available.phase === "checking",
+							onClick: () => available && available.target ? update(p.name, available) : checkUpdates(new Map([[p.name, bundle]])),
+						}, available && available.phase === "checking" ? t("checking") : available && available.target ? marketFill(t("updateTarget"), { version: available.target }) : t("checkUpdates")));
+					}
+					if (bundle.removable) actions.push(
 						React.createElement(
 							"button",
 							{
@@ -767,7 +919,8 @@ window.__ModuleLoader__.load({
 								key: "install",
 								type: "button",
 								style: S.btnSmPrimary,
-								onClick: () => install(p.name),
+								disabled: installed.phase !== "ready" || !p.version,
+								onClick: () => install(p.name, p.version),
 							},
 							t("install"),
 						),
@@ -804,10 +957,15 @@ window.__ModuleLoader__.load({
 					);
 				}
 
+				if (bundle) children.push(React.createElement("p", { key: "installed", style: S.meta }, marketFill(t("currentVersion"), { version: bundle.version || "?" }) + (!bundle.updatable ? " · " + t("localSource") : "")));
+				if (available && available.phase === "error") children.push(React.createElement("p", { key: "check-error", style: S.error }, t("updateCheckFailed") + available.message));
 				if (op.phase === "error") {
-					children.push(
-						React.createElement("p", { key: "err", style: S.error }, t("errorPrefix") + op.message),
-					);
+					children.push(React.createElement("p", { key: "err", style: S.error }, t("operationFailed") + op.message));
+				}
+				if (op.restore) {
+					const restore = op.restore;
+					const text = restore.error || restore.application === "failed" || restore.application === "cancelled" ? marketErrorText(restore.error, t, restore) : restore.application;
+					children.push(React.createElement("p", { key: "restore", style: S.notice }, t("restored") + (restore.version ? "v" + restore.version + " · " : "") + text));
 				}
 				if (op.phase === "done") {
 					const text =
@@ -817,6 +975,18 @@ window.__ModuleLoader__.load({
 								? t("okOverridden")
 								: t("okApplied");
 					children.push(React.createElement("p", { key: "ok", style: S.ok }, text));
+					const modules = scope.get("modules");
+					if (modules && modules.entries && op.application === "applied") {
+						const state = modules.entries.state.getSnapshot();
+						const failure = state.failures.find((entry) => entry.id === p.name);
+						const revision = clientRevision(p.name);
+						const loader = scope.get("loader");
+						const entry = loader && [...loader.entries()].find((item) => item.options.name === p.name);
+						const clientText = modules.entries.releaseChange.getSnapshot() ? t("pageReload") : failure ? t("clientFailed") + failure.message : revision && revision !== op.previousRevision && !state.syncing && entry && entry.fiber && entry.fiber.state === 2 ? t("clientSynced") : revision || op.previousRevision ? t("clientPending") : "";
+						if (clientText) children.push(React.createElement("p", { key: "client", style: failure ? S.error : S.notice }, clientText));
+					}
+					if (op.restartReason) children.push(React.createElement("p", { key: "reason", style: S.notice }, t("restartReason") + op.restartReason));
+					if (op.warnings && op.warnings.length) children.push(React.createElement("p", { key: "warnings", style: S.notice }, t("warnings") + op.warnings.join(" · ")));
 				}
 
 				const links = [];
@@ -888,6 +1058,7 @@ window.__ModuleLoader__.load({
 			//   （就是 `register()` 里那个 `label`），再放一个同名 h3 是重复信息，
 			//   而且白占 40px 首屏高度。说明文案同理压成一行。
 			body.push(React.createElement("p", { key: "intro", style: S.intro }, t("intro")));
+			if (installed.phase === "unavailable") body.push(React.createElement("p", { key: "installed-error", style: S.error }, t("installedUnavailable")));
 
 			body.push(
 				React.createElement(
@@ -906,7 +1077,7 @@ window.__ModuleLoader__.load({
 							type: "button",
 							style: S.btn,
 							disabled: !!catalog.busy,
-							onClick: () => loadCatalog(true),
+							onClick: () => { loadCatalog(true); loadInstalled().then(checkUpdates); },
 						},
 						catalog.busy ? t("refreshing") : t("refresh"),
 					),

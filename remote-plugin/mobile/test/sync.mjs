@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { createSessionIndex } from '../lib/session-index.js';
 
 let pass = 0;
 let fail = 0;
@@ -449,8 +450,18 @@ T(
  */
 const mobileSrc = fs.readFileSync(new URL('../lib/index.js', here), 'utf8');
 T('宿主有 syncedAt 的读取器', /function loadDesktopSyncedAt\(\)/.test(mobileSrc));
-T('宿主在创建空壳时记下时刻', /desktopSyncedAt\[sessionId\] = Date\.now\(\)/.test(mobileSrc));
-T('宿主把 syncedAt 一并写盘', /saveDesktopMeta\(desktopTimes, desktopPins, desktopSyncedAt/.test(mobileSrc));
+let savedMeta;
+let clock = 12345;
+const index = createSessionIndex({
+	load: Object.fromEntries(['remote', 'synced', 'paths', 'models', 'titles', 'times', 'pins', 'syncedAt', 'offsets', 'workspaces']
+		.map((key) => [key, () => key === 'remote' || key === 'synced' ? new Set() : {}])),
+	saveSessions() {}, saveWorkspaces() {},
+	saveMeta: (times, pins, syncedAt) => { savedMeta = structuredClone({ times, pins, syncedAt }); },
+	now: () => clock,
+});
+index.rememberDesktopMeta('existing', 1000, true);
+T('宿主在创建空壳时记下时刻', index.metaSnapshot().syncedAt.existing === 12345);
+T('宿主把 syncedAt 一并写盘', savedMeta.syncedAt.existing === 12345 && savedMeta.pins.existing === true);
 /*
  * ⑨ 「补记账」必须排在 `syncedSessions.has()` 的 `continue` **之前**。
  *
@@ -462,15 +473,19 @@ T('宿主把 syncedAt 一并写盘', /saveDesktopMeta\(desktopTimes, desktopPins
 	const fnStart = mobileSrc.indexOf("case 'autoSyncDesktop'");
 	const fnEnd = mobileSrc.indexOf("case 'syncConversations'");
 	const slice = mobileSrc.slice(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 20000);
-	const atMeta = slice.indexOf('io.rememberDesktopMeta?.(sessionId, item?.updatedAt, item?.pinned)');
-	const atSkip = slice.indexOf('if (io.syncedSessions.has(sessionId))');
+	const atMeta = slice.indexOf('io.sessionIndex.rememberDesktopMeta?.(sessionId, item?.updatedAt, item?.pinned)');
+	const atSkip = slice.indexOf('if (io.sessionIndex.isSynced(sessionId))');
 	T(
 		'**补记账排在「已同步就跳过」之前**（否则老会话永远补不上）',
 		atMeta >= 0 && atSkip >= 0 && atMeta < atSkip,
 		`meta@${atMeta} skip@${atSkip}`,
 	);
 }
-T('desktopMeta 桥下发 syncedAt', /syncedAt: \{ \.\.\.\(io\.desktopSyncedAt/.test(mobileSrc));
+clock = 99999;
+index.rememberDesktopMeta('existing', 2000, false);
+const { handleBridge } = await import('../lib/index.js');
+const bridgeMeta = await handleBridge({}, {}, { sessionIndex: index, body: { method: 'desktopMeta', params: {} } });
+T('desktopMeta 桥下发 syncedAt', bridgeMeta.syncedAt.existing === 12345 && bridgeMeta.times.existing === 2000 && !bridgeMeta.pins.existing);
 T('前端接收 syncedAt', /var nextSynced = \{\};/.test(clientSrc));
 T('前端用建壳时刻判假值', /isFake = local <= syncedAt \+ 120000/.test(clientSrc));
 

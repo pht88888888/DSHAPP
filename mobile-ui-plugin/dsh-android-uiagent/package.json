@@ -1,6 +1,6 @@
 {
   "name": "dsh-android-uiagent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "DSH Android 客户端的 UI 调试工具：把「枚举界面上的按钮（带精确屏幕坐标）、点击、输入、滚动、读文本」暴露成模型可调用的 ui 工具，让 AI 能自己操作并测试这个 App。",
   "type": "module",
   "main": "./lib/index.js",
@@ -11,5 +11,16 @@
     "./package.json": "./package.json"
   },
   "license": "MIT",
-  "private": true
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "android": {
+      "builtinId": "uiagent-tool"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ]
 }

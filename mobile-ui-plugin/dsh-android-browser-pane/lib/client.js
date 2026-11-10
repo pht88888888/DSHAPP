@@ -489,23 +489,76 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		let annotationRequestSeq = 0;
+		let annotationInFlight = false;
+
+		async function readAnnotation(bridge) {
+			let capabilities;
+			if (typeof bridge.bridgeCapabilities === "function") {
+				// Gecko 的首份能力快照异步到达，空串表示尚未握手。
+				for (let attempt = 0; attempt < 20; attempt += 1) {
+					const raw = bridge.bridgeCapabilities();
+					if (raw) { capabilities = JSON.parse(raw); break; }
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
+			}
+			if (capabilities && capabilities.protocolVersion === 1 &&
+				capabilities.capabilities && capabilities.capabilities["annotation.request"] >= 1 &&
+				typeof bridge.aiAnnotateRequest === "function" && typeof bridge.aiAnnotateAck === "function") {
+				const requestId = `annotation-${Date.now()}-${++annotationRequestSeq}`;
+				const payload = await new Promise((resolve, reject) => {
+					let timer;
+					const cleanup = () => {
+						window.removeEventListener("dsh:bridge-result", onResult);
+						clearTimeout(timer);
+					};
+					const onResult = (event) => {
+						let response;
+						try { response = JSON.parse(event.detail); } catch (error) { return; }
+						if (!response || response.protocolVersion !== 1 || response.requestId !== requestId ||
+							response.method !== "aiAnnotateRequest") return;
+						cleanup();
+						if (response.ok === true && response.result && typeof response.result.png === "string" &&
+							typeof response.result.text === "string") resolve(response.result);
+						else reject(new Error(response.error && response.error.message || "标注结果不可用"));
+					};
+					window.addEventListener("dsh:bridge-result", onResult);
+					timer = setTimeout(() => { cleanup(); reject(new Error("标注结果等待超时")); }, 10000);
+					try { bridge.aiAnnotateRequest(requestId); } catch (error) { cleanup(); reject(error); }
+				});
+				return { payload, acknowledge: () => bridge.aiAnnotateAck(requestId) };
+			}
+			if (typeof bridge.aiAnnotateResult !== "function") throw new Error("桥上没有标注接口（版本不匹配）");
+			// 保留旧桥路径；Gecko legacy 的首次读取发异步请求，需要等结果缓存。
+			for (let attempt = 0; attempt < 20; attempt += 1) {
+				const raw = bridge.aiAnnotateResult();
+				if (raw) return { payload: JSON.parse(raw), acknowledge: () => {} };
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			return null;
+		}
+
 		async function sendAnnotate(scope) {
+			if (annotationInFlight) return;
+			annotationInFlight = true;
+			try { await sendAnnotateResult(scope); }
+			finally { annotationInFlight = false; }
+		}
+
+		async function sendAnnotateResult(scope) {
 			console.log("[annotate] 进入 sendAnnotate");
 			const bridge = window.DSHAndroid;
 			if (!bridge) {
 				report("标注失败：没有原生桥");
 				return;
 			}
-			if (typeof bridge.aiAnnotateResult !== "function") {
-				report("标注失败：桥上没有 aiAnnotateResult（版本不匹配）");
-				return;
-			}
-
 			let payload;
+			let acknowledge;
 			try {
-				const raw = bridge.aiAnnotateResult();
-				if (!raw) return;
-				payload = JSON.parse(raw);
+				const result = await readAnnotation(bridge);
+				if (!result) return;
+				payload = result.payload;
+				acknowledge = result.acknowledge;
 			} catch (error) {
 				report(`标注失败：读不到结果 ${error && error.message}`);
 				return;
@@ -541,12 +594,15 @@ window.__ModuleLoader__.load({
 			try {
 				if (conversation === void 0) throw new Error("拿不到 conversation 服务");
 				if (sessionId === void 0) throw new Error("拿不到当前会话 id");
+				const session = sessionObjectOf(scope, sessionId);
+				if (session === void 0) throw new Error(`找不到 session 对象: ${sessionId}`);
 				if (file === null) {
 					// 图片没读到：至少把文字发出去，不让用户白画一场。
 					// ⚠️ `conversation.send` 走的是 `scopedSession`，在**根作用域**
 					// 会抛「requires a session scope」，所以这里也用 sendSession
 					// 的空附件形式，保证行为一致。
 					const plain = await conversation.sendSession(session, question, [], "queue");
+					// 图片未附上时保留原生标注，后续可重试完整发送。
 					report(
 						plain && plain.kind === "error"
 							? "发送失败：被会话拒绝"
@@ -558,8 +614,6 @@ window.__ModuleLoader__.load({
 				// sessionId 字符串。它内部会调 `session.beginSubmission(...)`，
 				// 传字符串必然抛「beginSubmission is not a function」——而这个
 				// 异常又被下面的 catch 吞掉，表现就是「点发送完全没反应」。
-				const session = sessionObjectOf(scope, sessionId);
-				if (session === void 0) throw new Error(`找不到 session 对象: ${sessionId}`);
 				const drafts = conversation.createDrafts(sessionId, [file]);
 				const ids = drafts.map((d) => d.id);
 				// ⚠️ `sendSession` **失败时不抛异常**，而是返回 `{kind:"error"}`。
@@ -569,6 +623,7 @@ window.__ModuleLoader__.load({
 					report("发送失败：被会话拒绝（可能正在生成回复）");
 					return;
 				}
+				acknowledge();
 				report("已发送标注");
 			} catch (error) {
 				console.warn("[dsh-android-browser-pane] 发送标注失败:", error && (error.stack || error.message || error));

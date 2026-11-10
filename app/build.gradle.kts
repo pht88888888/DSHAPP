@@ -755,6 +755,23 @@ android {
     }
 }
 
+// 统一生成出厂组件；脚本先在 build/ 构建并校验，再同步 zip+manifest，保留共享资产符号链接。
+val buildBuiltinPluginAssets by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Build and verify builtin plugin assets before Android packaging"
+    workingDir(rootProject.projectDir)
+    commandLine(
+        providers.environmentVariable("DSH_NODE_BINARY").getOrElse("node"),
+        rootProject.file("tools/build-plugin-components.mjs").absolutePath,
+        "build", "--out-dir", layout.buildDirectory.dir("generated/plugin-components").get().asFile.absolutePath,
+        "--install-assets"
+    )
+}
+
+tasks.named("preBuild") {
+    dependsOn(buildBuiltinPluginAssets)
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")

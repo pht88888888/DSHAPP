@@ -1,37 +1,14 @@
 #!/usr/bin/env node
 /**
- * WebView 降级前端构建器 —— `build-webview-compat.ps1` 的 Node 移植版。
+ * WebView 引擎前端兼容构建器，Windows 入口转调本脚本。
  *
- * ── 为什么要有这一份 ────────────────────────────────────────────────────
- *
- * 原脚本是 PowerShell（Windows 开发机用）。而本项目现在也在 Linux 服务器上
- * 构建（见 `docs/agents/server-build-env.md`），那台机器**没有 pwsh**。
- * 于是一个关键资产（`app/src/main/assets/webview-compat.zip`）在服务器上
- * **无法重新生成** —— 现实后果见下面「⚠️ 这个资产坏了会怎样」。
- *
- * 两个脚本**必须保持行为一致**。改任意一边都要同步另一边，并在两边的
- * 版本沿革注释里都记一笔。
- *
- * ── ⚠️ 这个资产坏了会怎样（真实踩过的坑）──────────────────────────────
- *
- * `EngineManager.ensureWebViewCompat()` **无条件**把 zip 里的三棵树覆盖到设备上
- * （不看设备 WebView 版本）。其中 `mobileui/` 这一棵树会覆盖
- * `$DSH_HOME/mobile-ui/dsh-android-mobile/lib/client.js` —— 也就是本项目
- * **所有移动端 UI 修复**所在的那份源码。
- *
- * 于是只要 zip 是旧的、而 `-CompatVersion` 又没 bump，设备上就会发生：
- *
- *     1. `ensureMobileUi()`   按 `MOBILE_UI_VERSION` 解出**新**的 client.js
- *     2. `ensureWebViewCompat()` 判「戳一致 → 跳过」或写入**旧**的降级产物
- *     3. 结果：新修复被旧降级产物整个覆盖，而原生日志一切正常
- *
- * 这个失败是**完全静默**的：`已安装移动端 UI 插件 1.0.0-105` 照样打，
- * 磁盘上的 client.js 却还是老的。本项目在 v4~v34 之间为同一件事记了十几次。
+ * 只生成 engine/dist 两棵树；Android 插件由组件构建器独立降级。
+ * 输入摘要进入版本戳，文件摘要进入 manifest，避免旧兼容产物覆盖市场插件。
  *
  * ── 用法 ────────────────────────────────────────────────────────────────
  *
- *   node tools/build-webview-compat.mjs                      # 默认 chrome74 / v36
- *   node tools/build-webview-compat.mjs --target chrome74 --compat-version 36
+ *   node tools/build-webview-compat.mjs                      # 默认 chrome73 / v62
+ *   node tools/build-webview-compat.mjs --target chrome73 --compat-version 62
  *   node tools/build-webview-compat.mjs --dry-run            # 只报告不写 zip
  *
  * 退出码：0 = 成功，1 = 失败（构建问题），2 = 工具自身跑不起来。
@@ -44,6 +21,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -61,9 +39,8 @@ function argOf(name, fallback) {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-const TARGET = argOf('target', 'chrome74');
-// ⚠️ **改 mobile-ui 源码就必须 +1。** 判据是「与设备上的戳字符串相等」，
-//    不是「这次跑过脚本」—— 重跑而不改版本号等于没跑。
+const TARGET = argOf('target', 'chrome73');
+// 算法改变时递增；engine/polyfill/编译目标/工具版本的变化自动进入输入摘要。
 // v35：v78/v79 两条移动端修复（光标定位 / 思考行高）。
 // v36：v80 三条 UI 缺陷（过程行标题抽搐 / 统计条字号 / 安全刷新）。
 //      降级产物里必须带上 mpReloadUi + reloadWebUi + 新的统计条选择器，
@@ -80,17 +57,16 @@ const TARGET = argOf('target', 'chrome74');
 //      （前端产物 `index-CN7NIWNw.js` → `index-BgUyXZcc.js`、`vendor-DcuzkuQH.js`
 //      → `vendor-BUMdD3V7.js`，`index-BxpfOGf3.css` 已移除），`mobileui/` 未变。
 //      同理：不 +1 则设备上戳相等而整份跳过，降级内核仍跑旧前端。
-const COMPAT_VERSION = argOf("compat-version", "61");
+const COMPAT_VERSION = argOf("compat-version", "62");
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const ENGINE_BIN = resolve(ROOT, argOf('engine-bin', 'app/src/main/assets/engine.bin'));
 const OUT_ZIP = resolve(ROOT, argOf('out-zip', 'app/src/main/assets/webview-compat.zip'));
-const MOBILE_UI_SRC = join(ROOT, 'mobile-ui-plugin', 'dsh-android-mobile');
 
 const STAMP_ENTRY = '.compat-stamp';
 const PREFIX_DIST = 'dist';
 const PREFIX_ENGINE = 'engine';
-const PREFIX_MOBILEUI = 'mobileui';
+const MANIFEST_ENTRY = '.compat-manifest.json';
 
 const TARGET_MAJOR = Number(TARGET.replace(/\D/g, ''));
 
@@ -203,7 +179,8 @@ if (!existsSync(join(toolDir, 'node_modules', 'esbuild', 'package.json'))) {
 
 if (!existsSync(ENGINE_BIN)) fail(`找不到 engine.bin: ${ENGINE_BIN}`, 2);
 
-const work = join(tmpdir(), 'dsh-webview-compat');
+const work = resolve(tmpdir(), 'dsh-webview-compat');
+if (work !== join(resolve(tmpdir()), 'dsh-webview-compat')) fail(`拒绝清理意外目录: ${work}`, 2);
 rmSync(work, { recursive: true, force: true });
 mkdirSync(work, { recursive: true });
 
@@ -264,16 +241,8 @@ for (const f of pluginFiles) {
   targets.push({ src: f, entry: `${PREFIX_ENGINE}/${pkg}/lib/${f.split(sep).pop()}`, label: pkg });
 }
 
-// App 自己注入的移动端 UI 插件。**不在 engine.bin 里**（源码在仓库、由 mobile-ui.zip 下发），
-// 但同样是浏览器要解析的 bundle —— 不降级的话老内核上会静默退回桌面布局。
-if (existsSync(MOBILE_UI_SRC)) {
-  for (const f of walk(MOBILE_UI_SRC, (n) => /^client.*\.js$/.test(n))) {
-    const rel = relative(MOBILE_UI_SRC, f).split(sep).join('/');
-    targets.push({ src: f, entry: `${PREFIX_MOBILEUI}/${rel}`, label: 'mobile-ui' });
-  }
-} else {
-  warn(`找不到 ${MOBILE_UI_SRC}，跳过移动端 UI 插件的降级`);
-}
+// Android 插件由 build-plugin-components.mjs 统一降级并独立更新。
+// compat 仅拥有引擎文件，避免旧 APK 产物覆盖市场安装的插件。
 
 /* ── 4. 逐个降级，只留真有语法缺口的 ──────────────────────────────────── */
 
@@ -405,7 +374,7 @@ if (existsSync(auditor)) {
   log(`运行时 API 审计（对照 ${polyfill.split(sep).pop()}）…`);
   const r = spawnSync(process.execPath, [
     auditor, '--polyfill', polyfill, '--target', `chrome${TARGET_MAJOR}`,
-    dist, pluginRoot, MOBILE_UI_SRC,
+    dist, pluginRoot,
   ], { encoding: 'utf8' });
   const text = `${r.stdout || ''}${r.stderr || ''}`.trim();
   for (const line of text.split('\n').slice(-22)) log(`  ${line}`);
@@ -422,13 +391,23 @@ if (existsSync(auditor)) {
 
 /* ── 5. 打 zip ────────────────────────────────────────────────────────── */
 
-const stamp = `${TARGET}-v${COMPAT_VERSION}`;
+const compatibility = {
+  schemaVersion: 1,
+  target: TARGET,
+  version: COMPAT_VERSION,
+  engineDigest: sha256(readFileSync(ENGINE_BIN)),
+  polyfillDigest: sha256(readFileSync(polyfill)),
+  esbuildVersion: JSON.parse(readFileSync(join(toolDir, 'node_modules/esbuild/package.json'), 'utf8')).version,
+  files: Object.fromEntries(changed.map((entry) => [entry.entry, sha256(readFileSync(join(out, entry.entry)))])),
+};
+const inputDigest = sha256(Buffer.from(JSON.stringify({ ...compatibility, files: undefined })));
+const stamp = `${TARGET}-v${COMPAT_VERSION}-${inputDigest.slice(0, 16)}`;
 
 if (DRY_RUN) {
   log('');
   log(`--dry-run：不写 ${OUT_ZIP}`);
   log(`  将要写入的戳: ${stamp}`);
-  log(`  条目 ${changed.length + 1} 个`);
+  log(`  条目 ${changed.length + 2} 个`);
   process.exit(0);
 }
 
@@ -444,6 +423,7 @@ for (const t of changed) {
   copyFileSync(src, dst);
 }
 writeFileSync(join(stage, STAMP_ENTRY), stamp, 'ascii');
+writeFileSync(join(stage, MANIFEST_ENTRY), JSON.stringify(compatibility, null, 2) + '\n');
 
 /*
  * ⚠️ **不能直接 rmSync(OUT_ZIP) 再写。** 本仓库的 `app/src/main/assets/*.zip`
@@ -453,18 +433,7 @@ writeFileSync(join(stage, STAMP_ENTRY), stamp, 'ascii');
  * 两个 worktree 各存一份资产，改一处另一处不生效，排查起来极其费时。
  * 所以：先解析软链的真实路径，把内容写到那里，再确保软链还在。
  */
-const realZip = existsSync(OUT_ZIP) && statSync(OUT_ZIP).isSymbolicLink() === false
-  ? OUT_ZIP
-  : OUT_ZIP;
-// 用 readlink 判断是否软链（statSync 对软链返回目标的信息，看不出是不是链）
-let zipTarget = OUT_ZIP;
-try {
-  const lst = execFileSync('ls', ['-l', OUT_ZIP], { encoding: 'utf8' });
-  const arrow = lst.indexOf(' -> ');
-  if (arrow >= 0) zipTarget = lst.slice(arrow + 4).trim();
-} catch {
-  /* 不存在就按原路径写 */
-}
+const zipTarget = existsSync(OUT_ZIP) ? realpathSync(OUT_ZIP) : OUT_ZIP;
 
 const tmpZip = join(work, 'out.zip');
 try {
@@ -481,7 +450,7 @@ if (zipTarget !== OUT_ZIP) {
 const size = statSync(OUT_ZIP).size;
 log('');
 log(`已生成: ${OUT_ZIP}`);
-log(`  条目 ${changed.length + 1} 个，${size.toLocaleString()} 字节（${(size / 1048576).toFixed(2)} MB）`);
+log(`  条目 ${changed.length + 2} 个，${size.toLocaleString()} 字节（${(size / 1048576).toFixed(2)} MB）`);
 log('');
 log(`⚠️ 戳是 ${stamp}（App 侧从 zip 里读，无需改 Kotlin 常量）`);
 log(`⚠️ 确认 MainActivity.MIN_WEBVIEW_MAJOR = ${TARGET_MAJOR} 与本次 --target 一致`);

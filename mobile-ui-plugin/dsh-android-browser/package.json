@@ -1,6 +1,6 @@
 {
   "name": "dsh-android-browser",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "DSH Android 客户端的 AI 浏览器工具：给模型一台属于它自己的真 WebView 浏览器（在用户手机上），可以打开网页、读页面结构、点按钮、填表单、截图，登录态持久保存，用户可旁观并随时接管。",
   "type": "module",
   "main": "./lib/index.js",
@@ -11,5 +11,16 @@
     "./package.json": "./package.json"
   },
   "license": "MIT",
-  "private": true
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "android": {
+      "builtinId": "browser-tool"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ]
 }

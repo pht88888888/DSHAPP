@@ -5,8 +5,8 @@ try {
   const require = createRequire(import.meta.url);
   JSDOM = require('jsdom').JSDOM;
 } catch (missing) {
-  console.log('  ⚠️ 未安装 jsdom，跳过侧栏端到端测试');
-  process.exit(0);
+  console.error('  ✗ 未安装 jsdom，无法执行侧栏端到端测试，请先 npm install');
+  process.exit(1);
 }
 
 let pass=0,fail=0;

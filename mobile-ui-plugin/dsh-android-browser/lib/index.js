@@ -132,7 +132,23 @@ Many login flows are multi-step and asynchronous. Type the credentials, click th
  * @param {object} payload - 命令体（至少含 `action`）。
  * @returns {Promise<object>} 原生回执。
  */
-async function sendCommand(home, id, payload) {
+const commandGates = new Map();
+
+function sendCommand(home, id, payload) {
+	const key = path.resolve(home);
+	const previous = commandGates.get(key) ?? Promise.resolve();
+	const run = () => sendCommandNow(home, id, payload);
+	const next = previous.then(run, run);
+	const settled = next.then(() => undefined, () => undefined);
+	commandGates.set(key, settled);
+	void settled.then(() => {
+		if (commandGates.get(key) === settled) commandGates.delete(key);
+	});
+	return next;
+}
+
+// 同一信箱的写入与完整回执等待必须一起排队，异常也释放后续请求。
+async function sendCommandNow(home, id, payload) {
 	const cmdPath = path.join(home, CMD_FILE);
 	const resPath = path.join(home, RESULT_FILE);
 

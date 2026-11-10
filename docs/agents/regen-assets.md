@@ -5,7 +5,9 @@
 
 ## 重新生成资产
 
-**构建脚本不在本仓库**，这些资产是一次性产物。当前存放位置：
+内置插件现在由 `tools/build-plugin-components.mjs` 和 Gradle 预构建重建，见 [内置插件与市场更新](plugin-updates.md)。插件源码修改后由统一产物检查确认内容，不手工打包。
+
+其它运行时二进制的构建脚本仍不在本仓库，以下为其来源和历史存放位置：
 
 - Termux debs / node 运行时打包：WSL `/opt/termux-debs/`、`/opt/node-runtime/`
 - 引擎 staging：`%TEMP%\engine-build\`（`node_modules` 451 MB）

@@ -53,6 +53,9 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createSessionIndex } from './session-index.js';
+import { createOutbox } from './outbox.js';
+import { createReconnect } from './reconnect.js';
 
 export const name = 'dsh-jiuling-remote-mobile';
 
@@ -85,7 +88,7 @@ const ROUTE_RPC = '/api/dsh-remote/rpc';
  * 「App 回到前台」通知端点。
  *
  * 客户端在 `onStart()` 里 `POST` 一次，插件据此**立刻重连所有退避中的 SSE**。
- * 为什么需要它见 `sleepWakable` 的注释 —— 简单说：切到后台后系统冻结 JS
+ * 等待器与唤醒动作由 reconnect owner 管理 —— 简单说：切到后台后系统冻结 JS
  * 定时器，重连等待永远不会到期，用户切回来要干等最多 15 秒才收到回复，
  * 表现就是「悬浮窗发了没反应，必须点开前台」。
  */
@@ -634,7 +637,7 @@ function loadSyncedSessions() {
  *
  * 原来的逻辑是：`prompt` 拦截器里用
  * `ctx.sessions.get(sessionId)?.header?.cwd` 反解电脑路径
- *（经 `desktopPathOfMirror(workspaceMap, cwd)`）。
+ *（经 `desktopPathOfMirror(sessionIndex, cwd)`）。
  *
  * 但 **`ctx.sessions.get()` 只返回「当前活着」的会话** —— App 重启后，
  * 本地会话日志虽然在磁盘上，却**没有被载入内存**，于是 `get()` 返回
@@ -2824,172 +2827,33 @@ export function apply(ctx) {
 		ctx.logger?.info?.('[dsh-remote-mobile] 尚未配对：请到「添加工作区 → 电脑」填配对码（配对后自动连接）');
 	}
 
-	/** 远程会话 id 集合：这些会话的 prompt 转发电脑，不在手机本地跑模型。 */
-	const remoteSessions = loadRemoteSessions();
-
-	/**
-	 * **从电脑同步来的历史对话**的 id 集合（`remoteSessions` 的子集）。
-	 *
-	 * 与 `remoteSessions` 的区别只有一件事：它们的**历史内容不在手机本地**，
-	 * 所以读历史（官方 `controller.page` / `controller.follow`）要转发电脑；
-	 * 而手机自己新建的远程会话（`createSession` 桥建的）历史在本地，
-	 * 读本地即可，不该多跑一趟隧道。
-	 */
-	const syncedSessions = loadSyncedSessions();
-
-	/**
-	 * 「App 回到前台」的信号通道。
-	 *
-	 * ## 为什么需要它（用户 2026-10-27 反馈，两条）
-	 *
-	 * 用户原话：「手机悬浮窗没法对话，必须点开前台消息才能发送出去并收到回复」
-	 * 和「必须点开前台才可以对话」。
-	 *
-	 * ## 根因
-	 *
-	 * 手机切到后台后，系统会冻结 JS 定时器（Doze / App Standby）。而我们的
-	 * SSE 重连靠 `await new Promise(r => setTimeout(r, wait))` —— 一旦被冻结，
-	 * 这个 `setTimeout` **永远不会到期**，于是：
-	 *
-	 *   ① 后台期间电脑推来的事件全部丢失（流已断，没人重连）；
-	 *   ② 用户切回前台，`setTimeout` 的剩余时间才开始重新计时 ——
-	 *      最长还要等满 15 秒退避；
-	 *   ③ 这 15 秒里用户发的消息能出去（prompt 是主动 RPC），但**收不到回复**
-	 *      （回复走 SSE，还没连上）。表现就是「发了没反应，得再点一下」。
-	 *
-	 * ## 做法
-	 *
-	 * 维护一组「可被提前唤醒的等待器」。回到前台时调用 `wakeAllRemoteStreams()`，
-	 * 把所有正在退避的等待**立即结束**，流立刻重连。
-	 *
-	 * 唤醒是安全的：等待结束后只是走 `while` 循环的下一轮、重新建连，
-	 * 不涉及任何状态机跳转。
-	 */
-	const streamWakers = new Set();
-
-	/**
-	 * 可被提前唤醒的 sleep。
-	 *
-	 * 与裸 `setTimeout` 的区别只有一点：外部可以在到期前把它叫醒。
-	 * 用于 SSE 重连退避 —— 回到前台时应当**立刻**重连，而不是等退避走完。
-	 *
-	 * @param ms - 最长等待毫秒数。
-	 * @returns 等待结束的 Promise（正常到期或被唤醒都 resolve）。
-	 */
-	function sleepWakable(ms) {
-		return new Promise((resolve) => {
-			let done = false;
-			const finish = () => {
-				if (done) return;
-				done = true;
-				streamWakers.delete(finish);
-				clearTimeout(timer);
-				resolve();
-			};
-			const timer = setTimeout(finish, ms);
-			streamWakers.add(finish);
-		});
-	}
-
-	/**
-	 * 立刻唤醒所有正在退避的远程流。
-	 *
-	 * 由宿主在 App 回到前台时调用（见下面的 `ctx.effect`）。
-	 * 幂等、无副作用：没有等待者时就是空操作。
-	 */
-	function wakeAllRemoteStreams() {
-		if (streamWakers.size === 0) return 0;
-		const n = streamWakers.size;
-		// 复制一份再遍历：`finish()` 会从集合里删自己。
-		for (const finish of [...streamWakers]) finish();
-		return n;
-	}
-
-
-	/**
-	 * `sessionId → 电脑路径` 的落盘映射（见 `loadRemotePaths` 的注释）。
-	 *
-	 * ⚠️ **落盘**，与 `pendingPlans`（故意的内存 Map）不同：这份要活过 App 重启，
-	 * 否则「退出 App 回来发不了消息」。写入时机是同步 / 建会话那一刻，
-	 * 那时一定知道电脑路径。
-	 */
-	const remotePaths = loadRemotePaths();
-
-	/**
-	 * `sessionId → 用户在手机上选定的模型`（**落盘**，见 `loadRemoteModels`）。
-	 *
-	 * ## 为什么需要（用户报障「手机选 A、电脑用 B」的根因）
-	 *
-	 * 模型的去向原来只有 `pendingPlans`（内存 Map）里的 `plan.model` 一条路，
-	 * 而它活不过 App 重启 / 被杀后台。丢了之后 `prompt` 拦截器走老路径、
-	 * `body` 不带 `model`，电脑就退回**它自己的默认模型**去请求 —— 若那个模型
-	 * 不在用户的供应商里，直接 502。
-	 *
-	 * 这份落盘映射是那条路的**兜底**：`prompt` 时 `plan.model` 优先，
-	 * 没有就读这里。用户只要在手机上选过一次，之后哪怕重启也照样带得过去。
-	 */
-	const remoteModels = loadRemoteModels();
-
-	/**
-	 * `sessionId → 电脑上的标题`（**落盘**，见 `loadDesktopTitles`）。
-	 *
-	 * ## 为什么需要（侧边栏「未命名」的直接修复）
-	 *
-	 * 同步会话在手机本地**不落盘**（历史按需从电脑拉），所以本地没有
-	 * `session/title` 事件可读。而 `controller.follow` 的首帧必须带
-	 * `projections`，否则前端把会话摘要的 `title` 覆盖成 undefined，
-	 * 侧边栏显示「未命名」——**每次切换会话都会重新发生一次**。
-	 *
-	 * 所以同步时把电脑上的标题记在这里，`follow` 首帧直接取用。
-	 *
-	 * ⚠️ **必须落盘**：只存内存的话，App 重启后 `follow` 又拿不到标题，
-	 * 侧边栏重新变「未命名」—— 而用户不会去重新同步一遍。
-	 */
-	const desktopTitles = loadDesktopTitles();
-
-	/**
-	 * `sessionId → 电脑上那次的真实活动时间`（毫秒，**落盘**）。
-	 *
-	 * 见 `loadDesktopTimes()` 的长注释：手机本地会话的 `updatedAt` 是
-	 * 「同步那一刻」，不是「电脑上真正聊过的时间」，所以「按时间排序」
-	 * 排不出用户期望的顺序。这张表由同步流程写入，前端读快照时覆盖上去。
-	 */
-	const desktopTimes = loadDesktopTimes();
-
-	/**
-	 * `sessionId → 这条在电脑上是置顶的`（**落盘**）。
-	 *
-	 * 见 `loadDesktopPins()`。前端据此调官方 `workspaces.pinSession()`，
-	 * 让手机侧边栏的置顶与电脑一致。
-	 */
-	const desktopPins = loadDesktopPins();
-
-	/**
-	 * `sessionId → 我们给它建本地空壳的时刻`（毫秒，**落盘**）。
-	 *
-	 * 见 `readDesktopMeta()` 里 `syncedAt` 的注释 —— 前端全靠这个基准
-	 * 区分「本地 `updatedAt` 是同步时的假值」还是「用户真的聊过」。
-	 * 少了它，「按时间排序」的修复会变成空操作（取 max 永远选本地假值）。
-	 */
-	const desktopSyncedAt = loadDesktopSyncedAt();
-
-	/**
-	 * `sessionId → 本地轮次偏移量`（**落盘**，见 `loadTurnOffsets`）。
-	 *
-	 * 同步会话在本地写了合法的占位轮次 `turn: 1`，占住了本地的 turn 1；
-	 * 电脑端的真实轮次从 1 开始，所以要整体加上这里的偏移量才不撞车
-	 *（见 `mirrorEvent` 里对 `data.turn` 的处理）。
-	 *
-	 * ⚠️ **必须落盘**：`mirrorEvent` 在 App 重启后也要知道该不该 +1，
-	 * 否则重启后同步事件会被写成 turn 1、和占位轮次撞车 ⇒ 会话再次 corrupt。
-	 */
-	const turnOffsets = loadTurnOffsets();
-
-	/** 镜像工作区登记表：`<slug> → <电脑路径>`（见 `WORKSPACES_PATH` 的注释）。 */
-	const workspaceMap = loadWorkspaceMap();
-
-	/** 每个远程会话正在跟随的电脑事件流。 */
-	const follows = new Map();
+	const sessionIndex = createSessionIndex({
+		load: {
+			remote: loadRemoteSessions, synced: loadSyncedSessions,
+			paths: loadRemotePaths, models: loadRemoteModels, titles: loadDesktopTitles,
+			times: loadDesktopTimes, pins: loadDesktopPins, syncedAt: loadDesktopSyncedAt,
+			offsets: loadTurnOffsets, workspaces: loadWorkspaceMap,
+		},
+		saveSessions: (remote, synced, paths, titles, offsets, models) =>
+			saveRemoteSessions(remote, ctx.logger, synced, paths, titles, offsets, models),
+		saveMeta: (times, pins, syncedAt) => saveDesktopMeta(times, pins, syncedAt, ctx.logger),
+		saveWorkspaces: (workspaces) => saveWorkspaceMap(workspaces, ctx.logger),
+	});
+	const reconnect = createReconnect({
+		readRange: callRemote,
+		isWireEvent,
+		warn: (id, from, to, error) => ctx.logger?.warn?.(
+			`[dsh-remote-mobile] 补洞 ${id} (${from}, ${to}) 失败: ${String(error?.message ?? error)}`,
+		),
+	});
+	const outbox = createOutbox({
+		send: (body) => callRemote(config, 'prompt', body),
+		onAccepted: (id) => follow(id),
+		onFailed: (body, error) => {
+			ctx.logger?.warn?.(`[dsh-remote-mobile] 转发消息失败(${body.sessionId}): ${String(error?.message ?? error)}`);
+			broadcast('prompt-failed', { sessionId: body.sessionId, requestId: body.requestId, message: String(error?.message ?? error) });
+		},
+	});
 
 	/**
 	 * 每个远程会话的搬运状态。
@@ -2999,44 +2863,6 @@ export function apply(ctx) {
 	 *   见 `deriveRunning` —— 它同时用于去重，避免重连补发时重复 emit。
 	 */
 	const mirrorStates = new Map();
-
-	/**
-	 * 每个远程会话「在电脑上还没建出来」时的待发送计划。
-	 *
-	 * ## 为什么会有这个东西（用户原话）
-	 *
-	 * 「我们在电脑上创建一个新对话，顺序是：点击"新对话" → 选择工作区 →
-	 *  选择预设 → 选择模型 → 发消息。前四步其实它不是一个有效的新建对话，
-	 *  电脑也是必须发消息之后，它才创建对话的。」
-	 *
-	 * 「我觉得新建对话、选择预设、选择模型还有发送消息这么多个步骤，你可以
-	 *  打包成一个网络请求发过去就可以了，电脑拿到这个请求之后再解析就OK了」
-	 *
-	 * 所以：**选工作区/预设/模型全是手机本地的状态**，一次网络都不发；等到用户
-	 * 真的发第一条消息，才把「在哪个电脑目录 + 哪个预设 + 哪个模型 + 消息正文」
-	 * **打包成一个 `prompt` 请求**发过去，由电脑自己解析并依次 create → selectModel
-	 * → prompt。
-	 *
-	 * 于是「选目录 → 发送」全程只跟电脑沟通**一次**（用户明确要求的那一条）。
-	 *
-	 * ## 结构
-	 *
-	 * `sessionId → { desktopPath, presetId, model }`
-	 *
-	 * - `desktopPath`：电脑上的绝对路径（`C:\…`），必填；
-	 * - `presetId`：`agentPreset` id，没有则不传（用电脑默认预设）；
-	 * - `model`：`{provider, model, reasoningEffort?}`，没有则不设（用电脑默认模型）。
-	 *
-	 * ⚠️ **发完就删**：会话一旦在电脑上建好，后续消息不需要再带这些。留着也不会
-	 * 出错（电脑端幂等），但会让每次发送多带几十字节 —— 而带宽是这套方案的第一
-	 * 硬约束。
-	 *
-	 * ⚠️ **不持久化**：这是「这条会话还没在电脑上出生」的瞬时状态。重启后
-	 * `remoteSessions` 仍在（已落盘），但那时电脑上其实已经建过了（或者用户放弃
-	 * 了那次发送），重新推一遍预设/模型没有意义，反而可能把用户后来在电脑上改
-	 * 过的设置覆盖掉。所以只存内存。
-	 */
-	const pendingPlans = new Map();
 
 	/**
 	 * `prompt` 拦截器诊断环形缓冲（最近 20 条）。
@@ -3058,7 +2884,7 @@ export function apply(ctx) {
 	const pageDiag = [];
 
 	/** 取某会话的待发送计划（没有则 `undefined`）。 */
-	const planOf = (sessionId) => pendingPlans.get(sessionId);
+	const planOf = outbox.planOf;
 
 	/**
 	 * 读某会话当前选中的**预设 id**（读手机本地投影，同步、不联网）。
@@ -3150,7 +2976,7 @@ export function apply(ctx) {
 			// 只要日志里看得见「已闭合的 turn 1」，就说明占位轮次在，该 +1。
 			state = { skippedSeeds: 0, running: undefined, turnOffset: 0, seqDelta: undefined };
 			try {
-				state.turnOffset = typeof turnOffsets?.[sessionId] === 'number' ? turnOffsets[sessionId] : 0;
+				state.turnOffset = typeof sessionIndex.offsetOf(sessionId) === 'number' ? sessionIndex.offsetOf(sessionId) : 0;
 			} catch {
 				state.turnOffset = 0;
 			}
@@ -3338,10 +3164,10 @@ export function apply(ctx) {
 				const id = entry.name;
 				if (id === keepId) continue;
 				// ① 任何账本里有它 ⇒ 是在用的会话，绝不碰
-				if (remoteSessions.has(id) || syncedSessions.has(id)) continue;
-				if (remotePaths[id] !== undefined) continue;
-				if (desktopTitles[id] !== undefined) continue;
-				if (turnOffsets[id] !== undefined) continue;
+				if (sessionIndex.has(id) || sessionIndex.isSynced(id)) continue;
+				if (sessionIndex.pathOf(id) !== undefined) continue;
+				if (sessionIndex.titleOf(id) !== undefined) continue;
+				if (sessionIndex.offsetOf(id) !== undefined) continue;
 				// ② 体积判据
 				//
 				// 「空壳」的定义要**同时**满足三条，缺一不可：
@@ -3411,16 +3237,16 @@ export function apply(ctx) {
 			// `workspaceMap.get is not a function`，被 catch 吞掉后返回 undefined
 			// ⇒ 每个会话都「唤醒失败」⇒ 事件全丢 ⇒ 手机上永远没有回复。
 			//
-			// 正解：用落盘的 `remotePaths[sessionId]`（电脑路径）反推镜像工作区，
+			// 正解：用落盘的 `sessionIndex.pathOf(sessionId)`（电脑路径）反推镜像工作区，
 			// 也就是 `syncConversations` / `createSession` 用的同一个
 			// `ensureDesktopWorkspace()` —— 它对同一目录是幂等的，会返回既有工作区。
-			const desktopPath = typeof remotePaths[sessionId] === 'string' && remotePaths[sessionId] !== ''
-				? remotePaths[sessionId]
-				: desktopPathOfMirror(workspaceMap, ctx.sessions?.get?.(sessionId)?.header?.cwd);
+			const desktopPath = typeof sessionIndex.pathOf(sessionId) === 'string' && sessionIndex.pathOf(sessionId) !== ''
+				? sessionIndex.pathOf(sessionId)
+				: desktopPathOfMirror(sessionIndex, ctx.sessions?.get?.(sessionId)?.header?.cwd);
 			let workspaceId;
 			if (typeof desktopPath === 'string' && desktopPath !== '') {
 				try {
-					const workspace = await ensureDesktopWorkspace(ctx, desktopPath, workspaceMap);
+					const workspace = await ensureDesktopWorkspace(ctx, desktopPath, sessionIndex);
 					if (typeof workspace?.id === 'string' && workspace.id !== '') workspaceId = workspace.id;
 				} catch (error) {
 					void debugLog(`ensureLocalMirror(${sessionId}) 建工作区失败: ${String(error?.message ?? error)}`);
@@ -4342,17 +4168,16 @@ export function apply(ctx) {
 			void debugLog(`follow(${sessionId}) 跳过：未配对`);
 			return;
 		}
-		if (syncedSessions.has(sessionId)) {
+		if (sessionIndex.isSynced(sessionId)) {
 			void debugLog(`follow(${sessionId}) 跳过：是同步会话（走 followSynced）`);
 			return;
 		}
-		if (follows.has(sessionId)) {
+		if (reconnect.has(sessionId)) {
 			void debugLog(`follow(${sessionId}) 跳过：已有 follow 循环在跑`);
 			return;
 		}
 		void debugLog(`follow(${sessionId}) 启动 SSE 循环`);
-		const controller = new AbortController();
-		follows.set(sessionId, controller);
+		const controller = reconnect.start(sessionId);
 
 		/**
 		 * 连一次电脑的 SSE 并消费到断开。
@@ -4583,7 +4408,7 @@ export function apply(ctx) {
 									const wantFrom = session.seq - delta;
 									const wantTo = payload.seq - 1;
 									if (wantTo > wantFrom) {
-										const filled = await fillGap(config, sessionId, wantFrom, wantTo);
+										const filled = await reconnect.fillGap(config, sessionId, wantFrom, wantTo);
 										if (filled !== null && filled.length > 0) {
 											let recovered = 0;
 											for (const missing of filled) {
@@ -4710,101 +4535,57 @@ export function apply(ctx) {
 		};
 
 		const run = async () => {
-			let wait = 1000;
-			while (!controller.signal.aborted) {
-				const startedAt = Date.now();
-				let lived = 0;
-				try {
-					await once();
-					lived = Date.now() - startedAt;
-					// 诊断：`once()` **正常返回**（不是抛错）说明连接被对端或自身
-					// 干净地关掉了。真机上这是「SSE 连上就断」的唯一可见证据 ——
-					// `ctx.logger.warn` 在真机不可见，只能落盘。
-					void debugLog(`SSE once() 正常返回 session=${sessionId} 持续=${lived}ms 下次等待=${wait}ms`);
-				} catch (error) {
+			const stream = reconnect.createStream(sessionId);
+			try {
+				while (!controller.signal.aborted) {
+					const startedAt = Date.now();
+					let lived = 0;
+					try {
+						await once();
+						lived = Date.now() - startedAt;
+						// 诊断：`once()` **正常返回**（不是抛错）说明连接被对端或自身
+						// 干净地关掉了。真机上这是「SSE 连上就断」的唯一可见证据 ——
+						// `ctx.logger.warn` 在真机不可见，只能落盘。
+						void debugLog(`SSE once() 正常返回 session=${sessionId} 持续=${lived}ms 下次等待=${stream.wait}ms`);
+					} catch (error) {
+						if (controller.signal.aborted) return;
+						lived = Date.now() - startedAt;
+						void debugLog(
+							`SSE once() 抛错 session=${sessionId} 持续=${lived}ms 下次等待=${stream.wait}ms err=${String(error?.message ?? error)}`,
+						);
+						ctx.logger?.warn?.(
+							`[dsh-remote-mobile] 事件流中断(${stream.wait}ms 后重连): ${String(error?.message ?? error)}`,
+						);
+					}
 					if (controller.signal.aborted) return;
-					lived = Date.now() - startedAt;
-					void debugLog(
-						`SSE once() 抛错 session=${sessionId} 持续=${lived}ms 下次等待=${wait}ms err=${String(error?.message ?? error)}`,
-					);
-					ctx.logger?.warn?.(
-						`[dsh-remote-mobile] 事件流中断(${wait}ms 后重连): ${String(error?.message ?? error)}`,
-					);
+					// ## ⚠️⚠️ 退避必须**在连接成功存活过之后归零**（用户 2026-10-22 报障）
+					//
+					// 原来的写法是：
+					//
+					//     let wait = 1000;
+					//     while (...) { await once(); await sleep(wait); wait = min(wait*2, 15000) }
+					//
+					// `stream.wait` **只增不减**。于是只要历史上断过一次，之后每次断线都固定等
+					// 15 秒 —— 即使这次连接本来很健康。真机实测桌面端日志是
+					//
+					//     SSE 订阅 ... 该会话订阅者=0     ← 每 16 秒一条
+					//
+					// 而 16s ≈ 15s 退避 + 1s 连接。那 15 秒的窗口里电脑推来的事件
+					// （包括 `turn/end` 和 `assistant/message`）**全部丢失**，
+					// 用户看到的就是「手机上永远没有回复」。
+					//
+					// 现在：连接活过 `STABLE_MS` 就认为它是健康的，退避归零回 1s；
+					// 只有**快速失败**（连上就断）才继续指数退避 —— 这才是退避的本意。
+					stream.backoff(lived, SSE_STABLE_MS);
+					await reconnect.sleep(stream.wait, controller.signal);
 				}
-				if (controller.signal.aborted) return;
-				// ## ⚠️⚠️ 退避必须**在连接成功存活过之后归零**（用户 2026-10-22 报障）
-				//
-				// 原来的写法是：
-				//
-				//     let wait = 1000;
-				//     while (...) { await once(); await sleep(wait); wait = min(wait*2, 15000) }
-				//
-				// `wait` **只增不减**。于是只要历史上断过一次，之后每次断线都固定等
-				// 15 秒 —— 即使这次连接本来很健康。真机实测桌面端日志是
-				//
-				//     SSE 订阅 ... 该会话订阅者=0     ← 每 16 秒一条
-				//
-				// 而 16s ≈ 15s 退避 + 1s 连接。那 15 秒的窗口里电脑推来的事件
-				// （包括 `turn/end` 和 `assistant/message`）**全部丢失**，
-				// 用户看到的就是「手机上永远没有回复」。
-				//
-				// 现在：连接活过 `STABLE_MS` 就认为它是健康的，退避归零回 1s；
-				// 只有**快速失败**（连上就断）才继续指数退避 —— 这才是退避的本意。
-				if (lived >= SSE_STABLE_MS) wait = 1000;
-				else wait = Math.min(wait * 2, 15000);
-				await new Promise((resolve) => setTimeout(resolve, wait));
-			}
+			} finally { stream.close(); }
 		};
 
 		run().finally(() => {
-			if (follows.get(sessionId) === controller) follows.delete(sessionId);
+			reconnect.finish(sessionId, controller);
 		});
 	};
-
-	/**
-	 * 补洞：把 `(fromSeq, toSeq)` **之间**缺的事件从电脑捞回来。
-	 *
-	 * 为什么需要它：前端 `RemoteJournalStream.acceptEntry`
-	 *（`dsh-api-gateway/lib/client.js:1127`）对每个事件要求
-	 * `first === lastCursor + 1`。缺一条它就转 `replaceThrough()` →
-	 * `assertPageThrough(page, requiredCursor)`，而那个断言要求补页的 tail
-	 * **精确等于** cursor，做不到就抛
-	 * `session event stream page did not end at its requested cursor`
-	 * ⇒ 界面「历史加载失败」。
-	 *
-	 * 正常情况下不会走到这里（电脑端 SSE 已经保证从 `fromSeq` 之后连续推送），
-	 * 这是最后一道防线：宁可多一次 RPC，也不让跳号事件进前端。
-	 *
-	 * @returns 补到的**有序事件数组**（已按 seq 去重、只保留 `(fromSeq, toSeq)`
-	 *   区间内的）；补不齐（首条不是 `fromSeq + 1`、或末条不是 `toSeq`）返回
-	 *   `null` —— 调用方据此断开重连，而不是硬把缺口放过去。
-	 */
-	async function fillGap(config, sessionId, fromSeq, toSeq) {
-		// 缺口太大说明流已经彻底错乱（不是「丢了一两条」），补也没意义。
-		if (toSeq - fromSeq > 200) return null;
-		let page;
-		try {
-			page = await callRemote(config, 'readEventRange', { sessionId, fromSeq: fromSeq + 1, toSeq });
-		} catch (error) {
-			ctx.logger?.warn?.(
-				`[dsh-remote-mobile] 补洞 ${sessionId} (${fromSeq}, ${toSeq}) 失败: ${String(error?.message ?? error)}`,
-			);
-			return null;
-		}
-		const events = page !== null && typeof page === 'object' && Array.isArray(page.events) ? page.events : null;
-		if (events === null || events.length === 0) return null;
-		const sorted = events
-			.filter((event) => isWireEvent(event) && event.seq > fromSeq && event.seq <= toSeq)
-			.sort((left, right) => left.seq - right.seq);
-		if (sorted.length === 0) return null;
-		// 必须从 `fromSeq + 1` 开始且到 `toSeq` 结束，中间不能有洞。
-		if (sorted[0].seq !== fromSeq + 1) return null;
-		if (sorted[sorted.length - 1].seq !== toSeq) return null;
-		for (let index = 1; index < sorted.length; index += 1) {
-			if (sorted[index].seq !== sorted[index - 1].seq + 1) return null;
-		}
-		return sorted;
-	}
 
 	/**
 	 * 「同步来的对话」专用的实时流：转发 + **顺带在本地补一份日志**。
@@ -4861,310 +4642,287 @@ export function apply(ctx) {
 		} catch {
 			/* 诊断失败不影响主流程 */
 		}
-		let wait = 1000;
-		let cursor = fromSeq;
-		// snapshot 里给的基线是 `assistantStream: {revision: 0}`，
-		// 所以第一帧 assistant-stream 的 revision 从 1 开始（见下面的自增处）。
-		let assistantRevision = 0;
-		// ⚠️ **卡死自愈**用的时间戳（见下面 `deriveRunning` 附近的说明）。
-		// 记录「最近一次收到任何事件」的时刻；只看运行态为 true 且长时间静默时
-		// 才去问一次电脑，正常连着（有事件来往）时一次都不发。
-		let lastEventAt = Date.now();
-		let lastStallCheckAt = 0;
-		while (!signal?.aborted) {
-			const controller = new AbortController();
-			const onAbort = () => controller.abort();
-			signal?.addEventListener?.('abort', onAbort);
-			try {
-				const streamUrl = `${config.endpoint}/api/dsh-remote/stream?session=${encodeURIComponent(
-					sessionId,
-				)}&fromSeq=${cursor}`;
-				const res = await remoteFetch(streamUrl, {
-					headers: { accept: 'text/event-stream', 'x-dsh-remote-token': config.token },
-					signal: controller.signal,
-				});
-				if (!res.ok || res.body === null) {
-					// ## ⚠️ 404 必须熔断，不能无限重连
-					//
-					// `404` 的含义很确定：**电脑上没有这个会话**。常见于两种情形：
-					//   ① 用户在电脑上把对话删了，手机这边 `syncedSessions` 还留着；
-					//   ② 这条会话是我们自建的、从没在电脑上真正建出来过。
-					//
-					// 这两种情况**重连多少次都是 404**。而原来的写法对所有失败
-					// 一视同仁地重试（1s→2s→…→15s 封顶），于是每 15 秒就去打一次
-					// 电脑，日志里 404 刷屏，手机跟着掉电 —— 报告里那条
-					// 「几千条空流压垮电脑」有一半是这么来的。
-					//
-					// 做法：404 时把会话从「已同步」里摘掉（它确实同步不上了），
-					// 并直接结束这条流。下次用户点开时会退回本地路径，行为正常。
-					// 注意**不要**删 `remoteSessions`：那是「归电脑管」的账本，
-					// 用户可能在电脑上重建同名会话后还要用。
-					if (res.status === 404) {
-						void debugLog(`followSynced(${sessionId}) 电脑上不存在（404），停止重连`);
-						ctx.logger?.info?.(
-							`[dsh-remote-mobile] 同步会话 ${sessionId} 在电脑上已不存在，停止跟踪`,
-						);
-						syncedSessions.delete(sessionId);
-						saveRemoteSessions(
-							remoteSessions, ctx.logger, syncedSessions, remotePaths,
-							desktopTitles, turnOffsets, remoteModels,
-						);
-						return;
-					}
-					throw new Error(`HTTP ${res.status}`);
-				}
-				wait = 1000;
-
-				// ⚠️ **连上了就校正一次运行态**（用户 2026-10-20 报障根因）。
-				//
-				// 「退出 App 再回来就看不到『深度求索中』、也不能暂停」的真正原因，
-				// 是运行态只能靠 `turn/start` / `turn/end` 事件翻布尔值，而 App
-				// 重启后 `mirrorStates` 是空的、那一轮的 `turn/start` 早已发过、
-				// 重连的 `fromSeq` 又不会让电脑重发它 —— 手机永远等不到那个开关。
-				//
-				// 完整论证见 `reconcileRunning` 的注释。这里只负责在**每次建流**
-				// 时问一次电脑的真实状态（一问一答，不是轮询）。
-				//
-				// ⚠️ 传 `isLive`：流断掉之后这次校正的结果已经过期，
-				// 不能拿旧结果去覆盖新状态。
-				reconcileRunning(ctx, config, sessionId, () => !controller.signal.aborted);
-
-				/*
-				 * 同样是"手机刚连上"的时刻 ⇒ 补拉待审批的 ask。
-				 * 与上面 `followSynced` 里那一处同源，`pulledAskIds`
-				 * 去重保证不会重复弹窗。
-				 */
-				pullPendingAsks(ctx, config);
-
-				// ⚠️⚠️ **静默看门狗必须独立于事件循环。**
-				//
-				// 下面那个卡死检查写在 `for await (const chunk of res.body)` 里面 ——
-				// 那意味着**有数据进来它才会被求值**。而真正要防的场景恰恰是
-				// 「流连着但一个字节都不来」：此时 `for await` 挂在那里等，
-				// 检查代码一次都不会执行，自愈形同虚设。
-				//
-				// 所以这里再起一个独立定时器，只做一件事：定期看
-				// 「运行态是否还停在 true、且已经静默太久」，是就校正一次。
-				//
-				// 清理放在下面的 `finally` 里（与 removeEventListener 同一个块），
-				// 保证流断/重连/abort 都不会留下裸定时器。
-				const stallWatchdog = setInterval(() => {
-					try {
-						if (controller.signal.aborted) return;
-						const nowMs = Date.now();
-						if (reconcileStateOf(sessionId).running !== true) return;
-						if (nowMs - lastEventAt <= STALL_RECONCILE_MS) return;
-						if (nowMs - lastStallCheckAt <= STALL_RECONCILE_MS) return;
-						lastStallCheckAt = nowMs;
-						void debugLog(
-							`followSynced(${sessionId}) 流静默 ${Math.round(
-								(nowMs - lastEventAt) / 1000,
-							)}s 且运行态为 true，看门狗主动校正`,
-						);
-						reconcileRunning(ctx, config, sessionId, () => !controller.signal.aborted);
-					} catch {
-						/* 看门狗自身绝不能让流崩掉 */
-					}
-				}, 30_000);
-
-				const decoder = new TextDecoder();
-				let buffer = '';
-				for await (const chunk of res.body) {
-					buffer += decoder.decode(chunk, { stream: true });
-					if (buffer.length > SSE_BUFFER_LIMIT) {
-						throw new Error(`SSE 单条消息超过 ${Math.floor(SSE_BUFFER_LIMIT / (1024 * 1024))} MiB，已断开`);
-					}
-					let split;
-					while ((split = buffer.indexOf('\n\n')) >= 0) {
-						const raw = buffer.slice(0, split);
-						buffer = buffer.slice(split + 2);
-						let eventName = 'message';
-						let dataLine = '';
-						for (const line of raw.split('\n')) {
-							if (line.startsWith('event:')) eventName = line.slice(6).trim();
-							else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+		const stream = reconnect.createStream(sessionId, fromSeq, signal);
+		try {
+			while (!stream.signal.aborted) {
+				const controller = stream.connect();
+				try {
+					const streamUrl = `${config.endpoint}/api/dsh-remote/stream?session=${encodeURIComponent(
+						sessionId,
+					)}&fromSeq=${stream.cursor}`;
+					const res = await remoteFetch(streamUrl, {
+						headers: { accept: 'text/event-stream', 'x-dsh-remote-token': config.token },
+						signal: controller.signal,
+					});
+					if (!res.ok || res.body === null) {
+						// ## ⚠️ 404 必须熔断，不能无限重连
+						//
+						// `404` 的含义很确定：**电脑上没有这个会话**。常见于两种情形：
+						//   ① 用户在电脑上把对话删了，手机这边 `syncedSessions` 还留着；
+						//   ② 这条会话是我们自建的、从没在电脑上真正建出来过。
+						//
+						// 这两种情况**重连多少次都是 404**。而原来的写法对所有失败
+						// 一视同仁地重试（1s→2s→…→15s 封顶），于是每 15 秒就去打一次
+						// 电脑，日志里 404 刷屏，手机跟着掉电 —— 报告里那条
+						// 「几千条空流压垮电脑」有一半是这么来的。
+						//
+						// 做法：404 时把会话从「已同步」里摘掉（它确实同步不上了），
+						// 并直接结束这条流。下次用户点开时会退回本地路径，行为正常。
+						// 注意**不要**删 `remoteSessions`：那是「归电脑管」的账本，
+						// 用户可能在电脑上重建同名会话后还要用。
+						if (res.status === 404) {
+							void debugLog(`followSynced(${sessionId}) 电脑上不存在（404），停止重连`);
+							ctx.logger?.info?.(
+								`[dsh-remote-mobile] 同步会话 ${sessionId} 在电脑上已不存在，停止跟踪`,
+							);
+							sessionIndex.unmarkSynced(sessionId);
+							sessionIndex.persist();
+							return;
 						}
-						if (dataLine === '' || (eventName !== 'event' && eventName !== 'frame')) continue;
-						let payload;
+						throw new Error(`HTTP ${res.status}`);
+					}
+					stream.connected();
+
+					// ⚠️ **连上了就校正一次运行态**（用户 2026-10-20 报障根因）。
+					//
+					// 「退出 App 再回来就看不到『深度求索中』、也不能暂停」的真正原因，
+					// 是运行态只能靠 `turn/start` / `turn/end` 事件翻布尔值，而 App
+					// 重启后 `mirrorStates` 是空的、那一轮的 `turn/start` 早已发过、
+					// 重连的 `fromSeq` 又不会让电脑重发它 —— 手机永远等不到那个开关。
+					//
+					// 完整论证见 `reconcileRunning` 的注释。这里只负责在**每次建流**
+					// 时问一次电脑的真实状态（一问一答，不是轮询）。
+					//
+					// ⚠️ 传 `isLive`：流断掉之后这次校正的结果已经过期，
+					// 不能拿旧结果去覆盖新状态。
+					reconcileRunning(ctx, config, sessionId, () => !controller.signal.aborted);
+
+					/*
+					 * 同样是"手机刚连上"的时刻 ⇒ 补拉待审批的 ask。
+					 * 与上面 `followSynced` 里那一处同源，`pulledAskIds`
+					 * 去重保证不会重复弹窗。
+					 */
+					pullPendingAsks(ctx, config);
+
+					// ⚠️⚠️ **静默看门狗必须独立于事件循环。**
+					//
+					// 下面那个卡死检查写在 `for await (const chunk of res.body)` 里面 ——
+					// 那意味着**有数据进来它才会被求值**。而真正要防的场景恰恰是
+					// 「流连着但一个字节都不来」：此时 `for await` 挂在那里等，
+					// 检查代码一次都不会执行，自愈形同虚设。
+					//
+					// 所以这里再起一个独立定时器，只做一件事：定期看
+					// 「运行态是否还停在 true、且已经静默太久」，是就校正一次。
+					//
+					// 清理放在下面的 `finally` 里（与 removeEventListener 同一个块），
+					// 保证流断/重连/abort 都不会留下裸定时器。
+					stream.watch(() => {
 						try {
-							payload = JSON.parse(dataLine);
-						} catch {
-							continue;
-						}
-						if (eventName === 'frame') {
-							// ⚠️ **`revision` 必须由我们自己递增。**
-							//
-							// 电脑端发的是原始的 `agent/assistant-stream` 帧
-							//（`dsh-remote-desktop/lib/index.js` 的
-							// `push(agent.session.id, 'frame', frame)`），里面**没有**
-							// `revision` 字段 —— 那个字段是官方宿主在
-							// `SessionHistoryController.follow` 里用
-							// `++assistantStreamOrdinal` 现加的。
-							//
-							// 而前端 `SessionEventStream.follow`
-							//（`dsh-api-session-controller/lib/client.js:410`）要求
-							// `frame.frame.revision === 上一帧 + 1`，否则抛
-							// `session assistant stream skipped revision N`，
-							// **整条流当场终止**。
-							//
-							// 所以这里按到达顺序自增。基线是 snapshot 里的
-							// `assistantStream: {revision: 0}`，所以第一帧从 1 开始。
-							assistantRevision += 1;
-							yield { type: 'assistant-stream', frame: { ...payload, revision: assistantRevision } };
-							continue;
-						}
-						// ⚠️ 只认合法的事件信封：前端 `assertSessionWireEvent`
-						//（`dsh-api-session-controller/lib/client.js:290`）会逐字段校验，
-						// **一条坏事件就让整条流抛错**（不是跳过那一条），
-						// 界面当场变成错误态。所以这里提前把不合格的丢掉。
-						if (!isWireEvent(payload)) continue;
-						if (payload.seq <= cursor) continue; // 重连补发的重复段
-						// ⚠️⚠️ **跳号必须先补洞，不能直接交给前端。**
-						//
-						// 前端 `RemoteJournalStream.acceptEntry`
-						//（`dsh-api-gateway/lib/client.js:1127`）对每个事件要求
-						// `first === lastCursor + 1`（`follows()` 是精确 +1）。只要
-						// 中间缺一条，它就转 `replaceThrough()` →
-						// `assertPageThrough(page, requiredCursor)`，那个断言要求补页的
-						// **tail 精确等于 cursor**，做不到就抛
-						// `session event stream page did not end at its requested cursor`
-						// ⇒ 界面「历史加载失败」。
-						//
-						// 电脑端已经把「冷会话也补齐」修掉了（那是主因），但隧道中断、
-						// 电脑侧推送丢失仍可能造成跳号。这里做最后一道防线：缺多少就
-						// 用 `readHistory` 把 `(cursor, payload.seq)` 之间那一段捞回来，
-						// 逐条先发。捞不回来就**整条流重开**（断开连接，让外层退避重连
-						// 并从新的 cursor 重新对齐），绝不把跳号事件放给前端。
-						if (payload.seq !== cursor + 1) {
-							const filled = await fillGap(config, sessionId, cursor, payload.seq);
-							if (filled === null) {
-								// 补不齐 ⇒ 断开重连（外层会从 `cursor` 重新拉流）。
-								throw new Error(
-									`事件跳号且无法补齐（本地 ${cursor} → 收到 ${payload.seq}），重连对齐`,
-								);
-							}
-							for (const event of filled) {
-								if (!isWireEvent(event)) continue;
-								if (event.seq <= cursor) continue;
-								cursor = event.seq;
-								// 补洞捞回来的那一段里也可能有 turn/start / turn/end，
-								// 同样要派发运行态（理由见下面正式 yield 处的注释）。
-								deriveRunning(ctx, sessionId, event, reconcileStateOf(sessionId));
-								yield { type: 'event', event };
-							}
-							// 补完之后如果还是接不上，同样断开重连。
-							if (payload.seq !== cursor + 1) {
-								throw new Error(`补齐后仍不连续（本地 ${cursor} → 收到 ${payload.seq}），重连对齐`);
-							}
-						}
-						cursor = payload.seq;
-						// 顺带在本地补一份日志 —— 这是 `tokenUsage` / `contextPressure`
-						// 两个投影的唯一数据源（见函数头注释）。
-						//
-						// ⚠️ 包在 try/catch 里、**绝不能影响转发**：对齐不上时
-						// `mirrorEvent` 会抛错拒收，那只是「这条没写进本地」，
-						// 前端照样要拿到它。
-						try {
-							const local = await ensureLocalMirror(sessionId);
-							if (local !== undefined) {
-								mirrorEvent(local, payload, mirrorStateOf(sessionId));
-							}
-						} catch (error) {
-							// 只在真出问题时记一次，别刷屏（对齐失败是常态：
-							// 同步会话的本地日志可能落后很多条）。
-							if (mirrorWarnedAt.get(sessionId) !== true) {
-								mirrorWarnedAt.set(sessionId, true);
-								ctx.logger?.info?.(
-									`[dsh-remote-mobile] 同步会话本地落盘跳过（不影响显示）: ${String(error?.message ?? error)}`,
-								);
-							}
-						}
-						// ⚠️⚠️ **同步会话也必须派发运行态**（用户报障根因）。
-						//
-						// 用户原话：
-						//   「手机的画面不仅不能点击暂停，而且它没有深度求索中用时
-						//    多少分多少秒的那个状态显示，如果模型调用了后台任务，
-						//    也没有显示了」
-						//
-						// 三个症状是同一个根值：**这条 `followSynced` 从来不调
-						// `deriveRunning`**。
-						//
-						// `follow()`（非同步会话那条路）在 `:2067` 有这一句，
-						// 但同步来的会话在 `:1936` 就被提前 return 了 —— 它的实时
-						// 事件全部走本函数、直接 yield 给前端，不落本地日志，
-						// 于是没有任何人把 `turn/start` / `turn/end` 翻成运行态。
-						//
-						// 而运行态是**独立于日志**的一条通道（`api-session/status`
-						// 事件，见 `deriveRunning` 的注释），所以这里不落盘也完全
-						// 可以、也应该派发。前端拿到后才会出现：
-						//   - 「深度求索中 用时 N 秒」；
-						//   - 输入框的「停止生成」按钮；
-						//   - 顶部「N 个后台任务运行中」。
-						lastEventAt = Date.now();
-						deriveRunning(ctx, sessionId, payload, reconcileStateOf(sessionId));
-
-						// ## ⚠️ 卡死自愈（用户 2026-10-27 邮件反馈）
-						//
-						// 用户原话：「加载出来我问了一句在吗电脑那边回答出来了，
-						// 这边还是一直卡在深度思考出不来」。
-						//
-						// **发得出去、电脑也回了，但手机停在『深度求索中』。**
-						// 这说明 `turn/end` 那条事件没到 —— 而原来的兜底只在
-						// **建流时**校正一次（`reconcileRunning` 在 `res.ok` 之后）。
-						// 流一旦连着，就再没有任何人纠正它：前端会永远转圈，
-						// 「停止生成」也永远亮着。
-						//
-						// 实测场景：公网隧道抖动丢一条 SSE、或电脑侧那一轮被
-						// 中断而没发出 `turn/end`。两种都真实存在。
-						//
-						// 判据故意保守：
-						//   · 运行态必须是 true（false 时前端不转会，无所谓）；
-						//   · 且 **90 秒**没有任何事件进来（正常一轮会有
-						//     reasoning / text / tool 等大量帧，静默 90 秒几乎
-						//     不可能是真的在跑）；
-						//   · 且距离上次检查已过 90 秒（避免短时间内狂问）。
-						//
-						// 代价：一个卡住的会话最多每分钟一次一问一答的 RPC，
-						// 而且是**只在疑似卡死时**才发。正常使用零开销。
-						const nowAt = Date.now();
-						if (
-							reconcileStateOf(sessionId).running === true &&
-							nowAt - lastEventAt > STALL_RECONCILE_MS &&
-							nowAt - lastStallCheckAt > STALL_RECONCILE_MS
-						) {
-							lastStallCheckAt = nowAt;
+							if (controller.signal.aborted) return;
+							const nowMs = Date.now();
+							if (reconcileStateOf(sessionId).running !== true) return;
+							if (!stream.shouldCheck(nowMs, STALL_RECONCILE_MS)) return;
 							void debugLog(
-								`followSynced(${sessionId}) 静默 ${Math.round(
-									(nowAt - lastEventAt) / 1000,
-								)}s 且运行态为 true，主动校正一次`,
+								`followSynced(${sessionId}) 流静默 ${Math.round(
+									(nowMs - stream.lastEventAt) / 1000,
+								)}s 且运行态为 true，看门狗主动校正`,
 							);
 							reconcileRunning(ctx, config, sessionId, () => !controller.signal.aborted);
+						} catch {
+							/* 看门狗自身绝不能让流崩掉 */
 						}
+					}, 30_000);
 
-						yield { type: 'event', event: payload };
+					const decoder = new TextDecoder();
+					let buffer = '';
+					for await (const chunk of res.body) {
+						buffer += decoder.decode(chunk, { stream: true });
+						if (buffer.length > SSE_BUFFER_LIMIT) {
+							throw new Error(`SSE 单条消息超过 ${Math.floor(SSE_BUFFER_LIMIT / (1024 * 1024))} MiB，已断开`);
+						}
+						let split;
+						while ((split = buffer.indexOf('\n\n')) >= 0) {
+							const raw = buffer.slice(0, split);
+							buffer = buffer.slice(split + 2);
+							let eventName = 'message';
+							let dataLine = '';
+							for (const line of raw.split('\n')) {
+								if (line.startsWith('event:')) eventName = line.slice(6).trim();
+								else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+							}
+							if (dataLine === '' || (eventName !== 'event' && eventName !== 'frame')) continue;
+							let payload;
+							try {
+								payload = JSON.parse(dataLine);
+							} catch {
+								continue;
+							}
+							if (eventName === 'frame') {
+								// ⚠️ **`revision` 必须由我们自己递增。**
+								//
+								// 电脑端发的是原始的 `agent/assistant-stream` 帧
+								//（`dsh-remote-desktop/lib/index.js` 的
+								// `push(agent.session.id, 'frame', frame)`），里面**没有**
+								// `revision` 字段 —— 那个字段是官方宿主在
+								// `SessionHistoryController.follow` 里用
+								// `++assistantStreamOrdinal` 现加的。
+								//
+								// 而前端 `SessionEventStream.follow`
+								//（`dsh-api-session-controller/lib/client.js:410`）要求
+								// `frame.frame.revision === 上一帧 + 1`，否则抛
+								// `session assistant stream skipped revision N`，
+								// **整条流当场终止**。
+								//
+								// 所以这里按到达顺序自增。基线是 snapshot 里的
+								// `assistantStream: {revision: 0}`，所以第一帧从 1 开始。
+								const assistantRevision = stream.nextRevision();
+								yield { type: 'assistant-stream', frame: { ...payload, revision: assistantRevision } };
+								continue;
+							}
+							// ⚠️ 只认合法的事件信封：前端 `assertSessionWireEvent`
+							//（`dsh-api-session-controller/lib/client.js:290`）会逐字段校验，
+							// **一条坏事件就让整条流抛错**（不是跳过那一条），
+							// 界面当场变成错误态。所以这里提前把不合格的丢掉。
+							if (!isWireEvent(payload)) continue;
+							if (payload.seq <= stream.cursor) continue; // 重连补发的重复段
+							// ⚠️⚠️ **跳号必须先补洞，不能直接交给前端。**
+							//
+							// 前端 `RemoteJournalStream.acceptEntry`
+							//（`dsh-api-gateway/lib/client.js:1127`）对每个事件要求
+							// `first === lastCursor + 1`（`follows()` 是精确 +1）。只要
+							// 中间缺一条，它就转 `replaceThrough()` →
+							// `assertPageThrough(page, requiredCursor)`，那个断言要求补页的
+							// **tail 精确等于 stream.cursor**，做不到就抛
+							// `session event stream page did not end at its requested stream.cursor`
+							// ⇒ 界面「历史加载失败」。
+							//
+							// 电脑端已经把「冷会话也补齐」修掉了（那是主因），但隧道中断、
+							// 电脑侧推送丢失仍可能造成跳号。这里做最后一道防线：缺多少就
+							// 用 `readHistory` 把 `(stream.cursor, payload.seq)` 之间那一段捞回来，
+							// 逐条先发。捞不回来就**整条流重开**（断开连接，让外层退避重连
+							// 并从新的 stream.cursor 重新对齐），绝不把跳号事件放给前端。
+							if (payload.seq !== stream.cursor + 1) {
+								const filled = await reconnect.fillGap(config, sessionId, stream.cursor, payload.seq);
+								if (filled === null) {
+									// 补不齐 ⇒ 断开重连（外层会从 `stream.cursor` 重新拉流）。
+									throw new Error(
+										`事件跳号且无法补齐（本地 ${stream.cursor} → 收到 ${payload.seq}），重连对齐`,
+									);
+								}
+								for (const event of filled) {
+									if (!isWireEvent(event)) continue;
+									if (event.seq <= stream.cursor) continue;
+									stream.advance(event.seq);
+									// 补洞捞回来的那一段里也可能有 turn/start / turn/end，
+									// 同样要派发运行态（理由见下面正式 yield 处的注释）。
+									deriveRunning(ctx, sessionId, event, reconcileStateOf(sessionId));
+									yield { type: 'event', event };
+								}
+								// 补完之后如果还是接不上，同样断开重连。
+								if (payload.seq !== stream.cursor + 1) {
+									throw new Error(`补齐后仍不连续（本地 ${stream.cursor} → 收到 ${payload.seq}），重连对齐`);
+								}
+							}
+							stream.advance(payload.seq);
+							// 顺带在本地补一份日志 —— 这是 `tokenUsage` / `contextPressure`
+							// 两个投影的唯一数据源（见函数头注释）。
+							//
+							// ⚠️ 包在 try/catch 里、**绝不能影响转发**：对齐不上时
+							// `mirrorEvent` 会抛错拒收，那只是「这条没写进本地」，
+							// 前端照样要拿到它。
+							try {
+								const local = await ensureLocalMirror(sessionId);
+								if (local !== undefined) {
+									mirrorEvent(local, payload, mirrorStateOf(sessionId));
+								}
+							} catch (error) {
+								// 只在真出问题时记一次，别刷屏（对齐失败是常态：
+								// 同步会话的本地日志可能落后很多条）。
+								if (mirrorWarnedAt.get(sessionId) !== true) {
+									mirrorWarnedAt.set(sessionId, true);
+									ctx.logger?.info?.(
+										`[dsh-remote-mobile] 同步会话本地落盘跳过（不影响显示）: ${String(error?.message ?? error)}`,
+									);
+								}
+							}
+							// ⚠️⚠️ **同步会话也必须派发运行态**（用户报障根因）。
+							//
+							// 用户原话：
+							//   「手机的画面不仅不能点击暂停，而且它没有深度求索中用时
+							//    多少分多少秒的那个状态显示，如果模型调用了后台任务，
+							//    也没有显示了」
+							//
+							// 三个症状是同一个根值：**这条 `followSynced` 从来不调
+							// `deriveRunning`**。
+							//
+							// `follow()`（非同步会话那条路）在 `:2067` 有这一句，
+							// 但同步来的会话在 `:1936` 就被提前 return 了 —— 它的实时
+							// 事件全部走本函数、直接 yield 给前端，不落本地日志，
+							// 于是没有任何人把 `turn/start` / `turn/end` 翻成运行态。
+							//
+							// 而运行态是**独立于日志**的一条通道（`api-session/status`
+							// 事件，见 `deriveRunning` 的注释），所以这里不落盘也完全
+							// 可以、也应该派发。前端拿到后才会出现：
+							//   - 「深度求索中 用时 N 秒」；
+							//   - 输入框的「停止生成」按钮；
+							//   - 顶部「N 个后台任务运行中」。
+							stream.touch();
+							deriveRunning(ctx, sessionId, payload, reconcileStateOf(sessionId));
+
+							// ## ⚠️ 卡死自愈（用户 2026-10-27 邮件反馈）
+							//
+							// 用户原话：「加载出来我问了一句在吗电脑那边回答出来了，
+							// 这边还是一直卡在深度思考出不来」。
+							//
+							// **发得出去、电脑也回了，但手机停在『深度求索中』。**
+							// 这说明 `turn/end` 那条事件没到 —— 而原来的兜底只在
+							// **建流时**校正一次（`reconcileRunning` 在 `res.ok` 之后）。
+							// 流一旦连着，就再没有任何人纠正它：前端会永远转圈，
+							// 「停止生成」也永远亮着。
+							//
+							// 实测场景：公网隧道抖动丢一条 SSE、或电脑侧那一轮被
+							// 中断而没发出 `turn/end`。两种都真实存在。
+							//
+							// 判据故意保守：
+							//   · 运行态必须是 true（false 时前端不转会，无所谓）；
+							//   · 且 **90 秒**没有任何事件进来（正常一轮会有
+							//     reasoning / text / tool 等大量帧，静默 90 秒几乎
+							//     不可能是真的在跑）；
+							//   · 且距离上次检查已过 90 秒（避免短时间内狂问）。
+							//
+							// 代价：一个卡住的会话最多每分钟一次一问一答的 RPC，
+							// 而且是**只在疑似卡死时**才发。正常使用零开销。
+							const nowAt = Date.now();
+							if (
+								reconcileStateOf(sessionId).running === true &&
+								stream.shouldCheck(nowAt, STALL_RECONCILE_MS)
+							) {
+								void debugLog(
+									`followSynced(${sessionId}) 静默 ${Math.round(
+										(nowAt - stream.lastEventAt) / 1000,
+									)}s 且运行态为 true，主动校正一次`,
+								);
+								reconcileRunning(ctx, config, sessionId, () => !controller.signal.aborted);
+							}
+
+							yield { type: 'event', event: payload };
+						}
 					}
+				} catch (error) {
+					if (stream.signal.aborted) return;
+					ctx.logger?.warn?.(
+						`[dsh-remote-mobile] 同步会话实时流中断(${stream.wait}ms 后重连): ${String(error?.message ?? error)}`,
+					);
+				} finally {
+					stream.disconnect();
 				}
-			} catch (error) {
-				if (signal?.aborted) return;
-				ctx.logger?.warn?.(
-					`[dsh-remote-mobile] 同步会话实时流中断(${wait}ms 后重连): ${String(error?.message ?? error)}`,
-				);
-			} finally {
-				signal?.removeEventListener?.('abort', onAbort);
-				// 看门狗必须随每条流一起清掉：不清的话每次重连都多留一个
-				// 永不停的定时器，越积越多（正是我们前几轮在别处修过的泄漏模式）。
-				try {
-					clearInterval(stallWatchdog);
-				} catch {
-					/* 已清理 */
-				}
+				if (stream.signal.aborted) return;
+				// ⚠️ 用可唤醒的 sleep，而不是裸 `setTimeout`：
+				// 用户切回前台时应当立刻重连，不该干等退避（等待器由 reconnect 持有）。
+				await reconnect.sleep(stream.wait, stream.signal);
+				stream.backoff(0, SSE_STABLE_MS);
 			}
-			if (signal?.aborted) return;
-			// ⚠️ 用可唤醒的 sleep，而不是裸 `setTimeout`：
-			// 用户切回前台时应当立刻重连，不该干等退避（见 `sleepWakable` 注释）。
-			await sleepWakable(wait);
-			wait = Math.min(wait * 2, 15000);
-		}
+		} finally { stream.close(); }
 	}
 
 	// ---- 拦截官方 create：备选区选中「电脑目录」时自动绑成远程会话 ----
@@ -5190,7 +4948,7 @@ export function apply(ctx) {
 			const sessionId = result?.sessionId;
 			if (typeof sessionId !== 'string' || sessionId === '') return result;
 			// 已经绑过的（走对话框那条路）不用再绑。
-			if (remoteSessions.has(sessionId)) return result;
+			if (sessionIndex.has(sessionId)) return result;
 			// 解析这个会话的 cwd：优先 `workspaceId`（备选区走的就是这条），
 			// 退回请求里的 `cwd`（直接给路径的情形）。
 			let dir = request?.cwd;
@@ -5198,7 +4956,7 @@ export function apply(ctx) {
 				const workspace = ctx.get?.('workspaceRegistry')?.get?.(request.workspaceId);
 				if (workspace?.path !== undefined) dir = workspace.path;
 			}
-			const desktopPath = desktopPathOfMirror(workspaceMap, dir);
+			const desktopPath = desktopPathOfMirror(sessionIndex, dir);
 			if (desktopPath === undefined) return result;
 			// 没配对时**不能**绑：绑了之后 prompt 会去打一个不存在的电脑，
 			// 用户看到的是「发消息就报错」，比退回本地会话更难理解。
@@ -5228,17 +4986,17 @@ export function apply(ctx) {
 			// `presetId` 取自请求（官方 create 支持 `agentPreset`）；模型不在这里
 			// —— 用户可能在选完工作区**之后**才改模型，由 `selectModel` 拦截器
 			// 往计划里补写（见下面 ②）。
-			pendingPlans.set(sessionId, {
+			outbox.setPlan(sessionId, {
 				desktopPath,
 				...(typeof request?.agentPreset === 'string' && request.agentPreset !== ''
 					? { presetId: request.agentPreset }
 					: {}),
 			});
-			remoteSessions.add(sessionId);
+			sessionIndex.add(sessionId);
 			// ⚠️ **必须落盘电脑路径**：`pendingPlans` 是内存 Map，App 重启后清空，
 			// 那时再发消息就只能靠这份落盘映射反解（见 `loadRemotePaths` 的注释）。
-			remotePaths[sessionId] = desktopPath;
-			saveRemoteSessions(remoteSessions, ctx.logger, syncedSessions, remotePaths, desktopTitles, turnOffsets, remoteModels);
+			sessionIndex.rememberPath(sessionId, desktopPath);
+			sessionIndex.persist();
 			// ⚠️ **事件流先不开**：会话在电脑上还不存在，此时连 SSE 只是挂一条
 			// 空连接，白白占着隧道的并发。`prompt` 里发完消息才 `follow()`。
 			ctx.logger?.info?.(
@@ -5266,7 +5024,7 @@ export function apply(ctx) {
 		//   `Cannot read properties of undefined (reading 'throwIfAborted')`
 		// 症状是**消息根本发不出去**，而报错文案完全看不出是参数漏传。
 		controller.prompt = async (request, signal) => {
-			const hit = remoteSessions.has(request.sessionId);
+			const hit = sessionIndex.has(request.sessionId);
 			// 诊断：环形记最近 20 条，前端用 `debugPrompt` 桥读出来。
 			// ⚠️ 宿主是 Node 进程，没有 `window`，不能往页面塞。
 			promptDiag.push({
@@ -5276,7 +5034,7 @@ export function apply(ctx) {
 				local: ctx.sessions.get(request.sessionId) !== undefined,
 				plan: planOf(request.sessionId) === undefined ? 'none' : 'yes',
 				// 计划丢了时能不能反解出电脑路径 —— 排查「重启后发不出去」就看这一项。
-				mirror: desktopPathOfMirror(workspaceMap, ctx.sessions.get(request.sessionId)?.header?.cwd) ?? null,
+				mirror: desktopPathOfMirror(sessionIndex, ctx.sessions.get(request.sessionId)?.header?.cwd) ?? null,
 			});
 			if (promptDiag.length > 20) promptDiag.shift();
 			if (!hit) return originalPrompt(request, signal);
@@ -5350,16 +5108,13 @@ export function apply(ctx) {
 			// `plan === undefined` ⇒ 老路径（会话早就在电脑上建好了），body 与改动前
 			// **逐字一致**，不带任何多余字段。
 			const plan = planOf(request.sessionId);
-			const body = {
+			const body = outbox.createBody({
 				sessionId: request.sessionId,
 				text,
 				// 附件形态一并带上（没有附件时给空数组，电脑端会退回纯文本）。
 				content,
-				requestId:
-					typeof request.requestId === 'string' && request.requestId !== ''
-						? request.requestId
-						: randomUUID(),
-			};
+				requestId: request.requestId,
+			});
 			// ## 计划丢了也要能发（这是「原来能发、重启后不能」的根因）
 			//
 			// `pendingPlans` 是**内存** Map（见其注释：故意不落盘），所以手机 App
@@ -5383,19 +5138,19 @@ export function apply(ctx) {
 			// ## 反解电脑路径：**落盘的那一份优先**
 			//
 			// 三个来源，按可靠性排序：
-			//   ① `remotePaths[sessionId]` —— 同步/建会话时落盘的，**不依赖会话活着**；
+			//   ① `sessionIndex.pathOf(sessionId)` —— 同步/建会话时落盘的，**不依赖会话活着**；
 			//   ② `ctx.sessions.get(id)?.header?.cwd` —— 会话活着时才有；
 			//   ③ 都没有 ⇒ 这条消息发不出去（下面统一报错）。
 			//
 			// ⚠️ ① 必须优先：App 重启后 ② 恒为 `undefined`，只有 ① 还在。
-			const persistedPath = typeof remotePaths[request.sessionId] === 'string' && remotePaths[request.sessionId] !== ''
-				? remotePaths[request.sessionId]
+			const persistedPath = typeof sessionIndex.pathOf(request.sessionId) === 'string' && sessionIndex.pathOf(request.sessionId) !== ''
+				? sessionIndex.pathOf(request.sessionId)
 				: undefined;
 			const fallbackDesktopPath = plan !== undefined
 				? undefined
 				: persistedPath !== undefined
 					? persistedPath
-					: desktopPathOfMirror(workspaceMap, ctx.sessions.get(request.sessionId)?.header?.cwd);
+					: desktopPathOfMirror(sessionIndex, ctx.sessions.get(request.sessionId)?.header?.cwd);
 			if (plan !== undefined) {
 				body.desktopPath = plan.desktopPath;
 				// 预设：以**手机本地会话投影**上的值为准（用户可能在选完工作区、
@@ -5440,7 +5195,7 @@ export function apply(ctx) {
 			//
 			// ⚠️ 顺序不能反：`plan.model` 是「用户刚选的」，比磁盘上的新。
 			if (body.model === undefined) {
-				const persistedModel = remoteModels[request.sessionId];
+				const persistedModel = sessionIndex.modelOf(request.sessionId);
 				if (persistedModel !== undefined && typeof persistedModel.provider === 'string') {
 					body.model = persistedModel;
 					void debugLog(
@@ -5467,35 +5222,7 @@ export function apply(ctx) {
 			// 为什么这样做是安全的：`prompt` 的返回值只表示「受理了」，
 			// 不携带任何前端需要的业务数据（唯一字段就是 `accepted`）。
 			// 真正的回复内容全部走事件流，与这条返回值无关。
-			const forward = async () => {
-				await callRemote(config, 'prompt', body);
-				// ⚠️ **发成功才清计划**：`callRemote` 抛错时留着，用户重发下一句还能
-				// 用上同样的预设/模型 —— 否则一次网络抖动就让这次选择永久丢失，
-				// 用户看到的是「我选的模型没生效」。
-				//
-				// 电脑端这一步是幂等的（会话已存在就跳过 create），所以重复带一次
-				// 不会重复建会话，最多多几十字节。
-				if (plan !== undefined) pendingPlans.delete(request.sessionId);
-				// 确保事件流在线（断线时重连，补齐这段时间的事件）。
-				//
-				// ⚠️ **放在 `callRemote` 成功之后、且不放在 catch 里**：失败时说明电脑
-				// 没受理这条消息，此时连上去也没有事件可收；而用户一重发就会走到这里。
-				follow(request.sessionId);
-			};
-			forward().catch((error) => {
-				// 转发失败：前端已经把这句消息画上屏了，必须让它知道失败了，
-				// 否则用户会一直等一个永远不会来的回复。
-				ctx.logger?.warn?.(
-					`[dsh-remote-mobile] 转发消息失败(${request.sessionId}): ${String(
-						error?.message ?? error,
-					)}`,
-				);
-				broadcast('prompt-failed', {
-					sessionId: request.sessionId,
-					requestId: body.requestId,
-					message: String(error?.message ?? error),
-				});
-			});
+			void outbox.submit(body, plan);
 			return { accepted: true };
 		};
 
@@ -5504,7 +5231,7 @@ export function apply(ctx) {
 		// 那会真去建目录、真跑手机本地模型。
 		const originalCancel = controller.cancel.bind(controller);
 		controller.cancel = async (request) => {
-			if (!remoteSessions.has(request.sessionId)) return originalCancel(request);
+			if (!sessionIndex.has(request.sessionId)) return originalCancel(request);
 			await callRemote(config, 'cancel', { sessionId: request.sessionId });
 			// ⚠️ **停完要立刻把运行态复位**，不能干等 `turn/end`。
 			//
@@ -5581,7 +5308,7 @@ export function apply(ctx) {
 			// 这样调的，箭头函数会让 `this` 丢失、`original.call(this, ...)` 里的
 			// `this` 落成 undefined，标题服务内部读 `this.registration` 即抛错。
 			titleService.onUserMessage = function (session, event) {
-				if (remoteSessions.has(session.id)) return undefined;
+				if (sessionIndex.has(session.id)) return undefined;
 				return original.call(this, session, event);
 			};
 			undo.push(() => {
@@ -5688,7 +5415,7 @@ export function apply(ctx) {
 			if (typeof controller.selectModel === 'function') {
 				const originalSelect = controller.selectModel.bind(controller);
 				controller.selectModel = async (request) => {
-					if (!remoteSessions.has(request?.sessionId)) return originalSelect(request);
+					if (!sessionIndex.has(request?.sessionId)) return originalSelect(request);
 					// ## ⚠️⚠️ 无论走哪条分支，**先把选择落盘**（用户报障的直接修复）
 					//
 					// 用户原话：「我在手机选的是 wk 的 DeepSeek V4.1 flash，电脑发起
@@ -5701,17 +5428,13 @@ export function apply(ctx) {
 					// 之外的**持久兜底**（`prompt` 拦截器会读它）。
 					if (typeof request?.provider === 'string' && request.provider !== ''
 						&& typeof request?.model === 'string' && request.model !== '') {
-						remoteModels[request.sessionId] = {
+						sessionIndex.rememberModel(request.sessionId, {
 							provider: request.provider,
 							model: request.model,
 							...(request.reasoningEffort === undefined
 								? {}
 								: { reasoningEffort: request.reasoningEffort }),
-						};
-						saveRemoteSessions(
-							remoteSessions, ctx.logger, syncedSessions, remotePaths,
-							desktopTitles, turnOffsets, remoteModels,
-						);
+						});
 						void debugLog(
 							`selectModel 落盘 session=${request.sessionId} ${request.provider}/${request.model}`,
 						);
@@ -5720,13 +5443,13 @@ export function apply(ctx) {
 					if (plan !== undefined) {
 						// 先让手机本地投影记住（前端立刻显示选中项），再记进计划。
 						const local = await originalSelect(request);
-						plan.model = {
+						outbox.selectModel(request.sessionId, {
 							provider: request.provider,
 							model: request.model,
 							...(request.reasoningEffort === undefined
 								? {}
 								: { reasoningEffort: request.reasoningEffort }),
-						};
+						});
 						ctx.logger?.info?.(
 							`[dsh-remote-mobile] 会话 ${request.sessionId} 的模型先记下（${request.provider}/${request.model}），随第一条消息一起送到电脑`,
 						);
@@ -5789,17 +5512,13 @@ export function apply(ctx) {
 					if (adopted !== undefined && adopted !== null
 						&& typeof adopted.provider === 'string' && typeof adopted.model === 'string') {
 						if (adopted.provider !== request.provider || adopted.model !== request.model) {
-							remoteModels[request.sessionId] = {
+							sessionIndex.rememberModel(request.sessionId, {
 								provider: adopted.provider,
 								model: adopted.model,
 								...(typeof adopted.reasoningEffort === 'string'
 									? { reasoningEffort: adopted.reasoningEffort }
 									: {}),
-							};
-							saveRemoteSessions(
-								remoteSessions, ctx.logger, syncedSessions, remotePaths,
-								desktopTitles, turnOffsets, remoteModels,
-							);
+							});
 							try {
 								await originalSelect({
 									sessionId: request.sessionId,
@@ -5841,8 +5560,8 @@ export function apply(ctx) {
 		// ## 只对 `syncedSessions` 生效
 		//
 		// 手机自己新建的远程会话（`createSession` 桥建的）历史在本地，读本地更快，
-		// 不该白跑一趟隧道。所以判据是 `syncedSessions.has(...)` 而不是
-		// `remoteSessions.has(...)`。
+		// 不该白跑一趟隧道。所以判据是 `sessionIndex.isSynced(...)` 而不是
+		// `sessionIndex.has(...)`。
 		/* ⚠️ controller 可能不存在（1.2.81 补判空）—— 5330 行那个分支有判空，这里原来没有：
 		 * `typeof controller.page` 在 controller 为 undefined 时直接抛 TypeError，
 		 * 而它在 ctx.effect 回调里 ⇒ 整个插件 FAILED。 */
@@ -5852,7 +5571,7 @@ export function apply(ctx) {
 		if (originalPage !== null) {
 			controller.page = async (request, signal) => {
 				const sessionId = request?.address?.sessionId;
-				if (typeof sessionId !== 'string' || !syncedSessions.has(sessionId)) {
+				if (typeof sessionId !== 'string' || !sessionIndex.isSynced(sessionId)) {
 					return originalPage(request, signal);
 				}
 				if (!paired()) return originalPage(request, signal);
@@ -6042,7 +5761,7 @@ export function apply(ctx) {
 					}
 					/*
 					 * ⚠️ 抛之前先确认：这个会话**真的**是从电脑同步来的
-					 *（进入本函数时已判过 `syncedSessions.has`），本地没有历史。
+					 *（进入本函数时已判过 `sessionIndex.isSynced`），本地没有历史。
 					 * 所以这里抛错不会遮蔽任何"本来能读本地"的场景。
 					 */
 					throw new Error(`读取电脑上的对话历史失败：${reason}`);
@@ -6080,7 +5799,7 @@ export function apply(ctx) {
 				const sessionId = request?.sessionId;
 				if (
 					typeof sessionId !== 'string' ||
-					!syncedSessions.has(sessionId) ||
+					!sessionIndex.isSynced(sessionId) ||
 					!paired() ||
 					typeof request?.attachmentId !== 'string' ||
 					request.attachmentId === ''
@@ -6214,7 +5933,7 @@ export function apply(ctx) {
 				/* 投影服务不可用就当读不到 */
 			}
 			// ③ 同步时抄下来的标题。
-			const remembered = desktopTitles[sessionId];
+			const remembered = sessionIndex.titleOf(sessionId);
 			if (typeof remembered === 'string' && remembered !== '') return { title: remembered };
 			return {};
 		};
@@ -6222,7 +5941,7 @@ export function apply(ctx) {
 			controller.follow = async function* (request, signal) {
 				const sessionId = request?.address?.sessionId;
 				const fromRemote =
-					typeof sessionId === 'string' && syncedSessions.has(sessionId) && paired();
+					typeof sessionId === 'string' && sessionIndex.isSynced(sessionId) && paired();
 				if (!fromRemote) {
 					yield* originalFollow(request, signal);
 					return;
@@ -6636,7 +6355,7 @@ export function apply(ctx) {
 		 * @returns 相对路径（根目录是空串）；不是远程会话时 `undefined`。
 		 */
 		const mapPath = (scope, path) => {
-			const desktopRoot = desktopPathOfMirror(workspaceMap, scope?.workspaceRoot);
+			const desktopRoot = desktopPathOfMirror(sessionIndex, scope?.workspaceRoot);
 			if (desktopRoot === undefined) return undefined;
 			if (typeof path !== 'string' || path === '') return undefined;
 			// 侧边栏给的路径以会话 cwd 开头（官方 `childPath` 逐层拼出来），而
@@ -6659,7 +6378,7 @@ export function apply(ctx) {
 		 * @param original - 该方法**本来的**实现（可能没有）。
 		 */
 		const forward = (name, original) => async (scope, path, ...rest) => {
-			const mapped = remoteSessions.has(scope?.sessionId) ? mapPath(scope, path) : undefined;
+			const mapped = sessionIndex.has(scope?.sessionId) ? mapPath(scope, path) : undefined;
 			if (mapped === undefined) {
 				if (original === undefined) throw new Error(`workspaceFiles.${name} 不可用`);
 				return await original(scope, path, ...rest);
@@ -6775,130 +6494,14 @@ export function apply(ctx) {
 							return;
 						}
 						handleBridge(ctx, config, {
-							remoteSessions,
-							// 同步来的历史对话（`remoteSessions` 的子集）：它们的
-							// **历史不在本地**，读历史要转发电脑（见 `syncConversations`）。
-							syncedSessions,
-							follow,
-							// 解绑要能停掉全部旧连接、清掉全部搬运状态（见 `unpair`）。
-							follows,
+							sessionIndex,
+							outbox,
+							reconnect,
 							mirrorStates,
-							// ⚠️ **必须显式传进来**：`handleBridge` 是模块级函数，作用域里
-							// 没有 `apply()` 的闭包变量；漏传就是 `workspaceMap is not defined`，
-							// 用户点「在此新建对话」时必然失败（1.0.16 的真实报障）。
-							workspaceMap,
-							// ⚠️ 供 `desktopMeta` 桥读取（`handleBridge` 是模块级，
-							// 看不见 `apply()` 闭包 —— 这个坑在本文件踩过多次）。
-							desktopTimes,
-							desktopPins,
-							desktopSyncedAt,
-							// ⚠️ **同上，`pendingPlans` 也必须显式传**（1.0.64 的真实报障：
-							// `createSession` 桥里写 `pendingPlans.set(...)`，而 `handleBridge`
-							// 是模块级函数 ⇒ `ReferenceError: pendingPlans is not defined`
-							// ⇒ 整个桥返回 `{ok:false}`，前端表现为「点了『选择此文件夹』
-							// 什么都不发生、按钮还锁死了」）。
-							pendingPlans,
 							promptDiag,
-							// ⚠️ 同 `promptDiag`：`handleBridge` 是模块级函数，
-							// 看不见 `apply()` 里的 `pageDiag`。
 							pageDiag,
-							persist: () => saveRemoteSessions(remoteSessions, ctx.logger, syncedSessions, remotePaths, desktopTitles, turnOffsets, remoteModels),
-							// ⚠️ **必须显式传**（同 `pendingPlans` 那个坑）：
-							// `handleBridge` 是模块级函数，看不见 `apply()` 闭包里的
-							// `remotePaths`。不传就 `rememberPath is not defined`
-							// ⇒ 同步会话时落盘路径失败 ⇒ 重启后又发不了消息。
-							// ⚠️ **必须显式传**（同 `pendingPlans` 那个坑，这是第 N 次踩）：
-							// `handleBridge` 是模块级函数，看不见 `apply()` 闭包里的
-							// `removeCorruptMirror`。不传就 `removeCorruptMirror is not
-							// defined` ⇒ 同步会话时清理野壳失败 ⇒ 那批 400 字节空会话
-							// 越攒越多（真机实测 1500+ 个）。
-							removeCorruptMirror: (sessionId, reason) =>
-								removeCorruptMirror(sessionId, reason),
-							// ⚠️ 同 `removeCorruptMirror`：模块级函数看不见 `apply()` 闭包，
-							// 必须显式注入，否则同步时清理野壳会 `ReferenceError`。
-							findOrphanShells: (keepId) => findOrphanShells(keepId),
-							rememberPath: (sessionId, desktopPath) => {
-								if (typeof sessionId !== 'string' || sessionId === '') return;
-								if (typeof desktopPath !== 'string' || desktopPath === '') return;
-								remotePaths[sessionId] = desktopPath;
-							},
-							// ⚠️ 同 `rememberPath`：`handleBridge` 是模块级函数，
-							// 看不见 `apply()` 闭包里的 `desktopTitles`。
-							// 不传就 `rememberTitle is not defined` ⇒ 同步照常成功，
-							// 但 `follow` 首帧拿不到标题 ⇒ 侧边栏「未命名」。
-							rememberTitle: (sessionId, title) => {
-								if (typeof sessionId !== 'string' || sessionId === '') return;
-								if (typeof title !== 'string' || title === '') return;
-								desktopTitles[sessionId] = title;
-								// 立即落盘：`follow` 首帧要用它，重启后也要在
-								//（见 `loadDesktopTitles` 的注释）。
-								saveRemoteSessions(remoteSessions, ctx.logger, syncedSessions, remotePaths, desktopTitles, turnOffsets, remoteModels);
-							},
-							/**
-							 * 记「电脑上的真实活动时间」与「电脑上是否置顶」。
-							 *
-							 * ⚠️ 同 `rememberTitle`：`handleBridge` 是模块级函数，
-							 * 看不见 `apply()` 闭包里的 `desktopTimes` / `desktopPins`，
-							 * **必须**走这里注入。
-							 *
-							 * 两个字段各自独立校验：
-							 *   · `updatedAt` 只认有限非负数字 —— 混进字符串或 `NaN`
-							 *     会让侧边栏 `b.rank - a.rank` 变 `NaN`，排序静默失效
-							 *    （这正是本版要修的 bug 本身，不能在新代码里重犯）；
-							 *   · `pinned` 只认严格 `true`（电脑侧给 `false` 就是「没置顶」，
-							 *     那也不必记，省得文件里全是 false）。
-							 */
-							rememberDesktopMeta: (sessionId, updatedAt, pinned) => {
-								if (typeof sessionId !== 'string' || sessionId === '') return;
-								let dirty = false;
-								if (
-									typeof updatedAt === 'number' &&
-									Number.isFinite(updatedAt) &&
-									updatedAt >= 0
-								) {
-									// 只在**变化**时才写，避免同步一批对话时反复落盘。
-									if (desktopTimes[sessionId] !== updatedAt) {
-										desktopTimes[sessionId] = updatedAt;
-										dirty = true;
-									}
-								}
-								if (pinned === true) {
-									if (desktopPins[sessionId] !== true) {
-										desktopPins[sessionId] = true;
-										dirty = true;
-									}
-								} else if (pinned === false && desktopPins[sessionId] === true) {
-									// 电脑上取消置顶了 ⇒ 手机侧也要跟着取消。
-									delete desktopPins[sessionId];
-									dirty = true;
-								}
-								/*
-								 * 记「建壳时刻」—— 只在**第一次**记。
-								 *
-								 * 前端要靠它区分「本地 updatedAt 是同步那一刻的假值」
-								 * 还是「用户真的在手机上聊过」（见 `readDesktopMeta`
-								 * 里 `syncedAt` 那段）。重复覆盖会让基准一直往后推，
-								 * 于是「假值窗口」永远敞着 —— 用户后来真聊过的会话
-								 * 也会被电脑的旧时间盖回去。
-								 */
-								if (desktopSyncedAt[sessionId] === undefined) {
-									desktopSyncedAt[sessionId] = Date.now();
-									dirty = true;
-								}
-								if (dirty) saveDesktopMeta(desktopTimes, desktopPins, desktopSyncedAt, ctx.logger);
-							},
-							// ⚠️ 同 `rememberTitle`：`markSessionNonBlank` 是模块级函数，
-							// 看不见 `apply()` 闭包里的 `turnOffsets`。不传的话占位轮次
-							// 写进去了却没记账 ⇒ 电脑端真实事件会撞上占位轮次 ⇒
-							// `step/start does not match the open turn`（会话又打不开）。
-							rememberTurnOffset: (sessionId, offset) => {
-								if (typeof sessionId !== 'string' || sessionId === '') return;
-								if (typeof offset !== 'number' || !Number.isInteger(offset) || offset <= 0) return;
-								turnOffsets[sessionId] = offset;
-								// 立即落盘：App 重启后 `mirrorEvent` 还要靠它决定该不该 +1
-								//（见 `loadTurnOffsets` 的注释）。
-								saveRemoteSessions(remoteSessions, ctx.logger, syncedSessions, remotePaths, desktopTitles, turnOffsets, remoteModels);
-							},
+							removeCorruptMirror,
+							findOrphanShells,
 							// 模型/预设的静默缓存：配对后预拉、刷新按钮回写（见 desktopCache）。
 							desktopCache,
 							// ⚠️ 也要显式传：`refreshAll` 是模块级 `handleBridge` 里的
@@ -7058,7 +6661,7 @@ export function apply(ctx) {
 					res.end();
 					return;
 				}
-				const woken = wakeAllRemoteStreams();
+				const woken = reconnect.wakeAll();
 				// 顺便把「已同步」的那批会话**立即重连**一次：
 				// 唤醒只结束退避等待，而有些流可能已经彻底退出循环了
 				// （比如 `signal.aborted` 过）。这里补一次 `follow`。
@@ -7073,9 +6676,9 @@ export function apply(ctx) {
 				// 没被补连的会话仍会在用户点开时按需建流，不影响可用性。
 				const WAKE_REFOLOW_LIMIT = 12;
 				let refollowed = 0;
-				for (const sessionId of syncedSessions) {
+				for (const sessionId of sessionIndex.syncedIds()) {
 					if (refollowed >= WAKE_REFOLOW_LIMIT) break;
-					if (follows.has(sessionId)) continue;
+					if (reconnect.has(sessionId)) continue;
 					try {
 						follow(sessionId);
 						refollowed += 1;
@@ -7111,14 +6714,14 @@ export function apply(ctx) {
 	// 是个位数，其余会话等用户真的点开时再由 `follow` 按需建立连接。
 	ctx.effect(() => {
 		const eager = [];
-		for (const sessionId of remoteSessions) {
-			if (syncedSessions.has(sessionId)) eager.push(sessionId);
+		for (const sessionId of sessionIndex.ids()) {
+			if (sessionIndex.isSynced(sessionId)) eager.push(sessionId);
 		}
 		for (const sessionId of eager) follow(sessionId);
-		if (remoteSessions.size > 0) {
+		if (sessionIndex.size > 0) {
 			ctx.logger?.info?.(
 				`[dsh-remote-mobile] 启动恢复：仅跟随已同步的 ${eager.length} 个会话` +
-					`（远程会话总数 ${remoteSessions.size}，其余按需连接）`,
+					`（远程会话总数 ${sessionIndex.size}，其余按需连接）`,
 			);
 		}
 		// 已配对的话，启动时也把电脑的模型/预设静默拉一次 —— 否则重启 App 后
@@ -7197,37 +6800,12 @@ export function apply(ctx) {
 							//
 							// 登记进账本的效果是：它下次出现在侧边栏（前端按 synced
 							// 集合渲染），点开时 `follow` 走远程路径按需拉历史。
-							if (remoteSessions.has(sessionId)) continue;
-							remoteSessions.add(sessionId);
-							syncedSessions.add(sessionId);
-							if (typeof item.title === 'string' && item.title !== '') {
-								desktopTitles[sessionId] = item.title;
-							}
-							// ⚠️ **只在没有值时写**，不要无条件覆盖。
-							//
-							// `remotePaths[sessionId]` 决定「往哪个电脑目录发消息」
-							// （见发消息那段用 `persistedPath` 的注释）。同一个
-							// sessionId 理论上只属于一个工作区，但用户在工作区之间
-							// **移动过**对话、或者电脑侧数据被手工改过时，可能出现
-							// 两条记录指向同一 id。
-							//
-							// 无条件赋值 = 用「最后遍历到的那个」覆盖先前的正确值，
-							// 于是消息发到错的工作区 —— 表现为「AI 说文件不存在」，
-							// 而用户明明看到对话就在那儿。这种错很难查。
-							//
-							// 已有值一定是之前**真正同步过**时落盘的，比这份
-							// 只含元数据的列表更可信，所以以它为准。
-							if (remotePaths[sessionId] === undefined) {
-								remotePaths[sessionId] = ws.path;
-							}
+							if (!sessionIndex.registerListed(sessionId, ws.path, item.title)) continue;
 							added += 1;
 						}
 					}
 					if (added > 0) {
-						saveRemoteSessions(
-							remoteSessions, ctx.logger, syncedSessions, remotePaths,
-							desktopTitles, turnOffsets, remoteModels,
-						);
+						sessionIndex.persist();
 						ctx.logger?.info?.(`[dsh-remote-mobile] 自动同步：登记了 ${added} 个电脑对话`);
 					}
 				})
@@ -7241,8 +6819,8 @@ export function apply(ctx) {
 
 		return () => {
 			clearTimeout(autoSyncTimer);
-			for (const controller of follows.values()) controller.abort();
-			follows.clear();
+			reconnect.stopAll();
+			outbox.clear();
 			for (const res of watchers) {
 				try {
 					res.end();
@@ -7286,24 +6864,13 @@ export function apply(ctx) {
 	 */
 	ctx.on('api-session/removed', (sessionId) => {
 		if (typeof sessionId !== 'string' || sessionId === '') return;
-		const wasRemote = remoteSessions.has(sessionId) || syncedSessions.has(sessionId);
+		const wasRemote = sessionIndex.has(sessionId) || sessionIndex.isSynced(sessionId);
 		if (!wasRemote) return;
-		const follower = follows.get(sessionId);
-		if (follower !== undefined) {
-			follows.delete(sessionId);
-			try {
-				follower.abort();
-			} catch {
-				/* 已断开 */
-			}
-		}
-		remoteSessions.delete(sessionId);
-		syncedSessions.delete(sessionId);
-		delete remotePaths[sessionId];
-		delete desktopTitles[sessionId];
+		reconnect.stop(sessionId);
+		outbox.remove(sessionId);
+		sessionIndex.remove(sessionId);
 		reconcileStates.delete(sessionId);
 		mirrorStates.delete(sessionId);
-		saveRemoteSessions(remoteSessions, ctx.logger, syncedSessions, remotePaths, desktopTitles, turnOffsets, remoteModels);
 		ctx.logger?.info?.(`[dsh-remote-mobile] 会话 ${sessionId} 已删除，跟随流与归属记录一并清理`);
 	});
 }
@@ -7417,7 +6984,7 @@ function desktopCategoryTitle(desktopPath) {
  * @param desktopPath - 电脑上的绝对路径（仅用于取名字，不会成为 cwd）。
  * @returns 工作区实体（含 `.id` / `.path` / `.title`）。
  */
-async function ensureDesktopWorkspace(ctx, desktopPath, workspaceMap) {
+async function ensureDesktopWorkspace(ctx, desktopPath, sessionIndex) {
 	const registry = ctx.get?.('workspaceRegistry');
 	if (registry === undefined || typeof registry.create !== 'function') {
 		throw new Error('workspaceRegistry 不可用，无法为电脑目录建工作区');
@@ -7426,10 +6993,7 @@ async function ensureDesktopWorkspace(ctx, desktopPath, workspaceMap) {
 	const dir = join(STATE_DIR, 'workspaces', slug);
 	mkdirSync(dir, { recursive: true });
 	// 登记 `slug → 电脑路径`，供「备选区直接选镜像工作区」那条路反查（见 WORKSPACES_PATH）。
-	if (workspaceMap !== undefined && workspaceMap[slug] !== desktopPath) {
-		workspaceMap[slug] = desktopPath;
-		saveWorkspaceMap(workspaceMap, ctx.logger);
-	}
+	sessionIndex?.rememberWorkspace(slug, desktopPath);
 	const workspace = await registry.create(dir, desktopCategoryTitle(desktopPath));
 	/*
 	 * ⚠️ **`create()` 对已存在的路径不会改标题**（官方
@@ -7731,11 +7295,11 @@ async function markSessionNonBlank(ctx, sessionId, title, wake, liveSession, rem
 /**
  * 从镜像目录反查电脑路径。
  *
- * @param workspaceMap - `slug → 电脑路径`。
+ * @param sessionIndex - 远程会话及镜像工作区索引。
  * @param dir - 会话的 cwd（应当落在 `STATE_DIR/workspaces/<slug>` 下）。
  * @returns 电脑路径；不是镜像目录时 `undefined`。
  */
-function desktopPathOfMirror(workspaceMap, dir) {
+function desktopPathOfMirror(sessionIndex, dir) {
 	if (typeof dir !== 'string' || dir === '') return undefined;
 	// ⚠️ 用 `/workspaces/` 定位而不是拿 `join(STATE_DIR,'workspaces')` 做前缀比对：
 	// `workspace.path` 是 **realpath**（官方 `createOrAdopt` 会 realpath 解析），
@@ -7748,7 +7312,7 @@ function desktopPathOfMirror(workspaceMap, dir) {
 	if (at < 0) return undefined;
 	const slug = dir.slice(at).split(/[\\/]/)[2];
 	if (slug === undefined || slug === '') return undefined;
-	const path = workspaceMap[slug];
+	const path = sessionIndex.workspaceOf(slug);
 	return typeof path === 'string' && path !== '' ? path : undefined;
 }
 
@@ -7757,7 +7321,7 @@ function desktopPathOfMirror(workspaceMap, dir) {
  *
  * @param ctx - Cordis 上下文。
  * @param config - 远程配置。
- * @param io - `{ remoteSessions, follow, follows, mirrorStates, persist, workspaceMap, body }`。
+ * @param io - 会话索引、发送与连接 owner，以及目录/模型桥能力。
  */
 /**
  * 同步进度（模块级）。
@@ -8053,7 +7617,7 @@ async function handleBridge(ctx, config, io) {
 			// 数据源，一挂就等于手机上模型列表刷不出来。
 			//
 			//（同一个坑在本文件里踩过三次：`pendingPlans`、`desktopCache`、
-			// `syncedSessions` —— 新增闭包变量时**必须**同步加进 `io` 对象。）
+			// `syncedSessions` —— 会话可变状态统一经 owner 的动作访问。）
 			const cache = io.desktopCache;
 			if (cache === undefined) return null;
 			/*
@@ -8353,7 +7917,7 @@ async function handleBridge(ctx, config, io) {
 			// 这里给它一个**电脑目录专属的镜像工作区**（标题 = 电脑目录末段），
 			// 而不是手机的「默认工作区」—— 否则所有远程会话都堆在「默认工作区」
 			// 底下，看起来就像「建完又回到默认工作去了」（见 `ensureDesktopWorkspace`）。
-			const workspace = await ensureDesktopWorkspace(ctx, params.path, io.workspaceMap);
+			const workspace = await ensureDesktopWorkspace(ctx, params.path, io.sessionIndex);
 			const cwd = workspace.path;
 			// ⚠️ **必须走 `sessionController.create`，不能走 `ctx.sessions.create`。**
 			//
@@ -8424,15 +7988,13 @@ async function handleBridge(ctx, config, io) {
 			// 已经做了）：它负责把 `slug → 电脑路径` 登记进 `workspaceMap`，
 			// 而 `desktopPathOfMirror()` 反过来靠这份登记认人。少了它，
 			// `prompt` 时反查不出电脑路径，整套远程逻辑就静默失效。
-			// ⚠️ 用 `io.pendingPlans`：这个函数是**模块级**的，看不见 `apply()` 闭包里的
-			// `pendingPlans`（1.0.64 因此报 `pendingPlans is not defined`，整条
-			// 「选目录」链路静默失败）。与 `io.workspaceMap` 是同一个坑。
-			io.pendingPlans.set(sessionId, { desktopPath: params.path });
-			io.remoteSessions.add(sessionId);
+			// 待创建计划由 outbox 持有，桥只提交动作，不引用 apply 的局部状态。
+			io.outbox.setPlan(sessionId, { desktopPath: params.path });
+			io.sessionIndex.add(sessionId);
 			// ⚠️ **落盘电脑路径**（见 `loadRemotePaths`）：`pendingPlans` 是内存的，
 			// App 重启后清空，那时发消息只能靠这份映射反解。
-			io.rememberPath?.(sessionId, params.path);
-			io.persist();
+			io.sessionIndex.rememberPath?.(sessionId, params.path);
+			io.sessionIndex.persist();
 			// ⚠️ **事件流先不开**：会话在电脑上还不存在，此时连 SSE 只是挂一条
 			// 空连接，白白占着隧道的并发。`prompt` 里发完消息才 `follow()`。
 			ctx.logger?.info?.(
@@ -8487,7 +8049,7 @@ async function handleBridge(ctx, config, io) {
 			return { items: io.pageDiag.slice() };
 
 		case 'isRemote':
-			return { remote: io.remoteSessions.has(params.sessionId) };
+			return { remote: io.sessionIndex.has(params.sessionId) };
 
 		/**
 		 * 诊断：某会话在**手机本地**到底存不存在，以及它的待发送计划。
@@ -8501,20 +8063,20 @@ async function handleBridge(ctx, config, io) {
 		case 'debugSession': {
 			const sid = params.sessionId;
 			const local = ctx.sessions?.get?.(sid);
-			const plan = io.pendingPlans.get(sid);
+			const plan = io.outbox.planOf(sid);
 			return {
-				remote: io.remoteSessions.has(sid),
-				synced: io.syncedSessions.has(sid),
-				following: io.follows.has(sid),
-				followsTotal: io.follows.size,
-				remoteTotal: io.remoteSessions.size,
-				syncedTotal: io.syncedSessions.size,
+				remote: io.sessionIndex.has(sid),
+				synced: io.sessionIndex.isSynced(sid),
+				following: io.reconnect.has(sid),
+				followsTotal: io.reconnect.size,
+				remoteTotal: io.sessionIndex.size,
+				syncedTotal: io.sessionIndex.syncedIds().length,
 				localExists: local !== undefined,
 				localCwd: local?.header?.cwd ?? null,
 				planDesktopPath: plan?.desktopPath ?? null,
 				planPresetId: plan?.presetId ?? null,
 				planModel: plan?.model ?? null,
-				workspaceCount: io.workspaceMap instanceof Map ? io.workspaceMap.size : null,
+				workspaceCount: null,
 			};
 		}
 
@@ -8532,7 +8094,7 @@ async function handleBridge(ctx, config, io) {
 		 * `sessions.json` 恢复出 `remoteSessions`，前端一次性拿走。
 		 */
 		case 'remoteSessions':
-			return { ids: [...io.remoteSessions] };
+			return { ids: io.sessionIndex.ids() };
 
 		/**
 		 * 电脑侧的**展示元数据**：真实活动时间 + 置顶标记。
@@ -8560,13 +8122,7 @@ async function handleBridge(ctx, config, io) {
 		 * @returns `{{times: Record<sessionId, number>, pins: Record<sessionId, true>}}`。
 		 */
 		case 'desktopMeta':
-			return {
-				times: { ...(io.desktopTimes ?? {}) },
-				pins: { ...(io.desktopPins ?? {}) },
-				// 建壳时刻：前端靠它判断本地 updatedAt 是假值还是真值
-				//（见 `readDesktopMeta` 里 `syncedAt` 那段注释）。
-				syncedAt: { ...(io.desktopSyncedAt ?? {}) },
-			};
+			return io.sessionIndex.metaSnapshot();
 
 		/**
 		 * 电脑镜像工作区的 slug 集合（`workspaceMap` 的 keys）。
@@ -8591,7 +8147,7 @@ async function handleBridge(ctx, config, io) {
 		 * 少传一份数据也少一处可能不一致的地方。
 		 */
 		case 'mirrorSlugs':
-			return { slugs: Object.keys(io.workspaceMap ?? {}) };
+			return { slugs: Object.keys(io.sessionIndex.workspaceSnapshot()) };
 
 		/**
 		 * 镜像工作区清单：`[{ slug, path, desktopPath, title }]`。
@@ -8608,7 +8164,7 @@ async function handleBridge(ctx, config, io) {
 		 * 只下发镜像工作区（用户选过的电脑目录），本地工作区不在其中。
 		 */
 		case 'mirrorWorkspaces': {
-			const map = io.workspaceMap ?? {};
+			const map = io.sessionIndex.workspaceSnapshot();
 			const items = [];
 			const registry = ctx.get?.('workspaceRegistry');
 			for (const slug of Object.keys(map)) {
@@ -8652,7 +8208,7 @@ async function handleBridge(ctx, config, io) {
 		/**
 		 * 同步来的对话 id 清单（供前端区分「历史在电脑上」与「历史在本地」）。*/
 		case 'syncedSessions':
-			return { ids: [...io.syncedSessions] };
+			return { ids: io.sessionIndex.syncedIds() };
 
 		/**
 		 * 列出电脑上某个目录下的历史对话（**只要名称**）。
@@ -8859,7 +8415,7 @@ async function handleBridge(ctx, config, io) {
 				// 镜像工作区：与手动同步走同一个函数，幂等。
 				let workspace;
 				try {
-					workspace = await ensureDesktopWorkspace(ctx, ws.path, io.workspaceMap);
+					workspace = await ensureDesktopWorkspace(ctx, ws.path, io.sessionIndex);
 				} catch (error) {
 					ctx.logger?.warn?.(
 						`[dsh-remote-mobile] 自动同步建镜像失败 ${ws.path}: ${String(error?.message ?? error)}`,
@@ -8879,7 +8435,7 @@ async function handleBridge(ctx, config, io) {
 					 *
 					 *   · 用户手机上那批会话是**旧版本**同步出来的，
 					 *     当时还没有 `desktopTimes` / `desktopPins` 这两张表；
-					 *   · 而 `syncedSessions.has()` 对它们恒为 true
+					 *   · 而 `sessionIndex.isSynced()` 对它们恒为 true
 					 *     ⇒ 每次都直接 `continue` ⇒ `rememberDesktopMeta` **永远不被调用**
 					 *     ⇒ 时间表永远是空的
 					 *     ⇒ 前端 `applyDesktopClock` 无数据可用 ⇒ 排序不变
@@ -8891,19 +8447,19 @@ async function handleBridge(ctx, config, io) {
 					 * 对新老会话都要跑。
 					 */
 					const desktopTitle = typeof item?.title === 'string' ? item.title : '';
-					if (desktopTitle !== '') io.rememberTitle?.(sessionId, desktopTitle);
+					if (desktopTitle !== '') io.sessionIndex.rememberTitle?.(sessionId, desktopTitle);
 					// 电脑上的真实时间 / 置顶标记（见 `loadDesktopTimes` 的注释）。
-					io.rememberDesktopMeta?.(sessionId, item?.updatedAt, item?.pinned);
+					io.sessionIndex.rememberDesktopMeta?.(sessionId, item?.updatedAt, item?.pinned);
 					// 已经同步过 ⇒ 只补账本（工作区归属/标题可能变了），不重建。
-					if (io.syncedSessions.has(sessionId)) {
+					if (io.sessionIndex.isSynced(sessionId)) {
 						skipped += 1;
 						syncProgress.done += 1;
 						continue;
 					}
-					if (io.remoteSessions.has(sessionId)) {
+					if (io.sessionIndex.has(sessionId)) {
 						// 在账本里但不在 synced：说明之前建过壳却没标成同步。
-						io.syncedSessions.add(sessionId);
-						io.rememberPath?.(sessionId, ws.path);
+						io.sessionIndex.markSynced(sessionId);
+						io.sessionIndex.rememberPath?.(sessionId, ws.path);
 						skipped += 1;
 						syncProgress.done += 1;
 						continue;
@@ -8927,10 +8483,10 @@ async function handleBridge(ctx, config, io) {
 						await markSessionNonBlank(ctx, sessionId, desktopTitle, {
 							workspaceId,
 							cwd: workspace?.path,
-						}, undefined, io.rememberTurnOffset);
-						io.syncedSessions.add(sessionId);
-						io.remoteSessions.add(sessionId);
-						io.rememberPath?.(sessionId, ws.path);
+						}, undefined, io.sessionIndex.rememberTurnOffset);
+						io.sessionIndex.markSynced(sessionId);
+						io.sessionIndex.add(sessionId);
+						io.sessionIndex.rememberPath?.(sessionId, ws.path);
 						created.push(sessionId);
 						syncProgress.done += 1;
 					} catch (error) {
@@ -8941,7 +8497,7 @@ async function handleBridge(ctx, config, io) {
 					}
 				}
 			}
-			if (created.length > 0) io.persist();
+			if (created.length > 0) io.sessionIndex.persist();
 			/*
 			 * ## 同步完成 ⇒ **立刻作废电脑侧数据缓存**（用户 2026-10-29 报障）
 			 *
@@ -9109,7 +8665,7 @@ async function handleBridge(ctx, config, io) {
 			if (typeof ctx.sessionController?.create !== 'function') {
 				throw new Error('sessionController.create 不可用，无法在手机本地建会话');
 			}
-			const workspace = await ensureDesktopWorkspace(ctx, params.path, io.workspaceMap);
+			const workspace = await ensureDesktopWorkspace(ctx, params.path, io.sessionIndex);
 			// ⚠️⚠️ **必须走 `workspaceId`，不能传 `cwd` 再手动 `attachSession`。**
 			//
 			// 这是「同步来的第二个对话不出现在侧边栏、而是掉进未分组」的真根因
@@ -9173,13 +8729,13 @@ async function handleBridge(ctx, config, io) {
 				// ⚠️ 记下电脑上的标题：`follow` 首帧要用它填 `projections.values`
 				//（同步会话不落盘、本地没有 title 事件，见 `desktopTitles` 的注释）。
 				// 空格串就跳过 —— 不要用空值覆盖掉已有的好标题。
-				if (desktopTitle !== '') io.rememberTitle?.(sessionId, desktopTitle);
+				if (desktopTitle !== '') io.sessionIndex.rememberTitle?.(sessionId, desktopTitle);
 				// ⚠️ 电脑上的**真实时间**与**置顶标记**也要记（用户 2026-10-29 报障：
 				// 「同步过来的对话没有按时间顺序」「电脑上置顶的对话没同步过来」）。
 				// 必须放在「已存在就跳过」那个分支**之前**：老版本同步出来的会话
 				// 没有这两项，用户重新同步一次就得补上，不能因为"本地已经有了"
 				// 就跳过记账 —— 那正是「重新同步也修不好」的典型。
-				io.rememberDesktopMeta?.(sessionId, item?.updatedAt, item?.pinned);
+				io.sessionIndex.rememberDesktopMeta?.(sessionId, item?.updatedAt, item?.pinned);
 				// 已经在本地的跳过（用户重复同步同一批是常态）。
 				//
 				// ⚠️ **把查到的对象留着**（`liveSession`）：下面的
@@ -9205,7 +8761,7 @@ async function handleBridge(ctx, config, io) {
 				//      （见下面 `liveSession` 的注释，真机日志确认过）→ 抛错；
 				//   ③ 抛错后 `syncedSessions.add` 根本没执行 ⇒ 这个会话
 				//      **永远不进 `syncedSessions`**；
-				//   ④ 而 `follow` 拦截器判 `syncedSessions.has(...)` 才走远程路径
+				//   ④ 而 `follow` 拦截器判 `sessionIndex.isSynced(...)` 才走远程路径
 				//      （见 `controller.follow` 里的 `fromRemote`）⇒ 它走官方本地
 				//      路径 ⇒ 读本地那份 475 字节的空壳日志 ⇒
 				//      `tokenUsage` / `contextPressure` 投影算不出来 ⇒
@@ -9255,13 +8811,13 @@ async function handleBridge(ctx, config, io) {
 					await markSessionNonBlank(ctx, sessionId, desktopTitle, {
 						workspaceId,
 						cwd: workspace?.path,
-					}, liveSessionAfterWake, io.rememberTurnOffset);
-					io.remoteSessions.add(sessionId);
-					io.syncedSessions.add(sessionId);
+					}, liveSessionAfterWake, io.sessionIndex.rememberTurnOffset);
+					io.sessionIndex.add(sessionId);
+					io.sessionIndex.markSynced(sessionId);
 					// ⚠️ 落盘电脑路径：老版本同步出来的会话**没有**这条记录，
 					// 重新同步一次就补上了 —— 顺便把「重启后发不了消息」一起治好。
-					io.rememberPath?.(sessionId, params.path);
-					io.persist();
+					io.sessionIndex.rememberPath?.(sessionId, params.path);
+					io.sessionIndex.persist();
 					synced.push(sessionId);
 					continue;
 				}
@@ -9312,15 +8868,15 @@ async function handleBridge(ctx, config, io) {
 					await markSessionNonBlank(ctx, sessionId, desktopTitle, {
 						workspaceId,
 						cwd: workspace?.path,
-					}, undefined, io.rememberTurnOffset);
+					}, undefined, io.sessionIndex.rememberTurnOffset);
 					// 标记成「同步来的」：它的历史不在本地，读的时候要转发电脑。
-					io.syncedSessions.add(sessionId);
-					io.remoteSessions.add(sessionId);
+					io.sessionIndex.markSynced(sessionId);
+					io.sessionIndex.add(sessionId);
 					// 登记电脑路径：第一条消息要据此在电脑上建出会话（见 prompt 拦截器）。
-					io.pendingPlans.set(sessionId, { desktopPath: params.path });
+					io.outbox.setPlan(sessionId, { desktopPath: params.path });
 					// ⚠️ 同时**落盘**一份：`pendingPlans` 活不过 App 重启，
 					// 而落盘的这份要用来在重启后反解路径（见 `loadRemotePaths`）。
-					io.rememberPath?.(sessionId, params.path);
+					io.sessionIndex.rememberPath?.(sessionId, params.path);
 					synced.push(sessionId);
 					// 增量清理：这条会话之前若被历史 bug 生成过随机 id 的空壳，
 					// 现在有真身了，把那个野壳删掉。判据用「随机 id」——
@@ -9361,7 +8917,7 @@ async function handleBridge(ctx, config, io) {
 					ctx.logger?.warn?.(`[dsh-remote-mobile] 同步会话 ${sessionId} 失败（跳过）: ${reason}`);
 				}
 			}
-			io.persist();
+			io.sessionIndex.persist();
 			ctx.logger?.info?.(
 				`[dsh-remote-mobile] 已同步 ${synced.length} 个对话到 ${params.path}（历史按需加载，不落本地）`,
 			);
@@ -9483,17 +9039,9 @@ async function handleBridge(ctx, config, io) {
 			Object.assign(config, saveConfig(DEFAULT_ENDPOINT, EMPTY_TOKEN, { zone: '', pairEndpoint: '' }));
 			activeZone = CF_ZONE_NAME;
 			activePairEndpoint = PAIR_ENDPOINT;
-			for (const controller of io.follows.values()) {
-				try {
-					controller.abort();
-				} catch {
-					/* 已经结束了 */
-				}
-			}
-			io.follows.clear();
+			io.reconnect.stopAll();
+			io.outbox.clear();
 			io.mirrorStates.clear();
-			io.remoteSessions.clear();
-			io.syncedSessions.clear();
 			// ⚠️ **运行态表也要清**：它是模块级的，换电脑配对后旧会话的
 			// `running` 还留着。不清的话，新电脑上同名会话会被「去重」判成
 			// 状态未变而不派发 ⇒ 按钮状态是上一台电脑的。
@@ -9506,7 +9054,7 @@ async function handleBridge(ctx, config, io) {
 				io.desktopCache.dirs = emptyDirCache();
 				io.desktopCache.directory = null;
 			}
-			io.persist();
+			io.sessionIndex.clear();
 			ctx.logger?.info?.('[dsh-remote-mobile] 已解除配对，本地凭据与远程会话清单已清空');
 			return { endpoint: config.endpoint, paired: false };
 		}

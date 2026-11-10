@@ -1,6 +1,6 @@
 {
   "name": "dsh-android-shell",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "DSH Android 客户端的 uid 2000（shell）特权执行工具：把「经 adbd 以 shell 身份跑命令」暴露成一个独立工具，由模型按需选择。",
   "type": "module",
   "main": "./lib/index.js",
@@ -11,5 +11,16 @@
     "./package.json": "./package.json"
   },
   "license": "MIT",
-  "private": true
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "android": {
+      "builtinId": "shell-tool"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ]
 }

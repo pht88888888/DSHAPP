@@ -44,6 +44,7 @@ class SystemWebHost(
 ) : WebHost {
 
     private val webView = WebView(context)
+    private val annotations = BridgeProtocolAnnotations(callbacks.bridge as? AnnotationSource)
 
     /**
      * 当前挂起的文件选择回调；null 表示没有等待中的选择。
@@ -231,7 +232,11 @@ class SystemWebHost(
         }
 
         // 插件用它把「AI 当前在干什么」推给通知栏（见 EngineService.updateStatus）。
-        webView.addJavascriptInterface(SystemPageBridge(callbacks.bridge), "DSHAndroid")
+        webView.addJavascriptInterface(SystemPageBridge(callbacks.bridge, annotations, { requestId ->
+            webView.post { annotations.acknowledge(requestId) }
+        }) { response ->
+            webView.post { webView.evaluateJavascript(BridgeProtocol.resultScript(response), null) }
+        }, "DSHAndroid")
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
@@ -662,6 +667,7 @@ class SystemWebHost(
     }
 
     override fun destroy() {
+        annotations.clear()
         pendingPaintAction = null
         webView.destroy()
     }
@@ -686,7 +692,23 @@ class SystemWebHost(
  * ⚠️ 方法运行在 WebView 的 JS 线程上，**不能碰 View**；切主线程由 [PageBridge]
  *   的实现负责。
  */
-private class SystemPageBridge(private val impl: PageBridge) {
+private class SystemPageBridge(
+    private val impl: PageBridge,
+    private val annotations: BridgeProtocolAnnotations,
+    private val consumeAnnotation: (String) -> Unit,
+    private val annotationResponse: (String) -> Unit,
+) {
+
+    @android.webkit.JavascriptInterface
+    fun bridgeCapabilities(): String = annotations.capabilities()
+
+    @android.webkit.JavascriptInterface
+    fun aiAnnotateRequest(requestId: String) {
+        annotationResponse(annotations.request(requestId))
+    }
+
+    @android.webkit.JavascriptInterface
+    fun aiAnnotateAck(requestId: String) = consumeAnnotation(requestId)
 
     @android.webkit.JavascriptInterface
     fun onStatus(json: String) = impl.onStatus(json)

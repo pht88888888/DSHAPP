@@ -71,6 +71,7 @@ class GeckoWebHost(
 ) : WebHost {
 
     private val geckoView = GeckoView(context)
+    private val annotations = BridgeProtocolAnnotations(callbacks.bridge as? AnnotationSource)
     private val session = GeckoSession()
 
     /**
@@ -839,7 +840,14 @@ class GeckoWebHost(
                     "openAiBrowser" -> b.openAiBrowser()
                     // AI 浏览器嵌入定位：前端量出面板矩形后高频上报（ResizeObserver）。
                     "aiBrowserLayout" -> b.aiBrowserLayout(args.optString(0, ""))
-                    "aiAnnotateResult" -> b.aiAnnotateResult()
+                    "aiAnnotateResult" -> postToExtension(JSONObject()
+                        .put("type", "annotationLegacy")
+                        .put("result", b.aiAnnotateResult()))
+                    "aiAnnotateRequest" -> postToExtension(JSONObject()
+                        .put("type", "bridgeResult")
+                        .put("response", annotations.request(args.optString(0, ""))))
+                    "aiAnnotateAck" -> annotations.acknowledge(args.optString(0, ""))
+                    "bridgeCapabilities" -> pushSnapshot()
                     "aiAnnotateReport" -> b.aiAnnotateReport(args.optString(0, ""))
                     "aiBrowserDetach" -> b.aiBrowserDetach()
                     "aiBrowserState" -> b.aiBrowserState()
@@ -980,12 +988,9 @@ class GeckoWebHost(
             // ⚠️ 必须进快照：无障碍授权是在**另一个 Activity** 里给的，用户授权完
             //   回到设置页，页面拿到的若还是旧缓存，就会一直显示「还差一步：去开权限」。
             .put("keyboardAvoid", callbacks.bridge.keyboardAvoidState())
-            // AI 浏览器状态（JSON 文本）。页面侧 `aiBrowserState()` /
-            // `aiAnnotateResult()` 都是**同步**返回字符串的（见 content.js 的
-            // getAiBrowser），而 native messaging 只能异步 ⇒ 必须经快照缓存。
-            // ⚠️ 不推的话这两个方法在 gecko 版上永远返回 `{}`，侧栏浏览器的
-            //   标注画布读不到状态，表现为「点了没反应」。
+            // annotation 是一次性消费，不能放进周期快照；只在显式请求后回结果。
             .put("aiBrowser", callbacks.bridge.aiBrowserState())
+            .put("bridgeCapabilities", annotations.capabilities())
             // 余额徽章配置（JSON 文本）。页面侧 `bubbleBadgeConfig()` 同步读。
             .put("badgeConfig", callbacks.bridge.bubbleBadgeConfig())
             // 悬浮球点按刷新序号。页面侧 `bubbleTapRefreshSeq()` 同步读 Int。
@@ -1156,6 +1161,7 @@ class GeckoWebHost(
     }
 
     override fun destroy() {
+        annotations.clear()
         pendingPaintAction = null
         pendingEvals.clear()
         pendingUntilReady.clear()

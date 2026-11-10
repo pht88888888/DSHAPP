@@ -105,6 +105,8 @@ pnpm add <本地包>  →  exit=0，node_modules/@local/xxx 就位，
 不给 app 私有目录建符号链接（与 ③ 的 `link` 同一类限制），shebang 也不可靠。
 写启动脚本，且 node 用**绝对路径**（不依赖 PATH）。
 
+本节后续为旧 overlay 架构的历史说明。当前内置包统一采用标准 bundle：出厂目录位于 `$DSH_HOME/node_modules/<package>`，profile 以明确 `link:` 依赖登记；市场更新后保留 registry 依赖，App 不覆盖。启用与卸载状态只登记一次，详见 [内置插件与市场更新](plugin-updates.md)。
+
 ⚠️ **pnpm 会把 profile 的 `node_modules` 里任何"多余依赖"挪到 `node_modules/.ignored/`。**
 这正是移动端 UI 插件**曾经**被驱逐的原因，现在已把它挪出 `node_modules` 规避（见
 「移动端 UI 插件」一节的 ⚠️）。**不要**再把 App 注入的插件放进 profile 的

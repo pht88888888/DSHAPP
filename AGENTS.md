@@ -110,19 +110,14 @@ bash tools/check-architecture.sh
 > 脚本在仓库里是 `100644`（没有执行位），直接 `./tools/check-architecture.sh`
 > 会 `Permission denied`，必须用 `bash` 显式调用。
 
-### 三个大文件为什么不拆
+### 大文件的拆分边界
 
-`EngineManager.kt`（约 9.2 千行）、`MainActivity.kt` / `FloatingBubble.kt`
-（各约 5.4 千行）已知偏大，但**拆分收益小于代价**：
+按真实状态所有权拆分：出厂资产安装、bundle 登记与更新适配由独立 engine 组件负责；
+`EngineManager` 保留启动顺序、子进程、救援与降级生命周期。Activity/窗口状态仍归宿主，
+不要为缩短文件机械搬运成员，或引入万能可变 context/参数袋。
 
-- `EngineManager` 的 40 个 `ensureXxx` 与 10 个 `patchXxx` 共享同一批实例状态
-  （子进程句柄、日志缓冲、当前降级层级），拆开要引入大量传参或可变共享对象，
-  反而让「改一个字段影响哪些组件」更难追踪；
-- 两个 UI 类的成员大量共享 Activity/Window 生命周期状态，拆开要引入大量
-  传参或回调，等于把隐式耦合变成显式噪音。
-
-替代方案是**文件头导航**：每个大文件开头都有一张「按你要做的事找入口」的
-路线图，直接跳转，不必通读。改动时请顺手维护那张表。
+大文件头导航保持可用，新增职责优先放入对应模块。插件布局与业务功能的边界见
+[内置插件与市场更新](docs/agents/plugin-updates.md)。
 
 ## 目录结构（速查）
 
@@ -133,8 +128,8 @@ bash tools/check-architecture.sh
 | `usr/` | `$PREFIX`，Termux 环境（含 `bin/node`、`bin/pnpm`） |
 | `engine/` | 引擎解包目录（含 `.stamp` 版本戳） |
 | `home/.dsh/` | `DSH_HOME`：配置、凭据、会话、`profiles/web/` |
-| 　`mobile-ui/`、`shell-tool/`、`bubble-tool/`、`logs-tool/` … | 内置插件，**刻意放在 pnpm 管辖之外** |
-| 　`node_modules/dsh-core-memory/`、`node_modules/dsh-preset-razor/` | **唯二**走 profile bundle 的内置包，可在「插件 → 已安装插件」里单独开关 |
+| 　`node_modules/<内置包>/` | 出厂离线包，在 profile workspace 之外，以标准 bundle 登记 |
+| 　`profiles/web/node_modules/` | pnpm 管理的市场安装版本，优先于出厂包 |
 | `logs/` | `app.log` / `engine.log` / `events.jsonl` / `crash/` / `export/` |
 
 ## 索引：`docs/agents/`
@@ -193,7 +188,8 @@ bash tools/check-architecture.sh
 | 文档 | 什么时候看 |
 |---|---|
 | [build-and-ship.md](docs/agents/build-and-ship.md) | release 签名、两个 flavor、夸克网盘发布与版本整理 |
-| [asset-stamps.md](docs/agents/asset-stamps.md) | **改了任何 `.zip` / `.bin` 资产都必须看**：漏改版本戳 = 静默不生效 |
+| [asset-stamps.md](docs/agents/asset-stamps.md) | **改了任何 `.zip` / `.bin` 资产都必须看**：组件摘要与运行时版本规则 |
+| [plugin-updates.md](docs/agents/plugin-updates.md) | 出厂插件、市场直接更新、统一构建与用户状态归属 |
 | [regen-assets.md](docs/agents/regen-assets.md) | 从零重建某个资产 |
 | [boundaries.md](docs/agents/boundaries.md) | 明确不做 / 做不到的事 |
 | [desktop-relation.md](docs/agents/desktop-relation.md) | 与桌面端共用哪些、各管哪些 |
@@ -201,9 +197,9 @@ bash tools/check-architecture.sh
 
 ## 三条最容易违反的规矩
 
-1. **改了资产必须同步改版本戳** —— 否则老标记仍在、解包被跳过，新资产永不生效。
-   清单见 [asset-stamps.md](docs/agents/asset-stamps.md)。**这个失败是完全静默的。**
-2. **`assets/*.zip` 没有打包脚本，全是手打的** —— 改完源码必须**逐 zip 与源目录做字节比对**，
-   不能靠"我记得打过了"。踩过一次六个里漏一个，从"改了哪几个文件"看不出来。
+1. **改了资产必须更新生效判据** —— 组件插件由统一构建生成摘要 manifest；运行时与其它
+   二进制资产的版本规则见 [asset-stamps.md](docs/agents/asset-stamps.md)。
+2. **APK 插件统一构建并逐文件校验** —— Gradle 预构建使用组件清单生成 zip 与 manifest，
+   不能手工漏包或将旧兼容产物覆盖市场插件，见 [plugin-updates.md](docs/agents/plugin-updates.md)。
 3. **不要为了"修"报错去升 `targetSdk` / 改包名** —— 那是硬约束①②，升了就全线崩，
    而且报错信息不会指向真正的原因。

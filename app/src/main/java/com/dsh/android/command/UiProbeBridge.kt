@@ -1,6 +1,9 @@
 package com.dsh.android.command
 import com.dsh.android.log.DshLog as Log
-import android.webkit.WebView
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.FutureTask
+import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
@@ -86,19 +89,47 @@ object UiProbeBridge {
 
     private var task: ScheduledFuture<*>? = null
 
-    /** `$DSH_HOME`，由 [start] 传入。 */
+    /** `$DSH_HOME`，由 [attach] 传入。 */
     @Volatile
     private var home: File? = null
 
-    /**
-     * 取内核的**当前实例**。
-     *
-     * ⚠️ 必须是「取的时候现拿」而不是启动时存一份：Activity 重建（旋转屏幕、
-     *   从后台回来）会换掉整个 WebView，持旧引用会把 JS 打进一个已经销毁的
-     *   内核里 —— 静默无结果。用一个取值函数就绕开了这个生命周期纠葛。
-     */
-    @Volatile
-    private var hostProvider: (() -> UiProbeHost?)? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private class Attachment(val owner: Any, val generation: Long, val provider: () -> UiProbeHost?)
+    @Volatile private var attachment: Attachment? = null
+    private var generation = 0L
+
+    /** 后台命令只持代际号；宿主闭包仅在主线程现取，detach 后不再保留 Activity。 */
+    private class HostSession(val generation: Long) : UiProbeHost {
+        fun isCurrent(): Boolean = attachment?.generation == generation
+        private fun <T> onMain(block: (UiProbeHost) -> T): T? {
+            val active = AtomicBoolean(true)
+            val work = FutureTask<T?> {
+                val current = attachment
+                if (!active.get() || current?.generation != generation) null
+                else current.provider()?.let(block)
+            }
+            if (Looper.myLooper() == Looper.getMainLooper()) work.run() else mainHandler.post(work)
+            return try { work.get(TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+            catch (_: Exception) { null }
+            finally { active.set(false); work.cancel(false) }
+        }
+        override fun evaluateJavascript(script: String, callback: ((String?) -> Unit)?) =
+            evaluate(script, TIMEOUT_MS, callback)
+        fun evaluate(script: String, timeoutMs: Long, callback: ((String?) -> Unit)?) {
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+            mainHandler.post {
+                val current = attachment
+                if (current?.generation != generation || System.nanoTime() >= deadline) callback?.invoke(null)
+                else try {
+                    current.provider()?.evaluateJavascript(script) { raw ->
+                        callback?.invoke(if (isCurrent()) raw else null)
+                    } ?: callback?.invoke(null)
+                } catch (_: Exception) { callback?.invoke(null) }
+            }
+        }
+        override fun screenGeometry(): ScreenGeometry? = onMain { it.screenGeometry() }
+        override fun reload(): Boolean = onMain { it.reload() } == true
+    }
 
     /** 探针源码的懒加载缓存（`assets/ui-probe.js` 每次启动读一次就够）。 */
     @Volatile
@@ -120,7 +151,7 @@ object UiProbeBridge {
         fun screenGeometry(): ScreenGeometry?
 
         /** 触发一次强制的界面重载（探针发现页面已坏时用）。 */
-        fun reload()
+        fun reload(): Boolean
     }
 
     /**
@@ -158,16 +189,12 @@ object UiProbeBridge {
     }
 
     /**
-     * 启动轮询。由 `MainActivity` 在 Web 内核就绪后调用一次（幂等）。
-     *
-     * @param dshHome `$DSH_HOME`。目录不存在时仍然启动 —— 引擎初始化会建它。
-     * @param provider 取内核实例的函数，见 [hostProvider] 为什么是函数。
-     * @param assets 读探针源码用（传 `context.assets`）。
+     * 绑定当前宿主并幂等启动信箱；旧 owner 的 detach 不会撤掉新宿主。
      */
     @Synchronized
-    fun start(dshHome: File, assets: android.content.res.AssetManager, provider: () -> UiProbeHost?) {
+    fun attach(owner: Any, dshHome: File, assets: android.content.res.AssetManager, provider: () -> UiProbeHost?) {
         home = dshHome
-        hostProvider = provider
+        attachment = Attachment(owner, ++generation, provider)
         if (probeSource == null) {
             probeSource = try {
                 assets.open(PROBE_ASSET).bufferedReader().use { it.readText() }
@@ -183,7 +210,16 @@ object UiProbeBridge {
     }
 
     @Synchronized
+    fun detach(owner: Any) {
+        if (attachment?.owner !== owner) return
+        attachment = null
+        ++generation
+    }
+
+    @Synchronized
     fun stop() {
+        attachment = null
+        ++generation
         task?.cancel(false)
         task = null
     }
@@ -265,7 +301,7 @@ object UiProbeBridge {
      * ① 坐标换算；② `wait` 的重复轮询；③ 页面已坏时的重载。
      */
     private fun handle(dir: File, id: Long, json: JSONObject) {
-        val host = hostProvider?.invoke()
+        val host = attachment?.let { HostSession(it.generation) }
         if (host == null) {
             writeResult(dir, id, JSONObject().apply {
                 put("ok", false)
@@ -306,11 +342,12 @@ object UiProbeBridge {
         val result = when (control) {
             "wait" -> runWait(host, source, cmd)
             "reload" -> {
-                host.reload()
+                val reloaded = host.reload()
                 JSONObject().apply {
-                    put("ok", true)
-                    put("reloaded", true)
-                    put("note", "已触发界面重载；等 2–5 秒后界面才可用")
+                    put("ok", reloaded)
+                    put("reloaded", reloaded)
+                    if (reloaded) put("note", "已触发界面重载；等 2–5 秒后界面才可用")
+                    else put("error", "当前宿主不可用或已停止恢复，未触发重载")
                 }
             }
             else -> evalOnce(host, source, cmd, TIMEOUT_MS)
@@ -324,12 +361,15 @@ object UiProbeBridge {
                 Log.w(TAG, "坐标换算失败（结果仍返回）: ${t.message}")
             }
         }
-        writeResult(dir, id, result)
+        writeResult(dir, id, if (host.isCurrent()) result else JSONObject().apply {
+            put("ok", false)
+            put("error", "界面宿主已更换或销毁，请重试")
+        })
     }
 
     /** 跑一次探针，同步等结果。超时返回一个明确的失败对象。 */
     private fun evalOnce(
-        host: UiProbeHost,
+        host: HostSession,
         source: String,
         cmd: JSONObject,
         timeoutMs: Long,
@@ -340,7 +380,7 @@ object UiProbeBridge {
         // ⚠️ 探针源码是 `function (CMD) {...}` 的**函数表达式**，所以这里用
         //   括号包起来直接调用。cmd 经 JSON 编码进来，没有字符串注入面。
         val script = "($source)(${cmd.toString()})"
-        host.evaluateJavascript(script) { raw ->
+        host.evaluate(script, timeoutMs) { raw ->
             holder[0] = raw
             latch.countDown()
         }
@@ -413,11 +453,11 @@ object UiProbeBridge {
      * 这是**唯一一个原生侧要循环的动作** —— 探针每次都只做单次检查（它必须是
      * 无状态的），循环放在这边才不会把「等 10 秒」这个语义塞进页面。
      */
-    private fun runWait(host: UiProbeHost, source: String, cmd: JSONObject): JSONObject {
+    private fun runWait(host: HostSession, source: String, cmd: JSONObject): JSONObject {
         val deadline = System.currentTimeMillis() + WAIT_MAX_MS
         var last: JSONObject? = null
         var attempts = 0
-        while (System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() < deadline && host.isCurrent()) {
             attempts++
             val got = evalOnce(host, source, cmd, 3000L)
             last = got

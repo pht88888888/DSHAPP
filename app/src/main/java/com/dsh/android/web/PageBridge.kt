@@ -32,6 +32,19 @@ import com.dsh.android.ui.MainActivity
  */
 interface PageBridge {
 
+    /** 实际支持的协议版本与能力版本；两个宿主按 [AnnotationSource] 支持情况补充。 */
+    fun bridgeCapabilities(): String = BridgeProtocol.capabilities(false)
+
+    /**
+     * 页面调用立即返回 undefined，宿主经 `dsh:bridge-result` 回应 JSON 文本。
+     * 两个宿主的 [BridgeProtocolAnnotations] 缓存 requestId 结果，不消费待发标注。
+     * 接口默认实现仅供旧宿主兼容；页面包装由宿主接管，不把内部结果同步暴露。
+     */
+    fun aiAnnotateRequest(requestId: String): String = BridgeProtocol.unsupported(requestId)
+
+    /** 确认消费 requestId 的标注；未知或重复确认不产生副作用，由宿主接管。 */
+    fun aiAnnotateAck(requestId: String) {}
+
     /**
      * 页面状态上报（AI 在干什么 + 当前底色），驱动通知栏与系统栏配色。
      *

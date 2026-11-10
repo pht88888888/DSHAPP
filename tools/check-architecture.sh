@@ -16,7 +16,7 @@ check_limit() {
     echo "  ✓ $f: $n / $limit"
   fi
 }
-check_limit "app/src/main/java/com/dsh/android/engine/EngineManager.kt" 11350
+check_limit "app/src/main/java/com/dsh/android/engine/EngineManager.kt" 7419
 check_limit "app/src/main/java/com/dsh/android/ui/MainActivity.kt" 5480
 check_limit "app/src/main/java/com/dsh/android/bubble/FloatingBubble.kt" 5430
 
@@ -62,16 +62,14 @@ for cb in onPermissionRequest onShowFileChooser onGeolocationPermissionsShowProm
 done
 
 echo
-echo "── 5. gecko 分派表与桥对齐 ──"
-b=$(grep -oE '^ +fun [a-zA-Z0-9_]+' app/src/main/java/com/dsh/android/web/PageBridge.kt | sed 's/.*fun //' | sort -u)
-g=$(grep -oE '"[a-zA-Z0-9_]+" ->' app/src/gecko/java/com/dsh/android/web/GeckoWebHost.kt | sed 's/"//g;s/ ->//' | sort -u)
-missing=$(comm -23 <(echo "$b") <(echo "$g"))
-if [ -n "$missing" ]; then
-  echo "  ⚠ gecko 分派表缺以下方法（若靠 pushSnapshot 推送则正常）:"
-  echo "$missing" | sed 's/^/      /'
-else
-  echo "  ✓ 无缺失"
-fi
+echo "── 5. 双内核真实桥协议与标注行为覆盖 ──"
+# 读取协议及完整 PageBridge/System 签名，并在 VM 调用真实 Gecko/标注桥。
+# snapshot 与 invoke 按协议分别验证；缺文件或不一致直接失败。
+if ! node tools/test-bridge-contract.mjs; then fail=1; fi
+
+echo
+echo "── 6. 插件状态所有权与组件入口边界 ──"
+if ! node tools/check-plugin-boundaries.mjs; then fail=1; fi
 
 echo
 if [ "$fail" -eq 0 ]; then echo "全部通过"; else echo "有违规项，见上"; fi

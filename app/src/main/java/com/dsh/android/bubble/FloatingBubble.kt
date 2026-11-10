@@ -69,7 +69,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.dsh.android.core.DshApplication
 import com.dsh.android.engine.EngineService
-import com.dsh.android.privilege.ShizukuShell
+import com.dsh.android.privilege.ShellPrivilege
 import com.dsh.android.ui.BalanceBadge
 import com.dsh.android.ui.BalanceBadgeView
 import com.dsh.android.ui.BalanceSnapshot
@@ -1314,12 +1314,8 @@ class FloatingBubble(private val context: Context) {
      */
     private val imeProbe by lazy {
         ImeProbe(context) { cmd ->
-            // ⚠️ **必须走 Shizuku 的 uid 2000**。`dumpsys input_method` 要求
-            //   `android.permission.DUMP`，普通 app uid 直接被拒：
-            //   `Permission Denial: can't dump InputMethodManagerService ... uid=10347`。
-            //   这里曾经写成 `ProcessBuilder("/system/bin/sh", "-c", cmd)` —— 那是在
-            //   **app uid** 下跑的，必然读不到，表现为「Shizuku 已授权但功能仍不可用」。
-            runCatching { ShizukuShell.exec(cmd) }.getOrNull()
+            // dumpsys 要求 DUMP；按与设置页一致的 Shizuku/root 可用通道执行。
+            runCatching { ShellPrivilege.exec(context, cmd) }.getOrNull()
         }
     }
 

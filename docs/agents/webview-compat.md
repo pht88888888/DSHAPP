@@ -5,8 +5,9 @@
 
 ### ⑯ 旧 WebView 内核白屏 —— 前端 bundle 降级编译（**不是** polyfill）
 
-> ⚠️ **降级范围是「三棵树」，不是只有 dist**（v2 起，`-CompatVersion 2`）。
-> 只降 dist 是**不够的**，这是线上真实踩到的坑，见本节末尾的「v2：插件 bundle」。
+> 当前统一目标为 Chrome 73。引擎兼容资产只包含官方 dist/engine 两棵树，Android 插件由组件构建器独立降级；不再输出 mobileui，以免覆盖市场版本。Node 构建器是唯一实现，PowerShell 仅转调。戳自动包含输入摘要，manifest 校验逐文件内容；详见 [内置插件与市场更新](plugin-updates.md)。
+>
+> 下文为历史故障与解析器判据，旧三棵树、Chrome 74 与手工递增戳说明不再作为当前构建规则。
 
 **症状**（用户反馈的 45 秒录屏，vivo Y52s / V2057A / Android 10 / Funtouch OS 10.5）：
 启动层走完「正在启动引擎…」→「正在准备界面…」，然后**一片纯白**，永远不出来。

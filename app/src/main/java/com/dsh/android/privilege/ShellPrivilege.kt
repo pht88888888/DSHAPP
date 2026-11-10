@@ -1,7 +1,10 @@
 package com.dsh.android.privilege
 import android.content.Context
 import android.util.Log
-import com.dsh.android.bubble.BubbleAppearance
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 /**
  * 「本 App 现在有没有能力以 **uid 2000** 跑一条 shell 命令」—— 给「键盘顶飞」当闸门。
@@ -28,9 +31,9 @@ import com.dsh.android.bubble.BubbleAppearance
  *   —— 三者缺一不可（装了没启动、启动了没授权，都跑不了命令）。
  * - root：`RootAccess` 已授权。
  *
- * ⚠️ 本类**只读状态、不触发任何探测**：Shizuku 的 binder 由系统在进程启动时送进来，
- *   root 的结论也是别处异步探好缓存的。所以这里可以随时调、开销接近零，适合在
- *   `BubbleAppearance` 解析和设置页渲染时直接问。
+ * [status] 只读状态，不触发探测或新授权，适合设置页与配置解析。
+ * [exec] 仅供后台键盘探测：root 仅在缓存已授权后沿用 su -c；若授权已撤销或是
+ * 一次性授权，su 管理器仍可能要求重新确认，状态读取不会进入这条执行路径。
  */
 internal object ShellPrivilege {
 
@@ -61,17 +64,15 @@ internal object ShellPrivilege {
         // 把「装了但没启动」报成「没装」，用户会去卸载重装（见 PageBridge.shizukuState
         // 的注释，那是踩过的坑）。
         val installed = runCatching { ShizukuChannel.isManagerInstalled(context) }.getOrDefault(false)
-        if (installed) {
+        val shizukuReason = if (installed) {
             val binder = runCatching { ShizukuChannel.isBinderAlive() }.getOrDefault(false)
             if (binder) {
-                val granted = runCatching { ShizukuChannel.hasPermission() }.getOrDefault(false)
-                if (granted) {
+                if (runCatching { ShizukuChannel.hasPermission() }.getOrDefault(false)) {
                     return Status(true, null, "shizuku")
                 }
-                return Status(false, "Shizuku 已启动但未授权，去「设置 → 特权权限」点授权", null)
-            }
-            return Status(false, "Shizuku 装了但服务没启动，去「设置 → 特权权限」启动它", null)
-        }
+                "Shizuku 已启动但未授权，去「设置 → 特权权限」点授权"
+            } else "Shizuku 装了但服务没启动，去「设置 → 特权权限」启动它"
+        } else null
 
         // ── root 兜底 ──────────────────────────────────────────────────
         // ⚠️ 用 `cached()` 而不是 `detect()`：detect 会**弹 su 授权框**，而本方法会被
@@ -84,9 +85,60 @@ internal object ShellPrivilege {
 
         return Status(
             false,
-            "需要 Shizuku 或 root 才能读取键盘状态（普通应用拿不到 DUMP 权限）",
+            shizukuReason ?: "需要 Shizuku 或 root 才能读取键盘状态（普通应用拿不到 DUMP 权限）",
             null,
         )
+    }
+
+    /** 实际探测使用与 status 相同的通道顺序；不得用于设置页状态读取。 */
+    fun exec(context: Context, command: String): String? = when (status(context).via) {
+        "shizuku" -> ShizukuShell.exec(command)
+            ?: if (RootAccess.cached(context)?.granted == true) execRoot(command) else null
+        "root" -> execRoot(command)
+        else -> null
+    }
+
+    /** 沿用 root 工具的 su -c 与同次 uid 校验；只在已有授权缓存时进入。 */
+    private fun execRoot(command: String): String? {
+        val su = listOf("/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su",
+            "/debug_ramdisk/su", "/magisk/.core/bin/su").firstOrNull { File(it).exists() } ?: return null
+        val process = runCatching {
+            ProcessBuilder(su, "-c", "[ \"\$(id -u)\" = 0 ] || exit 78; $command").start()
+        }.getOrNull() ?: return null
+        val output = ByteArrayOutputStream()
+        // 两路均持续排空，stdout 最多保留 1 MB，避免 dumpsys 填满管道。
+        val reader = thread(isDaemon = true) {
+            runCatching {
+                process.inputStream.use { input ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        val take = minOf(n, 1024 * 1024 - output.size())
+                        if (take > 0) output.write(buffer, 0, take)
+                    }
+                }
+            }
+        }
+        val errors = thread(isDaemon = true) {
+            runCatching { process.errorStream.use { input ->
+                val buffer = ByteArray(8192)
+                while (input.read(buffer) >= 0) { /* 排空 stderr */ }
+            } }
+        }
+        return try {
+            if (!process.waitFor(3000, TimeUnit.MILLISECONDS)) return null
+            reader.join(1500)
+            errors.join(1500)
+            if (process.exitValue() == 0 && !reader.isAlive) output.toString("UTF-8") else null
+        } catch (_: Exception) {
+            null
+        } finally {
+            process.destroyForcibly()
+            runCatching { process.inputStream.close() }
+            runCatching { process.errorStream.close() }
+            runCatching { process.outputStream.close() }
+        }
     }
 
     /** 便捷判断。 */

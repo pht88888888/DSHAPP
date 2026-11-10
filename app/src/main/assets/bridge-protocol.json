@@ -1,0 +1,1550 @@
+{
+  "protocolVersion": 1,
+  "capabilities": {
+    "protocol.capabilities": {
+      "version": 1,
+      "methods": [
+        "bridgeCapabilities"
+      ]
+    },
+    "annotation.request": {
+      "version": 1,
+      "methods": [
+        "aiAnnotateRequest",
+        "aiAnnotateAck"
+      ],
+      "availability": "bridge implements AnnotationSource",
+      "consumption": "Only aiAnnotateAck(requestId) consumes matching annotationId; read failure and response delivery do not consume.",
+      "retry": "Same requestId before ack returns cached result. Max 8 pending requestIds; excess returns busy.",
+      "lifecycle": "Host destroy releases cached responses; native pending annotation is not consumed."
+    }
+  },
+  "events": {
+    "dsh:bridge-result": {
+      "detail": "json-string",
+      "schema": {
+        "$ref": "annotationResponse"
+      }
+    }
+  },
+  "schemas": {
+    "annotation": {
+      "type": "object",
+      "required": [
+        "png",
+        "text"
+      ],
+      "properties": {
+        "png": {
+          "type": "string",
+          "minLength": 1,
+          "encoding": "base64-png"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "capabilities"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "protocol.capabilities": {
+              "type": "integer",
+              "const": 1
+            },
+            "annotation.request": {
+              "type": "integer",
+              "const": 1
+            }
+          },
+          "required": [
+            "protocol.capabilities"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotationResponse": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "method",
+        "ok",
+        "result",
+        "error"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "aiAnnotateRequest"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {
+          "oneOf": [
+            {
+              "$ref": "annotation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "unsupported",
+                    "invalid_request",
+                    "unavailable",
+                    "busy",
+                    "read_failed"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "bubbleState": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "granted": {
+          "type": "boolean"
+        },
+        "throwEnabled": {
+          "type": "boolean"
+        },
+        "imeFlingEnabled": {
+          "type": "boolean"
+        },
+        "imeFlingAvailable": {
+          "type": "boolean"
+        },
+        "imeFlingReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shakeEnabled": {
+          "type": "boolean"
+        },
+        "a11y": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "note": "Fields describe successful state reads; legacy failures can return {}."
+    },
+    "bubbleBadgeConfig": {
+      "type": "object",
+      "properties": {
+        "refreshEverySec": {
+          "type": "integer"
+        },
+        "refreshOnTurnEnd": {
+          "type": "boolean"
+        },
+        "refreshOnTap": {
+          "type": "boolean"
+        },
+        "tapRefreshMinIntervalSec": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true,
+      "note": "Fields describe successful state reads; legacy failures can return {}.",
+      "required": [
+        "refreshEverySec",
+        "refreshOnTurnEnd",
+        "refreshOnTap",
+        "tapRefreshMinIntervalSec"
+      ]
+    },
+    "keyboardAvoidState": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "a11y": {
+          "type": "boolean"
+        },
+        "a11yOn": {
+          "type": "boolean"
+        },
+        "shell": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "note": "Fields describe successful state reads; legacy failures can return {}."
+    },
+    "rootState": {
+      "type": "object",
+      "properties": {
+        "known": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string"
+        },
+        "granted": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "mounted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "note": "Fields describe successful state reads; legacy failures can return {}."
+    },
+    "shizukuState": {
+      "type": "object",
+      "properties": {
+        "installed": {
+          "type": "boolean"
+        },
+        "binder": {
+          "type": "boolean"
+        },
+        "granted": {
+          "type": "boolean"
+        },
+        "uid": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true,
+      "note": "Fields describe successful state reads; legacy failures can return {}."
+    },
+    "logSummary": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "integer"
+        },
+        "warn": {
+          "type": "integer"
+        },
+        "error": {
+          "type": "integer"
+        },
+        "crash": {
+          "type": "integer"
+        },
+        "pending": {
+          "type": "integer"
+        },
+        "lastExit": {
+          "type": "string"
+        },
+        "uploadConfigured": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "note": "Fields describe successful state reads; legacy failures can return {}."
+    },
+    "bubbleAppearance": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string"
+        },
+        "shape": {
+          "type": "string"
+        },
+        "shapePath": {
+          "type": "string"
+        },
+        "shapeViewBox": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "boxWidth": {
+          "type": "integer"
+        },
+        "boxHeight": {
+          "type": "integer"
+        },
+        "showDot": {
+          "type": "boolean"
+        },
+        "boxWidthPx": {
+          "type": "integer"
+        },
+        "boxHeightPx": {
+          "type": "integer"
+        },
+        "cornerRadius": {
+          "type": "integer"
+        },
+        "opacity": {
+          "type": "number"
+        },
+        "bgOpacity": {
+          "type": "number"
+        },
+        "avatarOpacity": {
+          "type": "number"
+        },
+        "avatarScale": {
+          "type": "number"
+        },
+        "bg": {
+          "type": "string"
+        },
+        "bg2": {
+          "type": "string"
+        },
+        "border": {
+          "type": "string"
+        },
+        "borderWidth": {
+          "type": "integer"
+        },
+        "avatar": {
+          "type": "string"
+        },
+        "frameCount": {
+          "type": "integer"
+        },
+        "frameIntervalMs": {
+          "type": "integer"
+        },
+        "frameLoop": {
+          "type": "boolean"
+        },
+        "spriteRows": {
+          "type": "integer"
+        },
+        "spriteCols": {
+          "type": "integer"
+        },
+        "action": {
+          "type": "string"
+        },
+        "actionMap": {
+          "type": "object"
+        },
+        "actions": {
+          "type": "array"
+        },
+        "videoActions": {
+          "type": "array"
+        },
+        "throwEnabled": {
+          "type": "boolean"
+        },
+        "shakeEnabled": {
+          "type": "boolean"
+        },
+        "imeFlingEnabled": {
+          "type": "boolean"
+        },
+        "balanceBadge": {
+          "type": "object"
+        },
+        "balance": {
+          "type": "object"
+        },
+        "pools": {
+          "type": "object"
+        },
+        "poolWeights": {
+          "type": "object"
+        },
+        "workStatusTexts": {
+          "type": "array"
+        },
+        "moveEnabled": {
+          "type": "boolean"
+        },
+        "moveIntervalSec": {
+          "type": "integer"
+        },
+        "moveMinDp": {
+          "type": "integer"
+        },
+        "moveMaxDp": {
+          "type": "integer"
+        },
+        "statusImages": {
+          "type": "array"
+        },
+        "statusImageSizeDp": {
+          "type": "integer"
+        },
+        "flipOnTurn": {
+          "type": "boolean"
+        },
+        "moveParams": {
+          "type": "object"
+        },
+        "chainAction": {
+          "type": "string"
+        },
+        "statusText": {
+          "type": "string"
+        },
+        "runState": {
+          "type": "string"
+        },
+        "playingAction": {
+          "type": "string"
+        },
+        "spin": {
+          "type": "integer"
+        },
+        "pulse": {
+          "type": "boolean"
+        },
+        "panelWidth": {
+          "type": "integer"
+        },
+        "panelHeight": {
+          "type": "integer"
+        },
+        "panelBg": {
+          "type": "string"
+        },
+        "panelText": {
+          "type": "string"
+        },
+        "panelAccent": {
+          "type": "string"
+        },
+        "statusAutoHideMs": {
+          "type": "integer"
+        },
+        "edgeSnap": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "note": "Fields describe successful state reads; legacy failures can return {}."
+    }
+  },
+  "methods": {
+    "bridgeCapabilities": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": "protocol.capabilities",
+      "since": 1,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "capabilities"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "capabilities"
+          }
+        },
+        "field": "bridgeCapabilities"
+      }
+    },
+    "aiAnnotateRequest": {
+      "params": [
+        {
+          "name": "requestId",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "string",
+      "capability": "annotation.request",
+      "since": 1,
+      "system": {
+        "mode": "async-result",
+        "returns": {
+          "type": "undefined"
+        },
+        "event": "dsh:bridge-result"
+      },
+      "gecko": {
+        "mode": "async-result",
+        "returns": {
+          "type": "undefined"
+        },
+        "event": "dsh:bridge-result"
+      }
+    },
+    "aiAnnotateAck": {
+      "params": [
+        {
+          "name": "requestId",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": "annotation.request",
+      "since": 1,
+      "system": {
+        "mode": "consume-ack",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "consume-ack",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "onStatus": {
+      "params": [
+        {
+          "name": "json",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "onImeWillShow": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "startWirelessPairing": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "cancelWirelessPairing": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "pairingNotificationsEnabled": {
+      "params": [],
+      "nativeReturns": "boolean",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "boolean"
+        },
+        "field": "pairingEnabled"
+      }
+    },
+    "onUiReady": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "reportWebError": {
+      "params": [
+        {
+          "name": "message",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "switchToTcpMode": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "reloadWebUi": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleState": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "bubbleState"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "bubbleState"
+          }
+        },
+        "field": "bubble"
+      }
+    },
+    "bubbleSetEnabled": {
+      "params": [
+        {
+          "name": "enabled",
+          "type": "boolean"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleSetImeFling": {
+      "params": [
+        {
+          "name": "enabled",
+          "type": "boolean"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleSetShake": {
+      "params": [
+        {
+          "name": "enabled",
+          "type": "boolean"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleReportBalance": {
+      "params": [
+        {
+          "name": "json",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleBadgeConfig": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "bubbleBadgeConfig"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "bubbleBadgeConfig"
+          }
+        },
+        "field": "badgeConfig"
+      }
+    },
+    "bubbleTapRefreshSeq": {
+      "params": [],
+      "nativeReturns": "integer",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "integer"
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "integer"
+        },
+        "field": "tapRefreshSeq"
+      }
+    },
+    "writeClipboard": {
+      "params": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "boolean",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      "gecko": {
+        "mode": "optimistic",
+        "returns": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "pageDiag": {
+      "params": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleSetThrow": {
+      "params": [
+        {
+          "name": "enabled",
+          "type": "boolean"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleRequestOverlay": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "openAiBrowser": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "aiBrowserLayout": {
+      "params": [
+        {
+          "name": "json",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "aiBrowserDetach": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "aiBrowserState": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "enum": [
+            "visible",
+            "hidden"
+          ]
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "enum": [
+            "visible",
+            "hidden"
+          ]
+        },
+        "field": "aiBrowser"
+      }
+    },
+    "aiAnnotateResult": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "empty-or-json",
+          "schema": {
+            "$ref": "annotation"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "request-cache-consume",
+        "returns": {
+          "type": "string",
+          "encoding": "empty-or-json",
+          "schema": {
+            "$ref": "annotation"
+          }
+        },
+        "initial": ""
+      }
+    },
+    "aiAnnotateReport": {
+      "params": [
+        {
+          "name": "message",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "keyboardAvoidState": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "keyboardAvoidState"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "keyboardAvoidState"
+          }
+        },
+        "field": "keyboardAvoid"
+      }
+    },
+    "keyboardAvoidSetEnabled": {
+      "params": [
+        {
+          "name": "enabled",
+          "type": "boolean"
+        }
+      ],
+      "nativeReturns": "boolean",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      "gecko": {
+        "mode": "optimistic",
+        "returns": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "keyboardAvoidRequestPermission": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "onTranscript": {
+      "params": [
+        {
+          "name": "json",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "bubbleApply": {
+      "params": [
+        {
+          "name": "json",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "boolean",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      "gecko": {
+        "mode": "optimistic",
+        "returns": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "bubbleAppearance": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "bubbleAppearance"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "bubbleAppearance"
+          }
+        },
+        "field": "appearance"
+      }
+    },
+    "rootState": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "rootState"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "rootState"
+          }
+        },
+        "field": "root"
+      }
+    },
+    "rootRecheck": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "shizukuState": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "shizukuState"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "shizukuState"
+          }
+        },
+        "field": "shizuku"
+      }
+    },
+    "shizukuRequestPermission": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "shizukuOpenManager": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "shizukuOpenDownload": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "openLogs": {
+      "params": [],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "undefined"
+        }
+      }
+    },
+    "logSummary": {
+      "params": [],
+      "nativeReturns": "string",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "logSummary"
+          }
+        }
+      },
+      "gecko": {
+        "mode": "snapshot",
+        "returns": {
+          "type": "string",
+          "encoding": "json",
+          "schema": {
+            "$ref": "logSummary"
+          }
+        },
+        "field": "logSummary"
+      }
+    },
+    "uploadNativeBegin": {
+      "params": [
+        {
+          "name": "taskId",
+          "type": "string"
+        },
+        {
+          "name": "url",
+          "type": "string"
+        },
+        {
+          "name": "headersJson",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "boolean",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      "gecko": {
+        "mode": "optimistic",
+        "returns": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "uploadNativeWrite": {
+      "params": [
+        {
+          "name": "taskId",
+          "type": "string"
+        },
+        {
+          "name": "base64",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "boolean",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      "gecko": {
+        "mode": "optimistic",
+        "returns": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "uploadNativeFinish": {
+      "params": [
+        {
+          "name": "taskId",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "uploadNativeAbort": {
+      "params": [
+        {
+          "name": "taskId",
+          "type": "string"
+        }
+      ],
+      "nativeReturns": "undefined",
+      "capability": null,
+      "since": 0,
+      "system": {
+        "mode": "sync",
+        "returns": {
+          "type": "undefined"
+        }
+      },
+      "gecko": {
+        "mode": "invoke",
+        "returns": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    }
+  }
+}

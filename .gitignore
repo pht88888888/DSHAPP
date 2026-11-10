@@ -3,6 +3,7 @@ build/
 .gradle/
 .kotlin/
 local.properties
+node_modules/
 
 # ── 发行版签名：绝不入库 ─────────────────────────────────
 #
@@ -40,6 +41,7 @@ app/src/main/assets/*
 !app/src/main/assets/dsh-android-root.mjs
 !app/src/main/assets/ui-probe.js
 !app/src/main/assets/dsh-fetch-guard.mjs
+!app/src/main/assets/bridge-protocol.json
 COMMIT_MSG.tmp
 
 # ── 真机调试工具的运行期产物：入库的是脚本，不是它的输出 ────────
