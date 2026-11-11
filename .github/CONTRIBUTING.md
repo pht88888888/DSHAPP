@@ -13,7 +13,7 @@
 
 **① 包名必须恰好 15 字符**
 
-`applicationId` = `com.dsh.android`（15 字符）。Termux 官方二进制把
+最终 APK 的 `applicationId` 分别为 `com.dsh.android`、`com.dsh.webview`（均 15 字符）。Termux 官方二进制把
 `/data/data/com.termux/files`（27 字节）烤进 ELF 的 `.dynstr`，而
 `TermuxBootstrap.patchElfInPlace()` 只能做**等长原地覆盖**。
 替换串 `/data/data/<包名>/` = 12 + N = 27 ⇒ **N = 15**。
@@ -21,7 +21,7 @@
 长度不等时该函数**静默 `return 0`**，不抛异常。症状：运行时
 `CANNOT LINK EXECUTABLE` 或 `dpkg: Permission denied`。
 
-**② targetSdk 必须 ≤ 28**
+**② targetSdk 必须保持 28**
 
 不能升到 29+。Android 10 起，targetSdk ≥ 29 的应用不允许 `execve()` 自身私有目录
 里的文件，而 node / bash / dpkg 全在 `filesDir` 下。
@@ -29,18 +29,18 @@
 > **不要为了「修」某个报错去升 targetSdk 或改包名。** 那正是这两条约束禁止的事，
 > 而且报错信息不会告诉你真相。
 
-细节见 [docs/agents/constraints.md](docs/agents/constraints.md)。
+细节见 [docs/agents/constraints.md](../docs/agents/constraints.md)。
 
 ### 2. 静默失败陷阱
 
 | 陷阱 | 后果 | 判据 |
 |---|---|---|
-| 改了 `.zip` / `.bin` 资产没改版本戳 | 解包被跳过，**新资产永不生效**，且完全静默 | [asset-stamps.md](docs/agents/asset-stamps.md) |
-| 改了插件源码没重打 zip | APK 里是旧代码 | 逐 zip 与源目录**字节比对** |
+| 改了 `.zip` / `.bin` 资产没改版本戳 | 解包被跳过，**新资产永不生效**，且完全静默 | [asset-stamps.md](../docs/agents/asset-stamps.md) |
+| 改了插件源码没更新生成产物 | APK 里是旧代码 | 统一构建器与逐文件 manifest 校验 |
 | 「构建成功」当「改动生效」 | 装上去还是老行为 | `adb logcat -d -s DSH:I` 看落盘行 |
 
-`assets/*.zip` **没有打包脚本，全是手打的**。踩过一次六个里漏一个，
-从「改了哪几个文件」完全看不出来 —— 判据只能是逐字节比对。
+插件由[唯一组件清单与统一构建器](../docs/agents/plugin-updates.md)生成 ZIP 和逐文件 manifest，
+Gradle 消费生成产物。不要手工压缩插件目录；其他运行资产按[资产重建说明](../docs/agents/regen-assets.md)准备。
 
 ## 开发环境
 
@@ -60,24 +60,26 @@ $env:JAVA_HOME = "<JDK 17 路径>"   # 必须显式设置
 | compileSdk / minSdk / targetSdk | 35 / 26 / **28** |
 
 ⚠️ **构建资产需要自备**（约 135 MB，不在仓库）。见
-[regen-assets.md](docs/agents/regen-assets.md)。
+[regen-assets.md](../docs/agents/regen-assets.md)。
 
 ## 验证你的改动
+
+按[分层测试手册](../docs/runbooks/testing.md)选择与改动对应的检查；构建、安装和发布是独立操作，见[发布手册](../docs/runbooks/release.md)。
 
 **「构建成功」不等于「改动生效」。** 装到真机后用日志确认（TAG 恒为 `DSH`）：
 
 ```powershell
 adb install -r app\build\outputs\apk\system\debug\app-system-debug.apk
-adb logcat -c ; adb shell am start -n com.dsh.android/.MainActivity
+adb logcat -c ; adb shell am start -n com.dsh.android/com.dsh.android.ui.MainActivity
 adb logcat -d -s DSH:I
 ```
 
 关键行（引擎就绪、界面加载完成、各 `ensureXxx` 的落盘行）见
-[AGENTS.md](AGENTS.md#构建)。
+[分层测试手册](../docs/runbooks/testing.md)。
 
 ## 提交 PR
 
-1. **先开 Issue 讨论** —— 尤其是涉及 native 层、沙箱、号池、资产的改动。
+1. **先开 Issue 讨论** —— 尤其是涉及 native 层、沙箱、插件、资产的改动。
 2. Fork → 建分支 → 改动 → 自测。
 3. **在 PR 描述里写清你怎么验证的** —— 命令、日志片段、真机型号。
    「我测过了」不算验证。
@@ -85,10 +87,9 @@ adb logcat -d -s DSH:I
 
 ### PR 检查清单
 
-- [ ] 没有提交 `agnes-keys.properties` / `keyinject-keys.h` / `keyinject.bin`
 - [ ] 没有提交 `keystore.properties` / `*.jks` / `local.properties`
 - [ ] 改了资产 ⇒ 同步改了版本戳
-- [ ] 改了插件源码 ⇒ 重打了对应 zip 并字节比对
+- [ ] 改了插件源码 ⇒ 用统一构建器生成并核验 ZIP 和逐文件 manifest
 - [ ] 在真机上验证过（写清型号与 Android 版本）
 - [ ] 没有为了「修」报错而升 targetSdk / 改包名
 
@@ -123,7 +124,7 @@ Termux binaries have `/data/data/com.termux/files` (27 bytes) baked into their E
 function **silently returns 0**; the symptom is a runtime `CANNOT LINK EXECUTABLE`
 or `dpkg: Permission denied`.
 
-**② targetSdk must be ≤ 28.** From Android 10 on, targetSdk ≥ 29 apps cannot
+**② targetSdk must remain 28.** From Android 10 on, targetSdk ≥ 29 apps cannot
 `execve()` files in their own private directory — and node / bash / dpkg all live
 under `filesDir`.
 
@@ -131,19 +132,19 @@ under `filesDir`.
 > exactly what these constraints forbid, and the error message will not tell you the
 > truth.
 
-See [docs/agents/constraints.md](docs/agents/constraints.md).
+See [docs/agents/constraints.md](../docs/agents/constraints.md).
 
 ### Silent-failure traps
 
 | Trap | Consequence | How to tell |
 |---|---|---|
-| Changed a `.zip`/`.bin` asset without bumping its version stamp | Unpack is skipped, **new asset never takes effect**, completely silent | [asset-stamps.md](docs/agents/asset-stamps.md) |
-| Changed plugin source without rebuilding the zip | The APK ships old code | Byte-compare each zip against its source dir |
+| Changed a `.zip`/`.bin` asset without bumping its version stamp | Unpack is skipped, **new asset never takes effect**, completely silent | [asset-stamps.md](../docs/agents/asset-stamps.md) |
+| Changed plugin source without regenerating artifacts | The APK ships old code | Shared builder and per-file manifest checks |
 | Treating "build succeeded" as "change took effect" | Device still behaves the old way | `adb logcat -d -s DSH:I` and look for the unpack lines |
 
-`assets/*.zip` are **hand-built — there is no packaging script**. We once shipped five
-rebuilt zips and missed the sixth; it was undetectable from "which files did I change."
-The only reliable check is a byte comparison.
+Plugins use the [component catalog and shared builder](../docs/agents/plugin-updates.md)
+to generate ZIPs and per-file manifests consumed by Gradle. Do not hand-package plugin
+directories; prepare other runtime assets using the [asset guide](../docs/agents/regen-assets.md).
 
 ## Development environment
 
@@ -157,23 +158,25 @@ $env:JAVA_HOME = "<path to JDK 17>"   # must be set explicitly
 JDK 17 · AGP 8.8.2 · Kotlin 2.0.21 · Gradle 8.13 · compileSdk 35 / minSdk 26 / **targetSdk 28**
 
 ⚠️ **Build assets (~135 MB) are not in the repo** — see
-[regen-assets.md](docs/agents/regen-assets.md).
+[regen-assets.md](../docs/agents/regen-assets.md).
 
 ## Verify your change
+
+Choose checks relevant to your change using the [testing runbook](../docs/runbooks/testing.md). Building, installation and publishing are separate operations; see the [release runbook](../docs/runbooks/release.md).
 
 **"Build succeeded" is not "change took effect."** Confirm on a real device via logs
 (TAG is always `DSH`):
 
 ```powershell
 adb install -r app\build\outputs\apk\system\debug\app-system-debug.apk
-adb logcat -c ; adb shell am start -n com.dsh.android/.MainActivity
+adb logcat -c ; adb shell am start -n com.dsh.android/com.dsh.android.ui.MainActivity
 adb logcat -d -s DSH:I
 ```
 
 ## Pull requests
 
 1. **Open an issue first** — especially for anything touching the native layer,
-   sandbox, key pool, or assets.
+   sandbox, plugins, or assets.
 2. Fork → branch → change → self-test.
 3. **Describe how you verified it** in the PR — commands, log excerpts, device model.
    "I tested it" does not count.
@@ -182,10 +185,9 @@ adb logcat -d -s DSH:I
 
 ### PR checklist
 
-- [ ] Did not commit `agnes-keys.properties` / `keyinject-keys.h` / `keyinject.bin`
 - [ ] Did not commit `keystore.properties` / `*.jks` / `local.properties`
 - [ ] Changed an asset ⇒ bumped its version stamp
-- [ ] Changed plugin source ⇒ rebuilt the matching zip and byte-compared
+- [ ] Changed plugin source ⇒ used the shared builder and verified ZIPs and per-file manifests
 - [ ] Verified on a real device (state model and Android version)
 - [ ] Did not raise targetSdk / change the package name to "fix" an error
 

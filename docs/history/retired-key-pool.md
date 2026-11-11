@@ -1,7 +1,9 @@
 # ⑮ 内置号池
 
+> **历史档案，不作现行要求。** 已退休的 TLS 注入号池实现与排障档案，不属于当前能力或构建要求，不应按文内旧命令恢复。旧生成脚本 `tools/build-keyinject.ps1` 已移除；密钥清单仅在本机忽略目录归档，不随仓库分发。当前仅清理历史 keyinject 残留；来源状态见[原生来源记录](../architecture/native-provenance.md)。
+
 > 本文是 [AGENTS.md](../../AGENTS.md) 的分册之一，
-索引见 [docs/agents/README.md](README.md)。
+历史索引见 [docs/history/README.md](README.md)，现行开发索引见 [docs/agents/README.md](../agents/README.md)。
 
 ### ⑮ 内置号池 —— 密钥在 TLS 层注入，粉丝挖不到
 

@@ -2,7 +2,7 @@
 
 **Run a full AI coding agent on your Android phone.**
 
-[中文](README.md) · [Docs](docs/agents/README.md) · [Contributing](CONTRIBUTING.md)
+[中文](README.md) · [Docs](docs/README.md) · [Contributing](.github/CONTRIBUTING.md)
 
 ---
 
@@ -188,8 +188,8 @@ Production remote-plugin development belongs in the [independent repository](htt
 
 ## Documentation
 
-**Do not read `docs/agents/` top to bottom** — use the index keyed by
-"what are you changing": [docs/agents/README.md](docs/agents/README.md)
+Start with the [documentation index](docs/README.md) for architecture, runbooks and
+historical records. Use the [developer guide index](docs/agents/README.md) for specific platform topics.
 
 | If you're changing | Read first |
 |---|---|
@@ -206,7 +206,8 @@ Production remote-plugin development belongs in the [independent repository](htt
 ## Known limitations
 
 - **The sandbox does not isolate the PID namespace** — `--unshare-pid` needs
-  CAP_SYS_ADMIN, which ordinary apps cannot get. File write boundaries are complete.
+  CAP_SYS_ADMIN, which ordinary apps cannot get. Writes are restricted by an adaptation
+  layer, not kernel isolation; see the [sandbox guide](docs/agents/sandbox.md).
 - **arm64-v8a only** — no arm32 or x86 builds.
 - **Sideload only** — targetSdk 28, cannot ship on Google Play (see constraint ②).
 - **Large APKs** — the system build is ~137 MB, the gecko build ~216 MB (engine and
@@ -218,7 +219,7 @@ Full list: [boundaries.md](docs/agents/boundaries.md).
 
 ## Contributing
 
-Issues and PRs are welcome. Before you start, read [CONTRIBUTING.md](CONTRIBUTING.md) —
+Issues and PRs are welcome. Before you start, read [CONTRIBUTING.md](.github/CONTRIBUTING.md) —
 this project has two **"wrong but compiles, then explodes on a real device"** hard
 constraints, plus silent-failure traps such as "changing an asset requires bumping its
 version stamp."

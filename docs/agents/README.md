@@ -1,6 +1,6 @@
 # docs/agents 索引
 
-从原 `AGENTS.md`（5872 行 / 354 KB）拆出来的分册。
+现行 Android 平台与开发分册；完整导航见[文档总索引](../README.md)。
 根目录的 [AGENTS.md](../../AGENTS.md) 只留**必读硬约束 + 构建命令 + 本索引**；
 细节全在这里，按需检索，不要整份读。
 
@@ -8,7 +8,6 @@
 |---|---|---|
 | [constraints.md](constraints.md) | 两条硬约束 | 包名 15 字符、targetSdk ≤ 28。改错不报错但真机必炸 |
 | [build-and-ship.md](build-and-ship.md) | 构建、发行与发布 | gradle 任务、签名、夸克网盘上传与版本整理 |
-| [server-build-env.md](server-build-env.md) | 服务器构建环境 | 八壹云部署、GRADLE_USER_HOME / DSH_HOME 两处必须存在的绝对路径、一键发布脚本 |
 | [platform-android.md](platform-android.md) | android 平台适配总览 | 为什么 Node 在 Android 上是 android 而不是 linux |
 | [link-compat.md](link-compat.md) | ③ SELinux 不给 link 权限 | LD_PRELOAD 转译层：为什么必须转译、转译语义、降级路径 |
 | [directory-picker.md](directory-picker.md) | ③.5 目录选择器只在**一棵**树里走 | HOME 下的入口链接接上手机存储 |
@@ -33,7 +32,6 @@
 | [logging.md](logging.md) | ⑫.6 / ⑫.7 日志与诊断 | 三层存储、崩溃入口、脱敏、诊断包、归因写错的五处 |
 | [plugin-source.md](plugin-source.md) | ⑬ 添加插件少了「npm 官方源」 | 不是漏配，是被去重合并掉了 |
 | [web-port.md](web-port.md) | ⑭ Web 端口 3080 被占用 | 默认沿用，撞车才让内核分配 |
-| [key-pool.md](key-pool.md) | ⑮ 内置号池 | TLS 层注入、固定槽位表耗尽、必须降级 HTTP/1.1、等长替换 |
 | [webview-compat.md](webview-compat.md) | ⑯ 旧 WebView 内核白屏 | 前端 bundle 降级编译（不是 polyfill），v2/v19 两轮教训 |
 | [keep-alive.md](keep-alive.md) | 后台保活与通知栏实时状态 | 任务切后台不能断；键盘升起遮挡 |
 | [mobile-ui.md](mobile-ui.md) | 移动端 UI 插件 | 为什么解到 $DSH_HOME/mobile-ui、别名桥接、+ 菜单时序、安全键盘 |
@@ -43,3 +41,11 @@
 | [boundaries.md](boundaries.md) | 已知边界 | 明确不做 / 做不到的事 |
 | [regen-assets.md](regen-assets.md) | 重新生成资产 | 各资产从哪来、怎么打 |
 | [desktop-relation.md](desktop-relation.md) | 与 DSH 桌面端的关系 | 哪些东西两端共用、哪些各管各的 |
+
+## 历史档案
+
+退休能力、旧设计和特定个人环境集中在[历史档案索引](../history/README.md)，不作现行要求：
+
+- [已退休的 TLS 注入号池](../history/retired-key-pool.md)。
+- [个人服务器构建环境](../history/personal-server-build-env.md)。
+- [旧救援启动设计](../history/rescue-boot-design.md)。

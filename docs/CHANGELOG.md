@@ -159,7 +159,7 @@
 - WebView 文件选择器与下载器
 - 目录选择器接上手机存储
 
-细节见 [`docs/agents/`](docs/agents/README.md)。
+细节见 [`docs/agents/`](agents/README.md)。
 
 ---
 

@@ -2,7 +2,7 @@
 
 **在 Android 手机上跑一个完整的 AI 编码 Agent。**
 
-[English](README.en.md) · [文档](docs/agents/README.md) · [参与贡献](CONTRIBUTING.md)
+[English](README.en.md) · [文档](docs/README.md) · [参与贡献](.github/CONTRIBUTING.md)
 
 ---
 
@@ -183,8 +183,8 @@ docs/architecture/ · docs/runbooks/    工程规范、ADR、状态与操作手�
 
 ## 文档
 
-**别整份读 `docs/agents/`** —— 按「你要改什么」查索引：
-[docs/agents/README.md](docs/agents/README.md)
+从[文档总索引](docs/README.md)查找架构、操作手册和历史档案；
+具体平台问题按[开发分册索引](docs/agents/README.md)按需阅读。
 
 | 你要改什么 | 先看 |
 |---|---|
@@ -198,7 +198,7 @@ docs/architecture/ · docs/runbooks/    工程规范、ADR、状态与操作手�
 ## 已知边界
 
 - **沙箱不隔离 PID 命名空间** —— `--unshare-pid` 需要 CAP_SYS_ADMIN，普通应用拿不到。
-  文件写边界是完整的。
+  文件写入受适配层限制，不等同于内核级隔离，详见[沙箱说明](docs/agents/sandbox.md)。
 - **仅 arm64-v8a** —— 没有 arm32 / x86 构建。
 - **只能侧载** —— targetSdk 28，上不了 Google Play（见硬约束②）。
 - **APK 较大** —— system 版约 137 MB，gecko 版约 216 MB（引擎与内核随包分发）。
@@ -208,7 +208,7 @@ docs/architecture/ · docs/runbooks/    工程规范、ADR、状态与操作手�
 
 ## 参与贡献
 
-欢迎 Issue 与 PR。动手前请读 [CONTRIBUTING.md](CONTRIBUTING.md) ——
+欢迎 Issue 与 PR。动手前请读 [CONTRIBUTING.md](.github/CONTRIBUTING.md) ——
 本项目有两条**改错不报错但真机必炸**的硬约束，以及「改了资产必须同步改版本戳」
 这类静默失败陷阱。
 

@@ -1,98 +1,41 @@
-# ── 构建产物 ─────────────────────────────────────────────
+# 构建、依赖与本机配置
 build/
 .gradle/
 .kotlin/
-local.properties
 node_modules/
+local.properties
+.local/
 
-# ── 发行版签名：绝不入库 ─────────────────────────────────
-#
-# keystore 是应用身份，泄露 = 别人能伪造你的发行包；丢失 = 再也发不出能覆盖
-# 升级的包（用户只能卸载重装）。两者都要离线备份。
+# 签名与凭据：保留兼容旧位置的规则，不提交本机文件
 keystore.properties
 *.jks
 *.keystore
+agnes-keys.properties
+agnes-keys.properties.bak-*
+agnes-keys-guide.md
+app/src/main/jni/keyinject-keys.h
+/tunnel*.json
+/cloudflared*.json
 
-# ── IDE ──────────────────────────────────────────────────
+# IDE 与操作系统
 .idea/
 *.iml
 .DS_Store
 
-# ── APK 大型运行资产 ─────────────────────────────────────
-# 输入与摘要见 catalogs/runtime-assets.lock.json；部分来源配方仍不完整。
-# 手写源码由 runtime/scripts、runtime/webview、contracts/bridge 管理，
-# Gradle 组装到 build/generated/android-assets，不回写源码资产目录。
+# 大型 APK 运行资产；来源与摘要见 catalogs/runtime-assets.lock.json
+# 手写源码位于 runtime/scripts、runtime/webview、contracts/bridge
 app/src/main/assets/*
 COMMIT_MSG.tmp
 
-# ── 真机调试工具的运行期产物：入库的是脚本，不是它的输出 ────────
-# uiagent-state-snapshot.json 由 tools/uiagent-state-snapshot.mjs 每次运行时
-# **覆盖写**，内容是「当时那台设备」的 localStorage（含真实 sessionId）。
-# 它随时会漂，入库没有意义，还会让工作区常驻一个未跟踪文件。
-# 脚本本身（tools/uiagent-state-snapshot.mjs）照常入库。
+# 真机调试输出（可能包含会话状态）
 tools/uiagent-state-snapshot.json
 
-# ── 内置号池的密钥：绝不入库 ─────────────────────────────
-#
-# agnes-keys.properties 是**明文密钥清单**，keyinject-keys.h 是它的混淆产物
-# （混淆可逆，等价于明文）。两者都必须留在本机。
-# 入库的只有手写源码 app/src/main/jni/keyinject.c 与生成脚本 tools/build-keyinject.ps1；
-# 别人 clone 后拿不到密钥，跑一次生成脚本才能得到可用的 keyinject.bin。
-agnes-keys.properties
-# ⚠️ 上面这条只匹配**全名**，`agnes-keys.properties.bak-<时间戳>` 不被覆盖 ——
-# 而备份恰恰是明文，且换池子前那份装的密钥比当前还多。通配一条堵住
-# `git add -A` 误提交（实测 `git check-ignore` 此前对 .bak-* 全部未命中）。
-agnes-keys.properties.bak-*
-app/src/main/jni/keyinject-keys.h
-# agnes-keys-guide.md 是密钥服务商发的原始文档（明文密钥 + 配对邮箱），
-# 从公网 http://39.98.163.161:57647/ 抓下来留档，同样绝不入库。
-agnes-keys-guide.md
-
-# ── 介绍片：中间产物不入库，源文件与成片入库 ─────────────
-#
-# tmp/   逐帧 PNG/JPEG（3804 张）与探针采样帧，几十 MB，跑一次 render.mjs 就有
-# clips/ 每屏一个 mp4 分段，assemble.mjs 的输入，可由 tmp/ 重建
-#
-# 入库的是：scenes.html（场景页）、video.config.mjs（台词与时长）、*.mjs（渲染
-# 管线）、assets/（实机截图素材）、shots/（真机原始截图）、out/（成片）。
-video/tmp/
-video/clips/
-
-# 宣传片：同一套管线，忽略规则与介绍片一致
-video-promo/tmp/
-video-promo/clips/
-
-# ── 视频工作目录：整个目录不入库 ─────────────────────────
-#
-# ⚠️ 这三行不是为了"干净"，是为了**性能**。
-#
-# DSH 桌面版内置的 workspace-changes 插件对**每一轮**对话做两次 git 全工作树
-# 快照（turn/start 一次、turn 结束时一次），实现方式是 `git add --all` +
-# `write-tree`，**只排除 gitignored 的路径**。没被 ignore 的大目录会被整份
-# 写成 blob，而且 turn 结束要等这次快照跑完才写 turn/end —— 表现就是
-# 回复早就流出来了，底部「深度求索中，用时 N 秒」还一直转。
-#
-# 实测（2026-10-19）：opus-video/ 1.2 GB / 16,979 文件未 ignore 时，
-# 一次快照 `git add --all` ≈ 105 s + write-tree 7.6 s，对话每轮白卡 25 秒以上；
-# 排除掉之后同样操作 167 ms。
-#
-# 结论：任何体积大、文件多、又不需要入库的目录，一律整目录 ignore，
-# 不要只 ignore 它下面的 tmp/ 和 clips/。
+# 本机视频工作目录与中间产物
 opus-video/
 video/
 video-promo/
 
-# ── APK 被就地解压的残留：绝不入库 ───────────────────────
-#
-# 症状：仓库根出现 AndroidManifest.xml / resources.arsc / META-INF/ / res/ /
-#       kotlin/ / DebugProbesKt.bin / assets/ 一整坨。判据是 zip 条目时间戳
-#       固定为 1981-01-01（`res/anim/abc_fade_in.xml` 这类 AndroidX 库资源也在
-#       里面）—— 那是**打包产物**，不是源码。
-# 它们与 app/src/main/assets/ 同名同大小（只有 mobile-ui.zip / webview-compat.zip
-# 因重新打包而不同），是解压 `app-*-debug.apk` 时的落点错误。
-#
-# ⚠️ 别把它们当成"新增资产"提交：assets/ 那 132 MB 全是 app/src/main/assets/
-#   的副本（已在第 33 行忽略），提交进去等于把 112 MB 二进制塞进 git 历史。
+# APK 在仓库根目录误解压产生的文件，不属于源码
 /AndroidManifest.xml
 /resources.arsc
 /DebugProbesKt.bin
@@ -100,15 +43,3 @@ video-promo/
 /res/
 /kotlin/
 /assets/
-
-# ── 隧道/配对凭据：绝不入库 ───────────────────────────────
-#
-# 症状：仓库根出现名叫 `12`（或别的裸数字）的文件，内容是
-# { "<设备指纹>": { tunnelToken, accessToken, clientSecret, dnsRecordId, ... } }。
-# 那是 pair-server 下发隧道凭据时**被重定向写错位置**的产物 —— 本来该落在
-# 用户自己的数据目录里。
-#
-# 这些是真实可用的凭据：拿到 tunnelToken 就能接管那条隧道。所以文件名模式
-# 一律忽略，防的是「下次又写到仓库里」。
-/tunnel*.json
-/cloudflared*.json

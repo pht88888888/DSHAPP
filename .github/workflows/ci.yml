@@ -131,8 +131,8 @@ jobs:
       - name: 必备文件与一级标题
         run: |
           fail=0
-          for f in README.md README.en.md CONTRIBUTING.md SECURITY.md \
-                   CODE_OF_CONDUCT.md CHANGELOG.md AGENTS.md; do
+          for f in README.md README.en.md .github/CONTRIBUTING.md .github/SECURITY.md \
+                   .github/CODE_OF_CONDUCT.md docs/CHANGELOG.md docs/README.md AGENTS.md; do
             if [ ! -f "$f" ]; then
               echo "::error::缺少 $f"
               fail=1
