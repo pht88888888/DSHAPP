@@ -8,7 +8,7 @@
  * 这套知识必须在**打包时**烘进插件，否则真机上的模型每次都要从零试错点击，
  * 而试错的代价是真实界面被搅乱。
  *
- * 产物 `mobile-ui-plugin/dsh-android-uiagent/lib/screens.js` 由
+ * 产物 `plugins/android/components/dsh-android-uiagent/lib/screens.js` 由
  * `uiagent-tool.zip` 一起打进 APK，每次启动解包到 `$DSH_HOME/uiagent-tool/`。
  *
  * ## ⚠️ 图谱必须采自**真机**（`source === 'device'`）
@@ -42,7 +42,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.join(ROOT, 'tools', 'ui-map-real-frontend.json');
-const OUT = path.join(ROOT, 'mobile-ui-plugin', 'dsh-android-uiagent', 'lib', 'screens.js');
+const OUT = path.join(ROOT, 'plugins', 'android', 'components', 'dsh-android-uiagent', 'lib', 'screens.js');
 
 const map = JSON.parse(fs.readFileSync(SRC, 'utf8'));
 

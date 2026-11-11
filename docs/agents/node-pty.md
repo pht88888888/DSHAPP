@@ -35,7 +35,7 @@
 `prebuilds/android-arm64/pty.node` → `Failed to load native module: pty.node`。
 
 **做法**：用 NDK 从 node-pty 自带的 `src/unix/pty.cc` 编一份，打成
-`assets/node-pty-android-arm64.zip`，`EngineManager.ensureNodePty()` 解到
+`assets/node-pty-android-arm64.zip`，`EngineRuntimeDependencies.ensureNodePty()` 解到
 `engine/node_modules/node-pty/prebuilds/android-arm64/`。**上游源码一行都不用改。**
 
 ```powershell

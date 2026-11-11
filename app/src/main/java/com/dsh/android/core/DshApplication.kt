@@ -2,6 +2,17 @@ package com.dsh.android.core
 import android.app.Application
 import android.content.Context
 import android.os.Build
+import com.dsh.android.BuildConfig
+import com.dsh.android.log.RuntimeAppInfo
+import com.dsh.android.log.VersionInfo
+import com.dsh.android.engine.EngineActivitySource
+import com.dsh.android.engine.EngineCommandMailboxes
+import com.dsh.android.bubble.BubbleCommandBridge
+import com.dsh.android.command.LogCommandBridge
+import com.dsh.android.command.RescueCommandBridge
+import com.dsh.android.command.SystemBarCommandBridge
+import com.dsh.android.privilege.PairingOperations
+import com.dsh.android.runtime.RuntimePaths
 import com.dsh.android.log.BootState
 import com.dsh.android.log.CrashRecorder
 import com.dsh.android.log.DshLog
@@ -62,6 +73,10 @@ class DshApplication : Application() {
         try {
             val ctx = base ?: return
             LogContext.install(ctx)
+            VersionInfo.initInfo(RuntimeAppInfo(
+                BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE,
+                BuildConfig.FLAVOR, BuildConfig.APPLICATION_ID,
+            ))
 
             val logDir = File(ctx.filesDir, LOG_DIR)
             LogStore.init(logDir)
@@ -97,6 +112,19 @@ class DshApplication : Application() {
         super.onCreate()
         if (!isMainProcess(this)) return
         instance = this
+        EngineManager.initialize(
+            EngineCommandMailboxes { home ->
+                BubbleCommandBridge.start(home)
+                LogCommandBridge.start(home)
+                SystemBarCommandBridge.start(home)
+                RescueCommandBridge.start(home)
+            },
+            EngineActivitySource { EngineService.currentStatus()?.running == true },
+            BuildConfig.BUILT_IN_WEB_ENGINE,
+        )
+        AdbPairingNotifier.initialize(applicationScope, PairingOperations { code, port ->
+            EngineManager.get(this).pairWirelessDebugging(code, port)
+        })
         DshLog.i(TAG, "DSH application created")
         EventLog.record("app.onCreate")
         // ⚠️ 必须在**任何通知发出之前**清理残留（见该方法注释）：上一次配对把进程拖到
@@ -223,7 +251,7 @@ class DshApplication : Application() {
     }
 
     companion object {
-        const val TAG = "DSH"
+        const val TAG = DshLog.TAG
 
         /**
          * 本进程是不是**主进程**。
@@ -268,7 +296,7 @@ class DshApplication : Application() {
         }
 
         /** 日志目录名（`filesDir/logs`）。 */
-        const val LOG_DIR = "logs"
+        const val LOG_DIR = LogContext.LOG_DIR
 
         /**
          * `$DSH_HOME` 相对 `filesDir` 的路径（即 `filesDir/home/.dsh`）。
@@ -282,7 +310,7 @@ class DshApplication : Application() {
          * 而症状只是「工具超时」/「状态读不到」，没有任何线索指向路径。
          * 本项目已经吃过这个形态的亏（见 `EngineManager.dshHomeDir` 的 KDoc）。
          */
-        const val DSH_HOME_REL = "home/.dsh"
+        const val DSH_HOME_REL = RuntimePaths.DSH_HOME_REL
 
         /**
          * 日志上传服务器端点。

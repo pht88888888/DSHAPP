@@ -95,7 +95,7 @@ spill、grace 全部沿用引擎既有实现**，插件不必自己 spawn 一遍
 
 | 文件 | 作用 |
 |---|---|
-| `assets/dsh-android-shell.mjs` | 直连 `127.0.0.1:5555` 的 adbd，走 ADB 协议认证后以 uid 2000 执行 |
+| [runtime/scripts/dsh-android-shell.mjs](../../runtime/scripts/dsh-android-shell.mjs)（APK 资产名仍为 `dsh-android-shell.mjs`） | 直连 `127.0.0.1:5555` 的 adbd，走 ADB 协议认证后以 uid 2000 执行 |
 | `assets/shell-tool.zip` | host 插件 `dsh-android-shell`，注册 `shell` 工具 |
 | `$DSH_HOME/shell-tool.patch.yml` | overlay，把上面的插件挂进 profile |
 
@@ -512,7 +512,7 @@ runner 自己**回落为本地执行（app 域）**，并把原因写进输出�
 返回 `2000`**，不是「端口有人听」（`isPortListening` / `legacyAlive` 只验有人听，
 拿不到 `2000` 也算成功，是**假阳性**）。`isPortListening()` 已删除。
 
-本轮修掉的 15 条（`app/src/main/assets/dsh-android-shell.mjs` +
+当时修掉的 15 条（迁移前路径 `app/src/main/assets/dsh-android-shell.mjs`，现源码为 [runtime/scripts/dsh-android-shell.mjs](../../runtime/scripts/dsh-android-shell.mjs)，以及当时的
 `WirelessDebugging.kt` + `EngineManager.kt` + `mobile-ui-plugin/dsh-android-mobile/`）：
 
 | # | 缺陷 | 修法 |

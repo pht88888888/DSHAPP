@@ -35,7 +35,7 @@
 
 | 件 | 位置 |
 |---|---|
-| 页面探针 | `app/src/main/assets/ui-probe.js`（**不走转译**，见下） |
+| 页面探针 | [runtime/scripts/ui-probe.js](../../runtime/scripts/ui-probe.js)（APK 资产名仍为 `ui-probe.js`，**不走转译**，见下） |
 | 插件源码 | `mobile-ui-plugin/dsh-android-uiagent/` |
 | 打包产物 | `assets/uiagent-tool.zip`（解到 `$DSH_HOME/uiagent-tool/dsh-android-uiagent/`） |
 | overlay | `$DSH_HOME/uiagent-tool.patch.yml`（`ensureUiTool()` + `writeUiToolPatch()`） |
@@ -70,7 +70,7 @@
 
 ```powershell
 $esbuild = "$env:TEMP\dsh-esbuild-tool\node_modules\.bin\esbuild.cmd"
-$src = Get-Content app\src\main\assets\ui-probe.js -Raw
+$src = Get-Content runtime\scripts\ui-probe.js -Raw
 Set-Content "$env:TEMP\wrapped.js" -Value "var __probe = ($src);" -Encoding UTF8
 & $esbuild "$env:TEMP\wrapped.js" --target=chrome74 --outfile="$env:TEMP\o74.js"
 # 实测 chrome74 / chrome69 / chrome64 三档全部 exit=0、零警告

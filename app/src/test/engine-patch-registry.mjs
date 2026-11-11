@@ -4,8 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { resolveKotlinTestRuntime, requireKotlinTestInput, resolveProjectKotlinSource, resolveEngineConstantSources } from '../../../tools/kotlin-test-runtime.mjs';
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
+const officialMode = process.argv.includes('--official');
+assert.ok(process.argv.slice(2).every(arg => arg === '--official'), 'Usage: node engine-patch-registry.mjs [--official]');
+const engineArchive = officialMode ? requireKotlinTestInput('DSH_ENGINE_ARCHIVE') : undefined;
+const compatArchive = officialMode ? requireKotlinTestInput('DSH_WEBVIEW_COMPAT_ARCHIVE') : undefined;
+const runtime = resolveKotlinTestRuntime();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-registry-'));
 const run = (cmd, args) => {
   const result = spawnSync(cmd, args, { encoding: 'utf8' });
@@ -13,11 +19,7 @@ const run = (cmd, args) => {
   return result.stdout;
 };
 try {
-  const candidates = [process.env.KOTLIN_COMPILER_LIB, '/root/gradle-home/wrapper/dists/gradle-8.13-bin/5xuhj0ry160q40clulazy9h7d/gradle-8.13/lib', '/root/.sdkman/candidates/gradle/9.3.0/lib'].filter(Boolean);
-  const lib = candidates.find(dir => fs.existsSync(dir) && fs.readdirSync(dir).some(file => /^kotlin-compiler-embeddable-.*\.jar$/.test(file)));
-  assert.ok(lib, 'Set KOTLIN_COMPILER_LIB to the existing Gradle lib directory');
-  const jars = fs.readdirSync(lib).filter(file => file.endsWith('.jar')).map(file => path.join(lib, file));
-  const stdlib = jars.find(file => /\/kotlin-stdlib-[\d.]+\.jar$/.test(file));
+  const { stdlib } = runtime;
   const context = path.join(tmp, 'Context.kt');
   fs.writeFileSync(context, 'package android.content\nclass Context');
   const spec = path.join(tmp, 'BuiltinPluginSpec.kt');
@@ -108,19 +110,20 @@ fun main(args:Array<String>) {
  println("Kotlin assertions="+count+", skipped=0")
 }`);
   const classes = path.join(tmp, 'classes');
-  run('java', ['-cp', jars.join(path.delimiter), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect', '-classpath', stdlib, '-d', classes, context, spec, path.join(root, 'app/src/main/java/com/dsh/android/engine/EngineConstants.kt'), path.join(root, 'app/src/main/java/com/dsh/android/engine/EngineFilePatches.kt'), runner]);
-  const java = (...args) => run('java', ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.RunnerKt', ...args]);
-  const targets = java(tmp, 'list').trim().split('\n');
-  const engine = path.join(tmp, 'engine');
-  fs.mkdirSync(engine);
-  run('python3', ['-c', `import tarfile,sys,pathlib,fnmatch,json
+  run(runtime.java, ['-cp', runtime.classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect', '-classpath', stdlib, '-d', classes, context, spec, ...resolveEngineConstantSources(root), resolveProjectKotlinSource(root, 'engine/EngineFilePatches.kt'), runner]);
+  const java = (...args) => run(runtime.java, ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.RunnerKt', ...args]);
+  if (officialMode) {
+    const targets = java(tmp, 'list').trim().split('\n');
+    const engine = path.join(tmp, 'engine');
+    fs.mkdirSync(engine);
+    run('python3', ['-c', `import tarfile,sys,pathlib,fnmatch,json
 out=pathlib.Path(sys.argv[2]); patterns=json.loads(sys.argv[3])
 with tarfile.open(sys.argv[1]) as t:
  for m in t:
   if m.isfile() and any(fnmatch.fnmatchcase(m.name,p) for p in patterns):
-   p=out/m.name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(t.extractfile(m).read())`, path.join(root, 'app/src/main/assets/engine.bin'), engine, JSON.stringify(targets)]);
-  process.stdout.write(java(engine, 'official'));
-  run('python3', ['-c', `import zipfile,sys,pathlib,hashlib,json
+   p=out/m.name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(t.extractfile(m).read())`, engineArchive, engine, JSON.stringify(targets)]);
+    process.stdout.write(java(engine, 'official'));
+    run('python3', ['-c', `import zipfile,sys,pathlib,hashlib,json
 out=pathlib.Path(sys.argv[2])
 with zipfile.ZipFile(sys.argv[1]) as z:
  manifest=json.loads(z.read('.compat-manifest.json'))
@@ -130,12 +133,13 @@ with zipfile.ZipFile(sys.argv[1]) as z:
  for entry in z.infolist():
   if not entry.is_dir() and entry.filename.startswith('engine/'):
    p=out/'node_modules/@deepseek-ai'/entry.filename.removeprefix('engine/');p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(z.read(entry))
- print('Applied real compat engine overlay; conversation bytes='+str(len(data)))`, path.join(root, 'app/src/main/assets/webview-compat.zip'), engine]);
-  process.stdout.write(java(engine, 'compat'));
+ print('Applied real compat engine overlay; conversation bytes='+str(len(data)))`, compatArchive, engine]);
+    process.stdout.write(java(engine, 'compat'));
+  }
   const fixtures = path.join(tmp, 'fixtures');
   fs.mkdirSync(fixtures);
   process.stdout.write(java(fixtures, 'fixtures'));
-  console.log('真实注册表11项与失败场景全部通过，跳过0。');
+  console.log(officialMode ? 'L1：真实注册表11项、compat与失败场景全部通过，跳过0。' : 'L0：真实Kotlin注册表失败场景通过，跳过0；真实引擎契约使用 --official 单独执行。');
 } finally {
   assert.ok(tmp.startsWith(path.join(os.tmpdir(), 'engine-registry-')));
   fs.rmSync(tmp, { recursive: true, force: true });

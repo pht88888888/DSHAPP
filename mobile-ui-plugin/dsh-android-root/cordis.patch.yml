@@ -1,4 +1,0 @@
-- insert:
-    - id: dsh-android-root
-      name: dsh-android-root
-      disabled: !!js !process.env.DSH_ROOT_AVAILABLE

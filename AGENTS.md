@@ -1,205 +1,105 @@
 # AGENTS.md — DSH Android 客户端
 
-原生 Android App：内置 Termux 环境跑一个 Node，在 Node 上跑 DSH 引擎，然后用 WebView
-加载 DSH 自带的 Web GUI。**不自绘聊天界面**——UI 完全复用官方前端，只在窄屏下由内置插件
-做移动端适配。
+本项目用 Termux 环境运行 Node 和官方 DSH 引擎，由 system WebView 或 GeckoView 加载官方 Web GUI；移动端适配走插件接缝。不要另建聊天界面。
 
-> ⚠️ **本文件只放「每次动手前必须知道」的东西**（硬约束 + 构建 + 索引）。
-> 具体某一处的来龙去脉、踩过的坑、验收数据，全在 [`docs/agents/`](docs/agents/README.md)。
-> **不要整份读那个目录**，按目录里的索引检索你需要的那一篇。
+本页只放硬约束、工作入口与索引。实现细节按需读[开发文档索引](docs/agents/README.md)，工程约定见[架构规范](docs/architecture/conventions.md)，结构迁移进度见[实施状态](docs/architecture/execution-status.md)。批准方案是历史设计基线，不等于当前验收结果。
 
-```powershell
-.\gradlew.bat :app:assembleSystemDebug --console=plain   # → app\build\outputs\apk\system\debug\app-system-debug.apk
-.\gradlew.bat :app:assembleGeckoDebug  --console=plain   # → app\build\outputs\apk\gecko\debug\app-gecko-debug.apk
+## 平台硬约束
+
+1. 最终 APK 的两个 `applicationId` 分别是 `com.dsh.android`、`com.dsh.webview`，**均必须恰好 15 个字符**。Termux ELF 中 `/data/data/com.termux/files` 的运行路径需要等长替换；实际包身份由 app 传入运行组件。此限制不适用于 Android library 的 `namespace` 或 Kotlin package，不能把所有 library namespace 改成 app 的名字。
+2. 最终应用 `targetSdk = 28`，不能升到 29+。Android 对 target 29+ 禁止执行自身私有目录的二进制，而 Node/bash/dpkg 都在应用数据目录内。保持 `minSdk = 26`、`compileSdk = 35`。
+3. 保留正式签名、两个 flavor 身份和既有用户目录。结构迁移不顺带修改桥协议、用户存储格式、插件启用状态或失败策略；默认不卸载、不清空数据。
+
+工具链：**JDK 17 / Gradle 8.13 / Kotlin 2.0.21 / AGP 8.8.2**，以[根插件版本](build.gradle.kts)、[Wrapper](gradle/wrapper/gradle-wrapper.properties)和各模块 Gradle 文件为准。网络代理由本机环境配置，不把个人代理端口或 JDK 安装绝对路径写成项目要求。
+
+## 构建入口
+
+先设置 `JAVA_HOME` 指向本机 JDK 17，并准备锁定资产。Linux/macOS 从仓库根运行：
+
+```bash
+bash gradlew :app:assembleSystemDebug --console=plain
+bash gradlew :app:assembleGeckoDebug --console=plain
 ```
 
-## 两条硬约束（改动前必读，改错不报错但真机必炸）
-
-### ① 包名必须恰好 15 字符
-
-`applicationId` / `namespace` = `com.dsh.android`（15 字符）。
-
-Termux 官方二进制把 `/data/data/com.termux/files`（27 字节）烤进 ELF 的 `.dynstr`，
-`TermuxBootstrap.patchElfInPlace()` 只能做**等长原地覆盖**，替换串
-`/data/data/<包名>/` = 12 + N 字节，等于 27 ⇒ **N = 15**。
-
-长度不等时该函数直接 `return 0` **静默跳过**，不抛异常；症状是运行时
-`CANNOT LINK EXECUTABLE` 或 `dpkg: Permission denied`。改包名必须同步改
-`TermuxBootstrap.ELF_ROOT_REPLACEMENT`，两处字符数必须一致。
-
-> `app/build.gradle.kts` 注释里提到的 `termux-kit/tools/verify-kit.ps1` **不在本仓库**，
-> 不必去找。校验方式就是数字符。
-
-### ② targetSdk 必须 ≤ 28
-
-**不能升到 29+。** Android 10（API 29）起，targetSdk ≥ 29 的应用不允许 `execve()`
-自身私有目录里的文件（W^X / SELinux `untrusted_app` 域禁止 `app_data_file`
-`execute_no_trans`），而 node / bash / dpkg 全都装在 `filesDir` 下的 `$PREFIX` 里，
-一升级就全线 Permission denied。Termux 官方 App 同样停在 28。
-
-**代价**：只能侧载，无法上架 Google Play。
-
-## 构建
+PowerShell：
 
 ```powershell
-$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot"   # 必须显式设
-
 .\gradlew.bat :app:assembleSystemDebug --console=plain
 .\gradlew.bat :app:assembleGeckoDebug --console=plain
-.\gradlew.bat :app:assembleDebug --console=plain   # 两个都出
 ```
 
-环境：AGP 8.8.2 / Kotlin 2.0.21 / Gradle 8.13 / JDK 17 / compileSdk 35 / minSdk 26。
-工程路径含中文，靠 `gradle.properties` 里的 `android.overridePathCheck=true` 放行，别删。
-构建需经代理（`127.0.0.1:7897`）。
+产物分别位于 `app/build/outputs/apk/system/debug/` 和 `app/build/outputs/apk/gecko/debug/`。最终集成必须覆盖两种 flavor；一次局部编译通过不能代替另一 flavor 的编译或设备运行。构建不包含安装、上传和发布。
 
-**「构建成功」不等于「改动生效」。** 装完用日志确认（TAG 恒为 `DSH`）：
+- [资产重建与来源](docs/agents/regen-assets.md)：插件由统一构建器生成，大型运行资产需显式准备；部分外部资产仍缺完整重建输入。
+- [构建与发行](docs/agents/build-and-ship.md)：release 签名与候选检查。
+- [分步发布操作手册](docs/runbooks/release.md)：本地候选与显式远程 adapter。
 
-```powershell
-adb install -r app\build\outputs\apk\system\debug\app-system-debug.apk
-adb logcat -c ; adb shell am start -n com.dsh.android/.MainActivity
-adb logcat -d -s DSH:I     # 引擎就绪 / 界面加载完成 / 各 ensureXxx 的落盘行
-```
+## 模块与所有权
 
-## 代码组织（2026-10-31 重整）
+实际 Gradle 注册以[settings.gradle.kts](settings.gradle.kts)为准。新增实现放在对应 owner，不回填到 app 根包，也不为减行机械搬运状态。
 
-根包曾经有 39 个文件平铺，现在按职责分目录。**新增文件请放进对应目录，不要再往根包扔。**
-
-| 目录 | 放什么 |
+| 位置 | 职责与边界 |
 |---|---|
-| `core/` | `DshApplication` |
-| `engine/` | 引擎装配与生命周期：`EngineManager`、`EngineService`、资产解包、上传器 |
-| `ui/` | Activity 与界面：`MainActivity`、日志查看器、启动动画、状态栏、余额徽标 |
-| `bubble/` | 悬浮球全套：窗口、外观、物理、手势、视频层、无障碍服务、命令桥 |
-| `privilege/` | 特权通道：Root、Shell、Shizuku、无线调试 |
-| `command/` | 给前端/AI 调的命令桥：日志、救援、状态栏、UI 探测 |
-| `web/` | 两个内核的宿主与**权限网关**：`WebHost`、`PageBridge`、`MediaCapability` |
-| `log/` | 日志、诊断包、崩溃记录、救援启动 |
-| `browser/` | 内置 AI 浏览器 |
-| `termux/` | Termux 环境引导 |
+| `app/` | Application 装配、Activity/Window、EngineService 的通知与 WakeLock、系统 Intent、备份和跨领域诊断组装 |
+| `core/contracts/` | 小型共享模型与窄接口；旧 Kotlin package 可为兼容继续保留 |
+| `core/logging/` | 日志写入、轮转、事件、脱敏；不主动引用引擎或界面采集快照 |
+| `runtime/termux/` | prefix/bootstrap/Node、ELF 重写与安装锁 |
+| `runtime/engine/` | 资产安装、启动快照、进程、探测、健康与救援决定；不依赖具体命令桥或 Service |
+| `platform/privilege/` | Root/Shizuku/ADB 连接、配对与执行 |
+| `web/contract/` | WebHost/PageBridge、权限与文件通道契约 |
+| `web/host/` | system/gecko 实现与工厂；GeckoView 仅进入 gecko 变体 |
+| `feature/` | 按领域的功能实现；只有已注册模块才是现行构建边界 |
+| `native/` | 仓库维护的 linkcompat 与 sandbox 源码、固定配方构建入口 |
+| `plugins/android/` | 一个顶层 bundle 与 14 个内部组件源码 |
+| `plugins/standalone/` | 多模态、核心记忆和预设等独立插件源码 |
+| `catalogs/`、`tooling/plugins/` | 唯一[插件清单](catalogs/plugin-components.json)、来源锁与统一构建实现；旧 tools 入口仅兼容 |
 
-### 权限：加一个能力必须同时改三处
+app 提供引擎所需的状态读口与宿主动作，底层不能借 app 的 `BuildConfig`、`R`、Activity 或万能参数袋绕回装配层。资源只由所属组件创建和释放：探测器结束临时进程，监控器停止采样线程，页面/窗口宿主按自身生命周期解绑。完整约定与决策见[规范](docs/architecture/conventions.md)和[ADR](docs/architecture/adr/README.md)。
 
-这是本项目**反复复发**的缺陷类型 —— 文件选择器、下载器、录音都栽在这上面。
-Android 的每个能力都要「清单声明 + 内核回调 + 运行时申请」三件齐备才通，
-缺任何一件的表现都是**静默失败**（页面只拿到一个含糊的错误，没有任何日志）。
+## 运行路径
 
-收敛点：
+以下均相对于 `filesDir`；迁移模块不迁移用户数据。
 
-- `web/MediaCapability.kt` 的 `WebCapability` 枚举 —— **加能力就加一个枚举项**
-- `WebHostCallbacks.capability` —— 内核回调统一走这个通道
-- `MainActivity.requestRuntimePermission()` —— 运行时申请统一入口（串行排队）
+| 路径 | 用途 |
+|---|---|
+| `termux/usr/` | `$PREFIX`：Termux、Node、pnpm、原生依赖；不是根下的 `usr/` |
+| `termux/home/` | Termux shell home |
+| `engine/` | APK 引擎解包与兼容产物 |
+| `home/` | 引擎 HOME |
+| `home/.dsh/` | DSH_HOME、配置、凭据、会话、插件与 profiles |
+| `workspace/` | 用户工作区 |
+| `logs/` | 日志、现场与诊断导出 |
 
-新增一项能力时照着清单核：
+出厂包位于 `$DSH_HOME/node_modules`，profile registry 版本优先。用户禁用/卸载状态不能因启动或 APK 升级而复活。Android 顶层仍只有一个聚合 bundle，内部保留 14 个组件，见[插件规则](docs/agents/plugin-updates.md)。
 
-1. `AndroidManifest.xml` 声明权限（特殊权限另说）
-2. `WebCapability` 加枚举项
-3. `SystemWebHost` / `GeckoWebHost` 的内核回调里放行
-4. 跑 `bash tools/check-architecture.sh`，第 4 节会检查清单与回调是否对齐
+## 修改与验证
 
-### 架构守卫
+先确认本项目规则、现有写法和当前任务的验证入口。验证只覆盖当前改动；报告实际执行的用例数、跳过数、输入和失败。编译通过不代表资产或页面已生效，历史 APK 的签名检查也不证明包含当前源码。
 
 ```bash
 bash tools/check-architecture.sh
 ```
 
-拦三件事：单个 `.kt` 不许超过上限（三个历史大文件只许变小）、
-禁止「修复 N」编号式注释（去 `git log` 查，注释里写编号必然腐烂）、
-权限三件套与桥分派表是否对齐。
+架构守卫检查职责边界、体积基线、权限及双内核桥等规则；以脚本实际输出为准。不能为使检查通过而抬高基线、屏蔽检查或把缺输入当成功。分层测试输入与命令见[测试手册](docs/runbooks/testing.md)，边界约定见[规范](docs/architecture/conventions.md)，结果见[实施状态](docs/architecture/execution-status.md)。
 
-> 脚本在仓库里是 `100644`（没有执行位），直接 `./tools/check-architecture.sh`
-> 会 `Permission denied`，必须用 `bash` 显式调用。
+新增 Android Web 能力需要同时具备：
 
-### 大文件的拆分边界
+1. app Manifest 声明权限。
+2. `WebCapability`/`WebHostCallbacks.capability` 中的能力通道。
+3. system/gecko 内核回调与 Activity 的串行运行时权限申请。
 
-按真实状态所有权拆分：出厂资产安装、bundle 登记与更新适配由独立 engine 组件负责；
-`EngineManager` 保留启动顺序、子进程、救援与降级生命周期。Activity/窗口状态仍归宿主，
-不要为缩短文件机械搬运成员，或引入万能可变 context/参数袋。
+桥签名、snapshot/invoke 模式、异步结果与标注 ack 必须保持双内核一致；不凭签名列表通过就声称行为已覆盖。
 
-大文件头导航保持可用，新增职责优先放入对应模块。插件布局与业务功能的边界见
-[内置插件与市场更新](docs/agents/plugin-updates.md)。
+## 按任务查文档
 
-## 目录结构（速查）
-
-运行期都在 `filesDir` 下。改动涉及这几个位置时最容易出错，**先看对应分册**：
-
-| 位置 | 是什么 |
+| 任务 | 入口 |
 |---|---|
-| `usr/` | `$PREFIX`，Termux 环境（含 `bin/node`、`bin/pnpm`） |
-| `engine/` | 引擎解包目录（含 `.stamp` 版本戳） |
-| `home/.dsh/` | `DSH_HOME`：配置、凭据、会话、`profiles/web/` |
-| 　`node_modules/<内置包>/` | 出厂离线包，在 profile workspace 之外，以标准 bundle 登记 |
-| 　`profiles/web/node_modules/` | pnpm 管理的市场安装版本，优先于出厂包 |
-| `logs/` | `app.log` / `engine.log` / `events.jsonl` / `crash/` / `export/` |
+| 平台判断、Node、native、子进程 | [平台适配](docs/agents/platform-android.md)、[原生来源与配方](docs/architecture/native-provenance.md) |
+| link、沙箱、PTY、附件 | [link](docs/agents/link-compat.md)、[sandbox](docs/agents/sandbox.md)、[node-pty](docs/agents/node-pty.md)、[附件持久化](docs/agents/attachment-fsync.md) |
+| Web 权限、双内核、移动布局 | [WebView](docs/agents/webview-basics.md)、[Gecko](docs/agents/webview-gecko.md)、[移动适配](docs/agents/mobile-ui.md) |
+| 救援、保活、日志与诊断 | [救援](docs/agents/rescue-mode.md)、[保活](docs/agents/keep-alive.md)、[日志](docs/agents/logging.md) |
+| 资产、出厂插件、市场更新 | [生效判据](docs/agents/asset-stamps.md)、[插件更新](docs/agents/plugin-updates.md)、[重建](docs/agents/regen-assets.md) |
+| 远程插件开发与 npm 基线 | [来源审计](docs/architecture/remote-plugin-provenance.md)；独立仓库是生产入口，本仓旧副本仅供参考 |
+| 发布双包 | [构建与发行](docs/agents/build-and-ship.md)、[发布 runbook](docs/runbooks/release.md) |
 
-## 索引：`docs/agents/`
-
-按「你要改什么」查，不按编号背。
-
-### 硬约束与平台适配（踩坑密度最高，改任何 native/子进程相关先看）
-
-| 文档 | 什么时候看 |
-|---|---|
-| [platform-android.md](docs/agents/platform-android.md) | 起点：为什么 `process.platform === 'android'` 会让官方代码全线失效 |
-| [link-compat.md](docs/agents/link-compat.md) | `write` 工具报 `EACCES/EINVAL: link ...`；要动 `LD_PRELOAD` 时 |
-| [sandbox.md](docs/agents/sandbox.md) | `bash` 工具报 "no sandbox backend is usable"；改 `runnerCommand` 时 |
-| [ripgrep.md](docs/agents/ripgrep.md) | `grep`/`glob` 报 ripgrep launch failed |
-| [sharp.md](docs/agents/sharp.md) | 图片附件发送失败（`agent-busy`） |
-| [attachment-fsync.md](docs/agents/attachment-fsync.md) | 同上症状，但根因是 fsync 到 `/` |
-| [node-pty.md](docs/agents/node-pty.md) | 侧栏终端打不开 |
-| [directory-picker.md](docs/agents/directory-picker.md) | 工作区选择器看不到手机文件夹 |
-| [pnpm.md](docs/agents/pnpm.md) | `spawn pnpm ENOENT`；插件被挪进 `.ignored/`；**为什么要用 11 不是 12** |
-| [node-selfheal.md](docs/agents/node-selfheal.md) | `magic_number_ == kMagicNumber`；`$PREFIX` 并发写 |
-
-### WebView / 前端
-
-| 文档 | 什么时候看 |
-|---|---|
-| [webview-basics.md](docs/agents/webview-basics.md) | 选文件无反应、下载"成功"但没文件 |
-| [webview-gecko.md](docs/agents/webview-gecko.md) | 改 gecko flavor、bridge、`exportFunction` |
-| [webview-compat.md](docs/agents/webview-compat.md) | 旧内核白屏；要动降级编译流程 |
-| [mobile-ui.md](docs/agents/mobile-ui.md) | 改移动端布局/样式、别名桥接、`+` 菜单时序 |
-
-### 会话与引擎
-
-| 文档 | 什么时候看 |
-|---|---|
-| [session-repair.md](docs/agents/session-repair.md) | 某会话**永久**发不出消息 / 从列表消失 |
-| [rescue-mode.md](docs/agents/rescue-mode.md) | 插件改坏导致 App 打不开（体检 + 安全模式） |
-| [logging.md](docs/agents/logging.md) | 要定位线上问题、改日志/诊断包/脱敏 |
-| [keep-alive.md](docs/agents/keep-alive.md) | 切后台就断、通知栏状态、键盘遮挡输入框 |
-| [web-port.md](docs/agents/web-port.md) | 3080 被占用 |
-
-### 内置能力（这些是**产品功能**，不是适配层）
-
-| 文档 | 什么时候看 |
-|---|---|
-| [shell-tool.md](docs/agents/shell-tool.md) | uid 2000 执行通道：adb 签名、密钥来源、18 条缺陷、验收 |
-| [bubble.md](docs/agents/bubble.md) | 悬浮球本体、交互契约、窗口/拖动陷阱 |
-| [bubble-bridge.md](docs/agents/bubble-bridge.md) | 悬浮窗外观字段、桥方法、转录通道 |
-| [bubble-tool.md](docs/agents/bubble-tool.md) | `bubble` 工具（模型自己改悬浮窗） |
-| [pet-bridge.md](docs/agents/pet-bridge.md) | 桌面宠物、状态→动作映射 |
-| [ui-tool.md](docs/agents/ui-tool.md) | `ui` 工具：坐标系、遮挡/屏幕外/面板三类误判、持久化状态 |
-| [key-pool.md](docs/agents/key-pool.md) | 内置号池、TLS 层注入、**必须降级 HTTP/1.1** |
-| [plugin-source.md](docs/agents/plugin-source.md) | 「添加插件」少了 npm 官方源 |
-
-### 构建 / 资产 / 发布
-
-| 文档 | 什么时候看 |
-|---|---|
-| [build-and-ship.md](docs/agents/build-and-ship.md) | release 签名、两个 flavor、夸克网盘发布与版本整理 |
-| [asset-stamps.md](docs/agents/asset-stamps.md) | **改了任何 `.zip` / `.bin` 资产都必须看**：组件摘要与运行时版本规则 |
-| [plugin-updates.md](docs/agents/plugin-updates.md) | 出厂插件、市场直接更新、统一构建与用户状态归属 |
-| [regen-assets.md](docs/agents/regen-assets.md) | 从零重建某个资产 |
-| [boundaries.md](docs/agents/boundaries.md) | 明确不做 / 做不到的事 |
-| [desktop-relation.md](docs/agents/desktop-relation.md) | 与桌面端共用哪些、各管哪些 |
-| [debug-device.md](docs/agents/debug-device.md) | adb 基本手法 |
-
-## 三条最容易违反的规矩
-
-1. **改了资产必须更新生效判据** —— 组件插件由统一构建生成摘要 manifest；运行时与其它
-   二进制资产的版本规则见 [asset-stamps.md](docs/agents/asset-stamps.md)。
-2. **APK 插件统一构建并逐文件校验** —— Gradle 预构建使用组件清单生成 zip 与 manifest，
-   不能手工漏包或将旧兼容产物覆盖市场插件，见 [plugin-updates.md](docs/agents/plugin-updates.md)。
-3. **不要为了"修"报错去升 `targetSdk` / 改包名** —— 那是硬约束①②，升了就全线崩，
-   而且报错信息不会指向真正的原因。
+不要使用本仓不存在的 `termux-kit/tools/verify-kit.ps1` 作为验收命令。keyinject 已退休，当前只清理旧库；不恢复 TLS 注入资产，也不把它算作 active 资产缺源。

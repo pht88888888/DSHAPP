@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "upstream": "https://github.com/deepseek-ai/deepseek-harness",
+  "provenance": "Unmodified files copied from explicitly supplied DSH engine archive and installed package; package metadata and upstream MIT notices are pinned with the source.",
+  "refresh": "DSH_ENGINE_PACKAGE=/absolute/package.json DSH_ENGINE_ARCHIVE=/absolute/engine.bin node contracts/engine/market-fixtures.mjs --write",
+  "inputs": {
+    "shipped": {
+      "versions": {
+        "@deepseek-ai/dsh": "0.2.2-rc.1",
+        "@deepseek-ai/dsh-plugin-manager": "0.2.2-rc.1",
+        "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.1",
+        "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
+        "zod": "4.4.3"
+      },
+      "files": {
+        "node_modules/@deepseek-ai/dsh-plugin-manager/lib/typert.remote-client.js": {
+          "fixture": "files/6fafec225879e238dcb67c596c8504c427268d6a6b5ce9ed0a1e05c3be7c62ac.js",
+          "sha256": "6fafec225879e238dcb67c596c8504c427268d6a6b5ce9ed0a1e05c3be7c62ac",
+          "bytes": 108078
+        },
+        "node_modules/@deepseek-ai/dsh-api-gateway/lib/client.node.js": {
+          "fixture": "files/3cc1952120444b6853ace5f928983b9d64adf1ad1b6a692e33f3b89c3b0c8a43.js",
+          "sha256": "3cc1952120444b6853ace5f928983b9d64adf1ad1b6a692e33f3b89c3b0c8a43",
+          "bytes": 72828
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/remote-info.js": {
+          "fixture": "files/b09ccf25e7e8e625bebb42daa3cea5a407bc2db966ade815f0b2888413d48f76.js",
+          "sha256": "b09ccf25e7e8e625bebb42daa3cea5a407bc2db966ade815f0b2888413d48f76",
+          "bytes": 6392
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/lib/index.js": {
+          "fixture": "files/8d48ddbb4bbc62585ce5a4d3a7f53b39f55581b5320c1cae681766edd15ff8af.js",
+          "sha256": "8d48ddbb4bbc62585ce5a4d3a7f53b39f55581b5320c1cae681766edd15ff8af",
+          "bytes": 19373
+        },
+        "node_modules/@deepseek-ai/dsh/package.json": {
+          "fixture": "files/3e14837ceb3bbc0ba419ed08e9b5ba164338369b1268b93c3c25d89f7b1c9953.json",
+          "sha256": "3e14837ceb3bbc0ba419ed08e9b5ba164338369b1268b93c3c25d89f7b1c9953",
+          "bytes": 8329
+        },
+        "node_modules/@deepseek-ai/dsh-plugin-manager/package.json": {
+          "fixture": "files/8ab45267e0521b015f87ac3996bdd7cbf0360e7911cbd6bbb191b2d75b61f956.json",
+          "sha256": "8ab45267e0521b015f87ac3996bdd7cbf0360e7911cbd6bbb191b2d75b61f956",
+          "bytes": 4158
+        },
+        "node_modules/@deepseek-ai/dsh-api-gateway/package.json": {
+          "fixture": "files/8a824641bdfe9b52dc423d6ed23e6cfdf6261b6b83feeb671526023afbb96e6d.json",
+          "sha256": "8a824641bdfe9b52dc423d6ed23e6cfdf6261b6b83feeb671526023afbb96e6d",
+          "bytes": 2367
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/package.json": {
+          "fixture": "files/8fd9cc04794f217866e144f9187ab0e8f90e9dd3122acc217216e6eb25cb9f2e.json",
+          "sha256": "8fd9cc04794f217866e144f9187ab0e8f90e9dd3122acc217216e6eb25cb9f2e",
+          "bytes": 1181
+        },
+        "node_modules/zod/package.json": {
+          "fixture": "files/c630bd10b52dcf71c112a2bf78dbf2734b9db58d62de663b8d86c2ec2c8cda2e.json",
+          "sha256": "c630bd10b52dcf71c112a2bf78dbf2734b9db58d62de663b8d86c2ec2c8cda2e",
+          "bytes": 3796
+        },
+        "node_modules/@deepseek-ai/dsh/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        },
+        "node_modules/@deepseek-ai/dsh-plugin-manager/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        },
+        "node_modules/@deepseek-ai/dsh-api-gateway/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        }
+      }
+    },
+    "installed": {
+      "versions": {
+        "@deepseek-ai/dsh": "0.2.2-rc.1",
+        "@deepseek-ai/dsh-plugin-manager": "0.2.2-rc.1",
+        "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.1",
+        "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
+        "zod": "4.6.7"
+      },
+      "files": {
+        "node_modules/@deepseek-ai/dsh-plugin-manager/lib/typert.remote-client.js": {
+          "fixture": "files/6fafec225879e238dcb67c596c8504c427268d6a6b5ce9ed0a1e05c3be7c62ac.js",
+          "sha256": "6fafec225879e238dcb67c596c8504c427268d6a6b5ce9ed0a1e05c3be7c62ac",
+          "bytes": 108078
+        },
+        "node_modules/@deepseek-ai/dsh-api-gateway/lib/client.node.js": {
+          "fixture": "files/3cc1952120444b6853ace5f928983b9d64adf1ad1b6a692e33f3b89c3b0c8a43.js",
+          "sha256": "3cc1952120444b6853ace5f928983b9d64adf1ad1b6a692e33f3b89c3b0c8a43",
+          "bytes": 72828
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/remote-info.js": {
+          "fixture": "files/b09ccf25e7e8e625bebb42daa3cea5a407bc2db966ade815f0b2888413d48f76.js",
+          "sha256": "b09ccf25e7e8e625bebb42daa3cea5a407bc2db966ade815f0b2888413d48f76",
+          "bytes": 6392
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/lib/index.js": {
+          "fixture": "files/8d48ddbb4bbc62585ce5a4d3a7f53b39f55581b5320c1cae681766edd15ff8af.js",
+          "sha256": "8d48ddbb4bbc62585ce5a4d3a7f53b39f55581b5320c1cae681766edd15ff8af",
+          "bytes": 19373
+        },
+        "node_modules/@deepseek-ai/dsh/package.json": {
+          "fixture": "files/3e14837ceb3bbc0ba419ed08e9b5ba164338369b1268b93c3c25d89f7b1c9953.json",
+          "sha256": "3e14837ceb3bbc0ba419ed08e9b5ba164338369b1268b93c3c25d89f7b1c9953",
+          "bytes": 8329
+        },
+        "node_modules/@deepseek-ai/dsh-plugin-manager/package.json": {
+          "fixture": "files/8ab45267e0521b015f87ac3996bdd7cbf0360e7911cbd6bbb191b2d75b61f956.json",
+          "sha256": "8ab45267e0521b015f87ac3996bdd7cbf0360e7911cbd6bbb191b2d75b61f956",
+          "bytes": 4158
+        },
+        "node_modules/@deepseek-ai/dsh-api-gateway/package.json": {
+          "fixture": "files/8a824641bdfe9b52dc423d6ed23e6cfdf6261b6b83feeb671526023afbb96e6d.json",
+          "sha256": "8a824641bdfe9b52dc423d6ed23e6cfdf6261b6b83feeb671526023afbb96e6d",
+          "bytes": 2367
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/package.json": {
+          "fixture": "files/8fd9cc04794f217866e144f9187ab0e8f90e9dd3122acc217216e6eb25cb9f2e.json",
+          "sha256": "8fd9cc04794f217866e144f9187ab0e8f90e9dd3122acc217216e6eb25cb9f2e",
+          "bytes": 1181
+        },
+        "node_modules/zod/package.json": {
+          "fixture": "files/c2d190d9ee4e0bdb60332aaa2130a6a98d65ddb903fe1d29248b15de57832c45.json",
+          "sha256": "c2d190d9ee4e0bdb60332aaa2130a6a98d65ddb903fe1d29248b15de57832c45",
+          "bytes": 4142
+        },
+        "node_modules/@deepseek-ai/dsh/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        },
+        "node_modules/@deepseek-ai/dsh-plugin-manager/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        },
+        "node_modules/@deepseek-ai/dsh-api-gateway/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        },
+        "node_modules/@deepseek-ai/dsh-typert-protocol/LICENSE": {
+          "fixture": "files/ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be.LICENSE",
+          "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+          "bytes": 1065
+        }
+      }
+    }
+  }
+}

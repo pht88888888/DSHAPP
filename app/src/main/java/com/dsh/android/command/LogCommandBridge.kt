@@ -20,6 +20,7 @@ import java.util.zip.ZipFile
 import com.dsh.android.bubble.BubbleCommandBridge
 import com.dsh.android.core.DshApplication
 import com.dsh.android.engine.EngineManager
+import com.dsh.android.bridge.transport.AtomicMailboxFiles
 
 /**
  * 日志的**命令信箱** —— 让 Node 进程里的模型工具能读到原生侧的日志。
@@ -537,15 +538,7 @@ object LogCommandBridge {
      */
     private fun writeResult(dir: File, out: JSONObject) {
         try {
-            val target = File(dir, RESULT_FILE)
-            // 原子发布：插件可能正好读到这里，半个 JSON 会让它那一轮白等。
-            val tmp = File(dir, "$RESULT_FILE.tmp")
-            val text = out.toString()
-            tmp.writeText(text)
-            if (!tmp.renameTo(target)) {
-                target.writeText(text)
-                tmp.delete()
-            }
+            AtomicMailboxFiles.publishText(File(dir, RESULT_FILE), out.toString())
         } catch (t: Throwable) {
             Log.w(TAG, "写入日志命令回执失败: ${t.message}")
         }

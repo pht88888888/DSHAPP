@@ -49,7 +49,7 @@ const DEVICE = process.env.ANDROID_UI_DEVICE ?? '';
 const APP_ID = process.env.ANDROID_UI_APP ?? 'com.dsh.android';
 
 const MAP = JSON.parse(readFileSync(join(ROOT, 'tools', 'ui-map-real-frontend.json'), 'utf8'));
-const PROBE_SRC = readFileSync(join(ROOT, 'app', 'src', 'main', 'assets', 'ui-probe.js'), 'utf8');
+const PROBE_SRC = readFileSync(join(ROOT, 'runtime', 'scripts', 'ui-probe.js'), 'utf8');
 
 /** 图谱之外的补充屏（与 ui-map-shots.mjs 保持一致）。 */
 const EXTRA = [

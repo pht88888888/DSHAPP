@@ -5,7 +5,7 @@
  * 产出 `lib/seed.json`：随插件包打进 APK 的**离线种子**。真机上宿主半
  * （`lib/index.js`）优先实时扫 npm，网络不可达时回落到这份种子。
  *
- * 采集逻辑全部在 `market-plugin/dsh-android-market/lib/collect.mjs` 里，
+ * 采集逻辑全部在 `plugins/android/components/dsh-android-market/lib/collect.mjs` 里，
  * 宿主半用的是**同一个模块** —— 所以种子与实时结果结构完全一致，
  * 客户端半不需要写两套解析。
  *
@@ -30,13 +30,13 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { collectCatalog } from '../market-plugin/dsh-android-market/lib/collect.mjs';
+import { collectCatalog } from '../plugins/android/components/dsh-android-market/lib/collect.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 
 /** 种子默认落点：与 `lib/index.js` 同目录，它按 `./seed.json` 相对解析。 */
-const DEFAULT_OUT = path.join(ROOT, 'market-plugin/dsh-android-market/lib/seed.json');
+const DEFAULT_OUT = path.join(ROOT, 'plugins/android/components/dsh-android-market/lib/seed.json');
 
 /** 解析命令行参数。 */
 function parseArgs(argv) {

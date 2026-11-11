@@ -1,0 +1,8 @@
+{
+  "name": "dsh-android-build-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned build-only tooling; never shipped as an application plugin",
+  "engines": { "node": ">=24" },
+  "devDependencies": { "esbuild": "0.25.0" }
+}

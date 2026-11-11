@@ -38,8 +38,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(HERE, '..', 'app', 'src', 'main', 'assets', 'ui-probe.js'), 'utf8');
-const { ATLAS } = await import('../mobile-ui-plugin/dsh-android-uiagent/lib/screens.js');
+const source = readFileSync(join(HERE, '..', 'runtime', 'scripts', 'ui-probe.js'), 'utf8');
+const { ATLAS } = await import('../plugins/android/components/dsh-android-uiagent/lib/screens.js');
 const CDP = process.env.UIPROBE_CDP ?? 'http://127.0.0.1:19222/json/list';
 
 const want = process.argv.slice(2);

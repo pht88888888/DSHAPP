@@ -7,13 +7,13 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
-const protocol = JSON.parse(read('app/src/main/assets/bridge-protocol.json'));
-const page = read('app/src/main/java/com/dsh/android/web/PageBridge.kt');
-const system = read('app/src/system/java/com/dsh/android/web/SystemWebHost.kt');
-const gecko = read('app/src/gecko/java/com/dsh/android/web/GeckoWebHost.kt');
-const content = read('app/src/gecko/assets/dsh-bridge/content.js');
-const client = read('mobile-ui-plugin/dsh-android-browser-pane/lib/client.js');
-const annotations = read('app/src/main/java/com/dsh/android/web/BridgeProtocolAnnotations.kt');
+const protocol = JSON.parse(read('contracts/bridge/protocol.json'));
+const page = read('web/contract/src/main/java/com/dsh/android/web/PageBridge.kt');
+const system = read('web/host/src/system/java/com/dsh/android/web/SystemWebHost.kt');
+const gecko = read('web/host/src/gecko/java/com/dsh/android/web/GeckoWebHost.kt');
+const content = read('web/host/src/gecko/assets/dsh-bridge/content.js');
+const client = read('plugins/android/components/dsh-android-browser-pane/lib/client.js');
+const annotations = read('web/contract/src/main/java/com/dsh/android/web/BridgeProtocolAnnotations.kt');
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`PASS ${name}`); }
 async function testAsync(name, fn) { await fn(); checks++; console.log(`PASS ${name}`); }
@@ -42,9 +42,9 @@ test('System JavaScriptInterface 包装的参数与真实返回一致', () => {
     assert.equal(returns, contract.system.returns.type, name);
   }
   assert.match(system, /annotationResponse\(annotations\.request\(requestId\)\)/);
-  assert.match(system, /aiAnnotateAck\(requestId: String\) = consumeAnnotation\(requestId\)/);
-  assert.match(system, /webView\.post \{ annotations.acknowledge\(requestId\) \}/);
-  assert.match(system, /webView\.post \{ webView\.evaluateJavascript\(BridgeProtocol\.resultScript\(response\), null\) \}/);
+  assert.match(system, /aiAnnotateAck\(requestId: String\) \{ if \(isAlive\(\)\) consumeAnnotation\(requestId\) \}/);
+  assert.match(system, /postToUi \{ annotations.acknowledge\(requestId\) \}/);
+  assert.match(system, /postToUi \{ webView\.evaluateJavascript\(BridgeProtocol\.resultScript\(response\), null\) \}/);
 });
 
 function eventWindow() {
@@ -143,14 +143,26 @@ test('非消费来源、缓存重试、身份 ack 和销毁释放的实际 Kotli
   assert.match(annotations, /fun clear\(\) \{ pending.clear\(\) \}/);
   for (const host of [system, gecko]) {
     assert.match(host, /BridgeProtocolAnnotations\(callbacks.bridge as\? AnnotationSource\)/);
-    assert.match(host, /override fun destroy\(\) \{\s*annotations.clear\(\)/);
+    assert.match(host, /override fun destroy\(\) \{\s*if \(destroyed\) return\s*destroyed = true\s*uiHandler.removeCallbacksAndMessages\(null\)\s*annotations.clear\(\)/);
   }
   const native = read('app/src/main/java/com/dsh/android/ui/MainActivity.kt');
+  const dispatcher = read('app/src/main/java/com/dsh/android/ui/NativePageBridgeDispatcher.kt');
+  const coordinator = read('app/src/main/java/com/dsh/android/ui/BrowserPaneCoordinator.kt');
   const peek = native.slice(native.indexOf('override fun peekAnnotation()'), native.indexOf('override fun aiAnnotateResult()'));
-  assert.match(native, /StatusBridge\s*:\s*PageBridge,\s*com.dsh.android.web.AnnotationSource/);
-  assert.match(peek, /put\("annotationId", pending.first.name\)/);
-  assert.match(peek, /if \(pendingAnnotate\?\.first\?\.name == annotationId\) pendingAnnotate = null/);
-  assert.ok(!peek.slice(0, peek.indexOf('override fun acknowledgeAnnotation')).includes('pendingAnnotate = null'));
+  assert.match(native, /bridge = NativePageBridgeDispatcher\([\s\S]*activity = ActivityPageBridge\(\)/);
+  assert.match(dispatcher, /:\s*PageBridge,\s*AnnotationSource/);
+  assert.match(dispatcher, /override fun peekAnnotation\(\): String = activity.peekAnnotation\(\)/);
+  assert.match(dispatcher, /override fun acknowledgeAnnotation\(annotationId: String\) = activity.acknowledgeAnnotation\(annotationId\)/);
+  assert.match(peek, /browserPane.readAnnotation\(consume = false\)/);
+  assert.match(peek, /put\("annotationId", pending.id\)/);
+  assert.match(peek, /browserPane.acknowledgeAnnotation\(annotationId\)/);
+  assert.ok(!peek.includes('consume = true'));
+  assert.match(coordinator, /pending = Annotation\("\$identity-\$\{\+\+annotationSequence\}"/);
+  assert.match(coordinator, /if \(consume\) pending = null/);
+  assert.match(coordinator, /!consume && pending\?\.id != item.id/);
+  assert.match(coordinator, /if \(!closed && pending\?\.id == id\) pending = null/);
+  assert.match(coordinator, /fun close\(\) \{\s*closed = true\s*canvasGeneration\+\+\s*pending = null/);
+  assert.match(native, /browserPane.close\(\)/);
 });
 
 function createClient(options = {}) {
@@ -226,18 +238,23 @@ await testAsync('前端并发 ready 通知只发一个请求与一次发送', as
   assert.equal(client.sends.length, 1); assert.equal(client.acks.length, 1);
 });
 test('JSON 状态返回字段逐项对应实际构造器，标注结构不冒充浏览器状态', () => {
-  const native = read('app/src/main/java/com/dsh/android/ui/MainActivity.kt');
-  for (const name of ['bubbleState', 'bubbleBadgeConfig', 'rootState', 'shizukuState', 'logSummary']) {
+  const owners = {
+    bubbleState: 'BubblePageBridge.kt', bubbleBadgeConfig: 'BubblePageBridge.kt',
+    rootState: 'PrivilegePageBridge.kt', shizukuState: 'PrivilegePageBridge.kt', logSummary: 'MainActivity.kt',
+  };
+  for (const [name, owner] of Object.entries(owners)) {
+    const native = read(`app/src/main/java/com/dsh/android/ui/${owner}`);
     const at = native.indexOf(`override fun ${name}(`);
-    const end = native.indexOf('\n        override fun ', at + 1);
-    const body = native.slice(at, end < 0 ? undefined : end);
+    assert.ok(at >= 0, `${owner} implements ${name}`);
+    const next = /\n {4,8}override fun /.exec(native.slice(at + 1));
+    const body = native.slice(at, next ? at + 1 + next.index : undefined);
     const keys = [...body.matchAll(/(?:\.put|\bput)\("([^"]+)"/g)].map((m) => m[1]);
     assert.deepEqual([...new Set(keys)].sort(), Object.keys(protocol.schemas[name].properties).sort(), name);
   }
-  const avoid = read('app/src/main/java/com/dsh/android/ui/KeyboardAvoid.kt');
+  const avoid = read('feature/bubble/src/main/java/com/dsh/android/ui/KeyboardAvoid.kt');
   const avoidBody = avoid.slice(avoid.indexOf('fun stateJson('));
   assert.deepEqual([...avoidBody.matchAll(/\.put\("([^"]+)"/g)].map((m) => m[1]).sort(), Object.keys(protocol.schemas.keyboardAvoidState.properties).sort());
-  const appearance = read('app/src/main/java/com/dsh/android/bubble/FloatingBubble.kt');
+  const appearance = read('feature/bubble/src/main/java/com/dsh/android/bubble/FloatingBubble.kt');
   const at = appearance.indexOf('fun currentAppearanceJson(');
   const body = appearance.slice(at, appearance.indexOf('\n        }', at));
   for (const key of Object.keys(protocol.schemas.bubbleAppearance.properties)) {
@@ -246,7 +263,7 @@ test('JSON 状态返回字段逐项对应实际构造器，标注结构不冒充
   assert.deepEqual(protocol.schemas.annotation.properties.png, { type: 'string', minLength: 1, encoding: 'base64-png' });
 });
 test('能力声明仅公布实际 AnnotationSource，协议列出真实响应结构和消费约束', () => {
-  const native = read('app/src/main/java/com/dsh/android/web/BridgeProtocol.kt');
+  const native = read('web/contract/src/main/java/com/dsh/android/web/BridgeProtocol.kt');
   assert.match(native, /if \(annotationSupported\) capabilities.put\("annotation.request", 1\)/);
   assert.match(annotations, /BridgeProtocol.capabilities\(source != null\)/);
   assert.deepEqual(protocol.schemas.annotation.required, ['png', 'text']);
@@ -254,7 +271,7 @@ test('能力声明仅公布实际 AnnotationSource，协议列出真实响应结
   assert.equal(protocol.methods.aiAnnotateRequest.system.returns.type, 'undefined');
   assert.equal(protocol.methods.aiAnnotateAck.gecko.mode, 'consume-ack');
   assert.match(protocol.capabilities['annotation.request'].consumption, /Only aiAnnotateAck/);
-  const manifest = JSON.parse(read('app/src/gecko/assets/dsh-bridge/manifest.json'));
+  const manifest = JSON.parse(read('web/host/src/gecko/assets/dsh-bridge/manifest.json'));
   assert.equal(manifest.version, '1.0.16');
 });
 console.log(`bridge contract: ${checks} tests passed; ${signatures.length} methods checked; 0 skipped`);

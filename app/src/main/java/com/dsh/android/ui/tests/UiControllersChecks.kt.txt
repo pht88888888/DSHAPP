@@ -1,0 +1,474 @@
+package com.dsh.android.ui
+
+import java.io.File
+import java.io.InputStream
+import java.io.IOException
+import java.net.InetSocketAddress
+import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.*
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+
+private class Clock : UiTaskScheduler {
+    var now = 100_000L
+    private data class Task(val at: Long, val action: Runnable)
+    private val tasks = mutableListOf<Task>()
+    override fun postDelayed(task: Runnable, delayMs: Long) { tasks.add(Task(now + delayMs, task)) }
+    override fun remove(task: Runnable) { tasks.removeAll { it.action === task } }
+    fun advance(ms: Long) {
+        val end = now + ms
+        while (true) {
+            val next = tasks.filter { it.at <= end }.minByOrNull { it.at } ?: break
+            tasks.remove(next)
+            now = next.at
+            next.action.run()
+        }
+        now = end
+    }
+    fun snapshot() = tasks.map { it.action }
+}
+
+private var checks = 0
+private suspend fun scenario(name: String, action: suspend () -> Unit) {
+    action()
+    checks++
+    println("ok $checks - $name")
+}
+
+private class DownloadServer : AutoCloseable {
+    private val pool = Executors.newCachedThreadPool { task -> Thread(task, "download-http-check").apply { isDaemon = true } }
+    private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    private val started = listOf("a", "b", "headers").associateWith { CountDownLatch(1) }
+    private val release = started.keys.associateWith { CountDownLatch(1) }
+    val base: String get() = "http://127.0.0.1:${server.address.port}"
+    init {
+        server.executor = pool
+        for (name in started.keys) server.createContext("/$name") { exchange ->
+            try {
+                val bytes = "$name-complete".repeat(400).toByteArray()
+                if (name == "headers") {
+                    started.getValue(name).countDown()
+                    release.getValue(name).await(5, TimeUnit.SECONDS)
+                    exchange.sendResponseHeaders(200, bytes.size.toLong())
+                    exchange.responseBody.write(bytes)
+                } else {
+                    exchange.sendResponseHeaders(200, bytes.size.toLong())
+                    exchange.responseBody.write(bytes, 0, 16); exchange.responseBody.flush()
+                    started.getValue(name).countDown()
+                    release.getValue(name).await(5, TimeUnit.SECONDS)
+                    exchange.responseBody.write(bytes, 16, bytes.size - 16)
+                }
+            } catch (_: IOException) { // Cancellation may close the peer socket.
+            } finally { exchange.close() }
+        }
+        server.start()
+    }
+    suspend fun awaitStart(name: String) = withContext(Dispatchers.IO) {
+        check(started.getValue(name).await(3, TimeUnit.SECONDS)) { "HTTP request did not start: $name" }
+    }
+    fun finish(name: String) { release.getValue(name).countDown() }
+    override fun close() { release.values.forEach { it.countDown() }; server.stop(0); pool.shutdownNow() }
+}
+
+private suspend fun awaitParts(directory: File, count: Int) = withTimeout(3_000) {
+    while (directory.listFiles().orEmpty().count { it.name.endsWith(".part") } != count) delay(5)
+}
+
+fun main() = runBlocking {
+    scenario("permission batches coalesce and serialize") {
+        val launches = mutableListOf<String>(); val results = mutableListOf<String>()
+        val queue = RuntimePermissionQueue({ false }, { launches.add(it) }, { _, t -> throw t })
+        queue.request("audio") { results.add("a:$it") }
+        queue.request("audio") { results.add("b:$it") }
+        queue.request("camera") { results.add("c:$it") }
+        check(launches == listOf("audio"))
+        queue.finish(true)
+        check(results == listOf("a:true", "b:true") && launches == listOf("audio", "camera"))
+        queue.finish(false)
+        check(results.last() == "c:false")
+    }
+    scenario("permission delivery reentrancy enters a new batch") {
+        val launches = mutableListOf<String>(); val results = mutableListOf<Boolean>()
+        val queue = RuntimePermissionQueue({ false }, { launches.add(it) }, { _, t -> throw t })
+        queue.request("audio") { queue.request("audio") { results.add(it) } }
+        queue.finish(true)
+        check(launches == listOf("audio", "audio") && results.isEmpty())
+        queue.finish(false)
+        check(results == listOf(false))
+    }
+    scenario("permission destroy settles pending once and rejects reentrancy") {
+        val results = mutableListOf<Boolean>(); var launches = 0
+        val queue = RuntimePermissionQueue({ false }, { launches++ }, { _, t -> throw t })
+        queue.request("audio") { results.add(it); queue.request("other") { results.add(it) } }
+        queue.request("camera") { results.add(it) }
+        queue.close(); queue.finish(true); queue.close()
+        check(results == listOf(false, false, false) && launches == 1)
+    }
+    scenario("permission granted fast path and launch failure") {
+        val results = mutableListOf<Boolean>(); var failures = 0
+        val queue = RuntimePermissionQueue({ it == "granted" }, { throw IllegalStateException("launch") }, { _, _ -> failures++ })
+        queue.request("granted") { results.add(it) }; queue.request("denied") { results.add(it) }
+        check(results == listOf(true, false) && failures == 1)
+    }
+    val directory = kotlin.io.path.createTempDirectory("download-check-").toFile()
+    try {
+        scenario("download closes stream, sanitizes path and commits complete data") {
+            var closed = false
+            val input = object : java.io.ByteArrayInputStream("complete".toByteArray()) {
+                override fun close() { closed = true; super.close() }
+            }
+            val saved = SessionDownloadService().save(input, directory, "../nested/..export.zip")
+            check(saved.parentFile == directory && saved.name == "export.zip" && saved.readText() == "complete")
+            check(closed && !File(directory, "export.zip.part").exists())
+            check(SessionDownloadService.sanitizeName("...\u0000") == "dsh-download")
+            check(SessionDownloadService.sanitizeName("x".repeat(250)).length == 200)
+        }
+        scenario("download interrupted read removes part and preserves prior file") {
+            val original = File(directory, "saved.zip").apply { writeText("old") }
+            var closed = false
+            val broken = object : InputStream() {
+                var reads = 0
+                override fun read(): Int { if (reads++ > 3) throw IOException("disconnected"); return 65 }
+                override fun close() { closed = true }
+            }
+            check(runCatching { SessionDownloadService().save(broken, directory, original.name) }.isFailure)
+            check(closed && original.readText() == "old" && !File(directory, "saved.zip.part").exists())
+        }
+        scenario("download cancellation closes and cleans before commit") {
+            var closed = false; var checks = 0
+            val input = object : java.io.ByteArrayInputStream(ByteArray(20_000)) {
+                override fun close() { closed = true; super.close() }
+            }
+            val result = runCatching { SessionDownloadService().save(input, directory, "cancel.zip") {
+                if (++checks > 2) throw java.util.concurrent.CancellationException("cancelled")
+            } }
+            check(result.exceptionOrNull() is java.util.concurrent.CancellationException)
+            check(closed && !File(directory, "cancel.zip").exists() && !File(directory, "cancel.zip.part").exists())
+        }
+        scenario("HTTP download retains authentication headers and rejects bad status") {
+            val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+            val headers = mutableMapOf<String, String>()
+            server.createContext("/ok") { exchange ->
+                for (key in listOf("Cookie", "User-Agent", "Referer")) headers[key] = exchange.requestHeaders.getFirst(key)
+                val bytes = "authorized".toByteArray()
+                exchange.sendResponseHeaders(200, bytes.size.toLong()); exchange.responseBody.use { it.write(bytes) }
+            }
+            server.createContext("/bad") { exchange -> exchange.sendResponseHeaders(401, -1); exchange.close() }
+            server.start()
+            try {
+                val base = "http://127.0.0.1:${server.address.port}"
+                val service = SessionDownloadService()
+                val file = service.download(SessionDownloadService.Request("$base/ok", "HttpOnly=token", "host-agent"), directory, "http.zip")
+                check(file.readText() == "authorized" && headers["Cookie"] == "HttpOnly=token")
+                check(headers["User-Agent"] == "host-agent" && headers["Referer"] == "http://127.0.0.1:3080/")
+                check(runCatching { service.download(SessionDownloadService.Request("$base/bad", "", null), directory, "bad.zip") }.exceptionOrNull()?.message == "HTTP 401")
+                check(!File(directory, "bad.zip").exists())
+            } finally { server.stop(0) }
+        }
+        scenario("atomic commit failure leaves previous target and removes only own part") {
+            val existing = File(directory, "occupied.zip").apply { mkdir() }
+            val old = File(existing, "old").apply { writeText("keep") }
+            check(runCatching { SessionDownloadService().save("new".byteInputStream(), directory, existing.name) }.isFailure)
+            check(old.readText() == "keep")
+            awaitParts(directory, 0)
+        }
+        scenario("both body owners close exactly once on success failure and real coroutine cancellation") {
+            val service = SessionDownloadService()
+            val successCloses = AtomicInteger()
+            val success = object : java.io.ByteArrayInputStream("ok".toByteArray()) {
+                override fun close() { successCloses.incrementAndGet(); super.close() }
+            }
+            service.save(success, directory, "once.zip"); check(successCloses.get() == 1)
+            val failureCloses = AtomicInteger()
+            val broken = object : InputStream() {
+                override fun read(): Int = throw IOException("broken")
+                override fun close() { failureCloses.incrementAndGet() }
+            }
+            check(runCatching { service.save(broken, directory, "broken-once.zip") }.isFailure)
+            check(failureCloses.get() == 1)
+            val reading = CountDownLatch(1); val unblock = CountDownLatch(1); val cancelCloses = AtomicInteger()
+            val blocked = object : InputStream() {
+                override fun read(): Int { reading.countDown(); unblock.await(); return -1 }
+                override fun close() { cancelCloses.incrementAndGet(); unblock.countDown() }
+            }
+            val job = launch { service.save(blocked, directory, "cancel-once.zip") }
+            try {
+                withContext(Dispatchers.IO) { check(reading.await(3, TimeUnit.SECONDS)) }
+                withTimeout(2_000) { job.cancelAndJoin() }
+                check(cancelCloses.get() == 1 && !File(directory, "cancel-once.zip").exists())
+                awaitParts(directory, 0)
+            } finally { unblock.countDown(); job.cancelAndJoin() }
+            val earlyCloses = AtomicInteger()
+            val early = object : java.io.ByteArrayInputStream(ByteArray(10)) {
+                override fun close() { earlyCloses.incrementAndGet(); super.close() }
+            }
+            val earlyJob = launch(start = CoroutineStart.UNDISPATCHED) { service.save(early, directory, "early.zip") }
+            earlyJob.cancelAndJoin(); check(earlyCloses.get() == 1)
+        }
+        scenario("two concurrent same-name HTTP downloads use separate parts and commit complete files") {
+            DownloadServer().use { server ->
+                val service = SessionDownloadService()
+                val a = async { service.download(SessionDownloadService.Request("${server.base}/a", "", null), directory, "same.zip") }
+                val b = async { service.download(SessionDownloadService.Request("${server.base}/b", "", null), directory, "same.zip") }
+                try {
+                    server.awaitStart("a"); server.awaitStart("b"); awaitParts(directory, 2)
+                    server.finish("b"); check(withTimeout(2_000) { b.await() }.readText() == "b-complete".repeat(400))
+                    awaitParts(directory, 1)
+                    server.finish("a"); check(withTimeout(2_000) { a.await() }.readText() == "a-complete".repeat(400))
+                    awaitParts(directory, 0)
+                } finally { server.finish("a"); server.finish("b"); a.cancelAndJoin(); b.cancelAndJoin() }
+            }
+        }
+        scenario("cancel blocked HTTP body revokes commit and preserves another same-name result") {
+            DownloadServer().use { server ->
+                val service = SessionDownloadService()
+                val slow = async { service.download(SessionDownloadService.Request("${server.base}/a", "", null), directory, "shared.zip") }
+                val other = async { service.download(SessionDownloadService.Request("${server.base}/b", "", null), directory, "shared.zip") }
+                try {
+                    server.awaitStart("a"); server.awaitStart("b"); awaitParts(directory, 2)
+                    server.finish("b"); val file = withTimeout(2_000) { other.await() }
+                    check(file.readText() == "b-complete".repeat(400))
+                    slow.cancel()
+                    check(file.readText() == "b-complete".repeat(400))
+                    server.finish("a")
+                    withTimeout(2_000) { slow.join() }
+                    check(slow.isCancelled && file.readText() == "b-complete".repeat(400))
+                    awaitParts(directory, 0)
+                } finally { server.finish("a"); server.finish("b"); slow.cancelAndJoin(); other.cancelAndJoin() }
+            }
+        }
+        scenario("cancel header wait retains previous file and owns IO until eventual release") {
+            DownloadServer().use { server ->
+                val prior = File(directory, "headers.zip").apply { writeText("old") }
+                val job = async { SessionDownloadService().download(SessionDownloadService.Request("${server.base}/headers", "", null), directory, prior.name) }
+                try {
+                    server.awaitStart("headers")
+                    job.cancel()
+                    check(prior.readText() == "old")
+                    server.finish("headers")
+                    withTimeout(2_000) { job.join() }
+                    check(job.isCancelled && prior.readText() == "old"); awaitParts(directory, 0)
+                } finally { server.finish("headers"); job.cancelAndJoin() }
+            }
+        }
+    } finally { directory.deleteRecursively() }
+    scenario("flash uses longest cycle and next frame duration then completes") {
+        val clock = Clock(); val frames = mutableListOf<Pair<String?, String?>>(); var completed = 0
+        val sequence = SystemBarFlashSequence(clock, { _, a, b -> frames.add(a to b) }, { completed = it })
+        sequence.start(SystemBarAppearance(statusBarFlash = listOf("a", "b"), navBarFlash = listOf("x", "y", "z"), flashDurations = listOf(100, 200, 300), flashLoops = 1))
+        check(frames == listOf("a" to "x"))
+        clock.advance(199); check(frames.size == 1)
+        clock.advance(1); check(frames.last() == "b" to "y")
+        clock.advance(300); check(frames.last() == "a" to "z" && completed == 1 && !sequence.running)
+        clock.advance(20_000); check(frames.size == 3)
+    }
+    scenario("flash owns snapshot and stop removes scheduled frame") {
+        val clock = Clock(); val colors = mutableListOf("a", "b"); val frames = mutableListOf<String?>()
+        val sequence = SystemBarFlashSequence(clock, { _, a, _ -> frames.add(a) }, {})
+        sequence.start(SystemBarAppearance(statusBarFlash = colors, flashIntervalMs = 30))
+        colors[1] = "changed"
+        clock.advance(30); check(frames == listOf("a", "b"))
+        sequence.stop(); clock.advance(10_000); check(frames.size == 2)
+    }
+    scenario("renderer crash deduplicates queued reload and late timer is invalidated") {
+        val clock = Clock(); val attempts = mutableListOf<Int>(); val events = mutableListOf<WebRecoveryController.Event>()
+        val controller = WebRecoveryController(clock, { clock.now }, { attempts.add(it); true }, { false }, events::add)
+        controller.rendererGone(true); val old = clock.snapshot().single(); controller.rendererGone(false)
+        check(events.size == 1)
+        controller.requestReload(); old.run(); check(attempts == listOf(1))
+        controller.close(); clock.advance(100_000); check(attempts.size == 1)
+    }
+    scenario("renderer retries real loads, then stops after third timeout") {
+        val clock = Clock(); val attempts = mutableListOf<Int>(); val events = mutableListOf<WebRecoveryController.Event>()
+        val controller = WebRecoveryController(clock, { clock.now }, { attempts.add(it); true }, { false }, events::add)
+        check(controller.requestReload()); clock.advance(16_000); check(attempts == listOf(1, 2))
+        clock.advance(22_000); check(attempts == listOf(1, 2, 3))
+        clock.advance(28_000); check(controller.gaveUp && events.single() == WebRecoveryController.Event.ReloadExhausted(3))
+        controller.rendererGone(true); check(!controller.requestReload())
+    }
+    scenario("no URL does not consume retry budget and real frame ends retries") {
+        val clock = Clock(); var url = false; var frame = false; var loads = 0
+        val controller = WebRecoveryController(clock, { clock.now }, { loads++; url }, { frame }, {})
+        check(!controller.requestReload()); clock.advance(100_000); check(loads == 1 && !controller.gaveUp)
+        url = true; check(controller.requestReload()); frame = true
+        clock.advance(100_000); check(loads == 2 && !controller.gaveUp)
+    }
+    scenario("renderer counts only consecutive deaths and enforces crash limit") {
+        val clock = Clock(); val counts = mutableListOf<Int>()
+        val controller = WebRecoveryController(clock, { clock.now }, { false }, { false }, {
+            if (it is WebRecoveryController.Event.RendererGone) counts.add(it.count)
+        })
+        controller.rendererGone(true); clock.advance(400)
+        clock.advance(90_001); controller.rendererGone(false); clock.advance(400)
+        repeat(3) { controller.rendererGone(true); clock.advance(400) }
+        check(counts == listOf(1, 1, 2, 3, 4) && controller.gaveUp)
+    }
+    scenario("IME learns real resize and releases preemptive margin") {
+        val clock = Clock(); var saved = 0; val margins = mutableListOf<Int>()
+        val ime = ImeLayoutController(clock, { 300 }, { saved = it }, { px, _ -> margins.add(px) })
+        ime.load(); ime.layout(400, 800, 0); ime.willShow(800)
+        check(margins == listOf(300))
+        ime.layout(400, 500, 800); check(saved == 0 && margins == listOf(300, 0))
+        ime.layout(400, 480, 500); check(saved == 320)
+        clock.advance(2_000); check(margins.size == 2)
+    }
+    scenario("IME orientation reload, timeout and destroy cancel") {
+        val clock = Clock(); var cached = 300; val margins = mutableListOf<Int>()
+        val ime = ImeLayoutController(clock, { cached }, {}, { px, _ -> margins.add(px) })
+        ime.load(); ime.layout(400, 800, 0); ime.willShow(800)
+        clock.advance(700); check(margins == listOf(300, 0))
+        cached = 200; ime.layout(800, 400, 800); ime.willShow(400)
+        check(margins.last() == 200)
+        ime.close(); clock.advance(700); check(margins == listOf(300, 0, 200))
+    }
+    scenario("page back timeout allows exit and discards late callback") {
+        val clock = Clock(); var result: ((String?) -> Unit)? = null; val exits = mutableListOf<Boolean>()
+        val back = PageBackNavigation(clock, { result = it }, exits::add)
+        back.request(); val late = result!!; back.request()
+        clock.advance(1200); check(exits == listOf(true))
+        late("false"); check(exits.size == 1)
+        back.request(); result!!("true"); clock.advance(1200); check(exits.size == 1)
+    }
+    scenario("page back false and destroy resolve at most once") {
+        val clock = Clock(); var result: ((String?) -> Unit)? = null; val exits = mutableListOf<Boolean>()
+        val back = PageBackNavigation(clock, { result = it }, exits::add)
+        back.request(); result!!("false"); result!!("false"); check(exits == listOf(false))
+        back.request(); back.close(); result!!("false"); clock.advance(1200); check(exits.size == 1)
+    }
+    scenario("boot overlay emits soft then terminal hints and resets each load") {
+        val clock = Clock(); val states = mutableListOf<BootOverlayPresenter.State>()
+        val overlay = BootOverlayPresenter(clock, { "" }, states::add, {})
+        overlay.arm(); clock.advance(12_000); check(states.single().text == "界面加载中" && !states.single().isError)
+        clock.advance(15_000); check(states.last().isError && states.last().hint!!.contains("27"))
+        overlay.arm(); clock.advance(12_000); check(!states.last().isError && states.size == 3)
+    }
+    scenario("boot overlay invalidates stale timeout and surfaces page error") {
+        val clock = Clock(); val states = mutableListOf<BootOverlayPresenter.State>(); var error = ""
+        val overlay = BootOverlayPresenter(clock, { error }, states::add, {})
+        overlay.arm(); val stale = clock.snapshot().single(); overlay.reopen(); stale.run(); check(states.isEmpty())
+        error = "syntax"; overlay.arm(); clock.advance(12_000)
+        check(states.single().isError && states.single().hint!!.startsWith("syntax"))
+        check(overlay.dismiss()); overlay.show(BootOverlayPresenter.State("ignored", null, null, false))
+        check(states.size == 1)
+        overlay.close(); clock.advance(100_000); check(states.size == 1)
+    }
+    scenario("first frame fallback never becomes a real frame") {
+        val clock = Clock(); var callback: (() -> Unit)? = null; var fallback = 0; var action = 0
+        val awaiter = FirstFrameAwaiter(clock, { callback = it }, {}, { fallback++ })
+        awaiter.await { action++ }; clock.advance(4000)
+        check(fallback == 1 && action == 0 && !awaiter.reallyArrived)
+        callback!!(); check(awaiter.reallyArrived && action == 0)
+        awaiter.await { action++ }; check(action == 1)
+    }
+    scenario("first frame callback is isolated by reset and destruction") {
+        val clock = Clock(); val callbacks = mutableListOf<() -> Unit>(); var action = 0; var fallback = 0
+        val awaiter = FirstFrameAwaiter(clock, callbacks::add, {}, { fallback++ })
+        awaiter.await { action++ }; val old = callbacks.single(); awaiter.reset(true)
+        awaiter.await { action++ }; old(); check(action == 0 && !awaiter.reallyArrived)
+        callbacks.last()(); check(action == 1 && awaiter.reallyArrived)
+        clock.advance(4000); check(fallback == 0)
+        awaiter.reset(true); awaiter.await { action++ }; awaiter.close(); callbacks.last()()
+        clock.advance(4000); check(action == 1 && fallback == 0 && !awaiter.reallyArrived)
+    }
+    scenario("browser pane distinguishes user opening, quiet tools and embedding") {
+        val pane = BrowserPaneCoordinator()
+        pane.openByUser(); check(!pane.state.visible)
+        pane.prepareForTool(); check(pane.state.mode == BrowserPaneCoordinator.Mode.TOOL && !pane.state.visible)
+        pane.embedded(); check(pane.state.visible && pane.state.embedded)
+        pane.openByUser(); check(pane.state.mode == BrowserPaneCoordinator.Mode.USER && pane.state.visible)
+        pane.hide(); check(!pane.state.visible && pane.state.embedded)
+        pane.hide(clearEmbedding = true); check(!pane.state.embedded)
+    }
+    scenario("annotation identity is per submission even when file path is reused") {
+        val pane = BrowserPaneCoordinator(); val file = File("same-image.png")
+        val first = pane.beginAnnotation()!!; check(pane.submitAnnotation(first, file, "first"))
+        val firstId = pane.readAnnotation(false) { it.id }
+        val second = pane.beginAnnotation()!!; check(pane.submitAnnotation(second, file, "second"))
+        val secondId = pane.readAnnotation(false) { it.id }
+        check(firstId.isNotEmpty() && firstId != secondId)
+        pane.acknowledgeAnnotation(firstId); check(pane.readAnnotation(false) { it.question } == "second")
+        pane.acknowledgeAnnotation(secondId); check(pane.readAnnotation(false) { it.id }.isEmpty())
+    }
+    scenario("annotation preserves peek failures and legacy consume-on-read semantics") {
+        val pane = BrowserPaneCoordinator(); val canvas = pane.beginAnnotation()!!
+        check(pane.submitAnnotation(canvas, File("image.png"), "question"))
+        check(runCatching { pane.readAnnotation(false) { error("peek failed") } }.isFailure)
+        check(pane.readAnnotation(false) { it.question } == "question")
+        check(runCatching { pane.readAnnotation(true) { error("legacy read failed") } }.isFailure)
+        check(pane.readAnnotation(true) { it.question }.isEmpty())
+        check(pane.submitAnnotation(pane.beginAnnotation()!!, File("image.png"), "again"))
+        check(pane.readAnnotation(true) { it.question } == "again")
+        check(pane.readAnnotation(true) { it.question }.isEmpty())
+    }
+    scenario("annotation replaced during encoding cannot consume a newer pending item") {
+        val pane = BrowserPaneCoordinator(); val first = pane.beginAnnotation()!!
+        pane.submitAnnotation(first, File("first.png"), "first")
+        val result = pane.readAnnotation(false) {
+            val second = pane.beginAnnotation()!!; pane.submitAnnotation(second, File("second.png"), "second")
+            it.question
+        }
+        check(result.isEmpty() && pane.readAnnotation(false) { it.question } == "second")
+        val legacy = pane.readAnnotation(true) {
+            pane.submitAnnotation(pane.beginAnnotation()!!, File("third.png"), "third")
+            it.question
+        }
+        check(legacy == "second" && pane.readAnnotation(false) { it.question } == "third")
+    }
+    scenario("canvas switch, cancel and destruction reject late sends and reads") {
+        val pane = BrowserPaneCoordinator(); val old = pane.beginAnnotation()!!; val current = pane.beginAnnotation()!!
+        check(!pane.submitAnnotation(old, File("late.png"), "late"))
+        check(!pane.cancelAnnotation(old))
+        check(pane.cancelAnnotation(current)); check(!pane.submitAnnotation(current, File("cancel.png"), "cancel"))
+        val active = pane.beginAnnotation()!!; pane.submitAnnotation(active, File("active.png"), "active")
+        check(pane.readAnnotation(false) { pane.close(); it.question }.isEmpty())
+        pane.openByUser(); pane.embedded(); check(!pane.state.visible && pane.beginAnnotation() == null)
+        check(!pane.submitAnnotation(active, File("late.png"), "late"))
+    }
+    scenario("native dispatcher preserves every production PageBridge signature") {
+        val contract = com.dsh.android.web.PageBridge::class.java
+        val dispatcher = NativePageBridgeDispatcher::class.java
+        val signatures = contract.declaredMethods.filter { !it.isSynthetic }
+        check(signatures.size == 47)
+        for (method in signatures) {
+            val actual = dispatcher.getMethod(method.name, *method.parameterTypes)
+            check(actual.returnType == method.returnType) { "Return type changed: ${method.name}" }
+        }
+        check(com.dsh.android.web.AnnotationSource::class.java.isAssignableFrom(dispatcher))
+    }
+    scenario("native dispatcher routes all domain calls and annotation acknowledgements") {
+        val calls = mutableListOf<Triple<String, String, List<Any?>>>()
+        fun <T> provider(type: Class<T>, name: String): T = type.cast(java.lang.reflect.Proxy.newProxyInstance(
+            type.classLoader, arrayOf(type)) { _, method, values ->
+                calls.add(Triple(name, method.name, values?.toList() ?: emptyList()))
+                when (method.returnType) {
+                    java.lang.Boolean.TYPE -> true
+                    java.lang.Integer.TYPE -> 7
+                    String::class.java -> "$name:${method.name}"
+                    else -> null
+                }
+            })
+        val activity = provider(ActivityPageBridgeActions::class.java, "activity")
+        val bubble = provider(BubblePageBridgeActions::class.java, "bubble")
+        val privilege = provider(PrivilegePageBridgeActions::class.java, "privilege")
+        val dispatcher = NativePageBridgeDispatcher(activity, bubble, privilege)
+        val bubbleNames = BubblePageBridgeActions::class.java.declaredMethods.map { it.name }.toSet()
+        val privilegeNames = PrivilegePageBridgeActions::class.java.declaredMethods.map { it.name }.toSet()
+        val defaults = setOf("bridgeCapabilities", "aiAnnotateRequest", "aiAnnotateAck")
+        for (method in com.dsh.android.web.PageBridge::class.java.declaredMethods.filter { it.name !in defaults }) {
+            val arguments = method.parameterTypes.map { if (it == java.lang.Boolean.TYPE) true else "payload" }.toTypedArray()
+            val expected = when (method.name) { in bubbleNames -> "bubble"; in privilegeNames -> "privilege"; else -> "activity" }
+            val result = method.invoke(dispatcher, *arguments)
+            check(calls.last() == Triple(expected, method.name, arguments.toList()))
+            if (method.returnType == String::class.java) check(result == "$expected:${method.name}")
+            if (method.returnType == java.lang.Boolean.TYPE) check(result == true)
+            if (method.returnType == java.lang.Integer.TYPE) check(result == 7)
+        }
+        check(calls.size == 44)
+        check(dispatcher.peekAnnotation() == "activity:peekAnnotation")
+        dispatcher.acknowledgeAnnotation("id")
+        check(calls.last() == Triple("activity", "acknowledgeAnnotation", listOf("id")))
+    }
+    println("passed $checks production behavior checks")
+}

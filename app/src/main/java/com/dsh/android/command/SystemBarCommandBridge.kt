@@ -10,6 +10,7 @@ import com.dsh.android.core.DshApplication
 import com.dsh.android.engine.EngineManager
 import com.dsh.android.ui.MainActivity
 import com.dsh.android.ui.SystemBarAppearance
+import com.dsh.android.bridge.transport.AtomicMailboxFiles
 
 /**
  * 系统栏（状态栏 / 导航栏）配色的**命令信箱** —— 让 Node 进程里的模型工具
@@ -202,14 +203,7 @@ object SystemBarCommandBridge {
             put("appearance", appearance)
         }
         try {
-            val target = File(dir, RESULT_FILE)
-            // 原子发布：插件可能正好读到这里，半个 JSON 会让它那一轮白等。
-            val tmp = File(dir, "$RESULT_FILE.tmp")
-            tmp.writeText(out.toString())
-            if (!tmp.renameTo(target)) {
-                target.writeText(out.toString())
-                tmp.delete()
-            }
+            AtomicMailboxFiles.publishText(File(dir, RESULT_FILE), out.toString())
         } catch (t: Throwable) {
             Log.w(TAG, "写入系统栏命令回执失败: ${t.message}")
         }
