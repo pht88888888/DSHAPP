@@ -24,6 +24,9 @@ gradlew text eol=lf
 *.keystore binary
 *.so binary
 
+# 来源审计锁记录原始字节；旧远程插件快照禁止换行归一化
+remote-plugin/** -text
+
 # 不需要在 GitHub 上统计语言占比 / 折叠展示
 gradle/wrapper/gradle-wrapper.jar binary
 tools/ui-map-real-frontend.json linguist-generated=true

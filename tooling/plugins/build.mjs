@@ -456,7 +456,7 @@ export function main(argv = process.argv.slice(2), { root = ROOT, catalogPath = 
   if (install && mode !== 'build') throw new Error('--install-assets 仅用于 build，必须先构建并校验全部产物');
   if (mode === 'pack-check' && outDir) throw new Error('pack-check 不保留产物，无需 --out-dir');
   const assetDir = resolve(root, ASSETS);
-  if (mode === 'build' && (outDir === assetDir || existsSync(outDir) && realpathSync(outDir) === realpathSync(assetDir))) throw new Error('本工具禁止直接覆盖仓库现有资产，请指定独立产物目录');
+  if (mode === 'build' && (outDir === assetDir || existsSync(outDir) && existsSync(assetDir) && realpathSync(outDir) === realpathSync(assetDir))) throw new Error('本工具禁止直接覆盖仓库现有资产，请指定独立产物目录');
   const catalog = loadCatalog(root, catalogPath);
   const components = catalog.components.filter((component) => componentId ? component.id === componentId : !component.bundledIn);
   if (!components.length) throw new Error(`未知组件: ${componentId}`);

@@ -238,6 +238,31 @@ test('拒绝未知组件、漏 out-dir、仓库资产目录及非法清单路径
   assert.throws(() => loadCatalog(root, setup.catalogPath), /非法相对路径/);
 }));
 
+test('资产目录尚不存在时可构建及核验独立输出，仅显式安装创建资产目录', () => temporary((root) => {
+  const setup = fixture(root);
+  const assets = join(root, 'app/src/main/assets');
+  assert.equal(resolve(assets), resolve(root, 'app/src/main/assets'));
+  assert.deepEqual(readdirSync(assets), []);
+  rmSync(assets, { recursive: true });
+  mkdirSync(setup.out);
+  assert.throws(() => main(['build', '--out-dir', assets], setup), /禁止直接覆盖/);
+  main(['build', '--out-dir', setup.out], setup);
+  main(['check', '--out-dir', setup.out], setup);
+  assert.equal(existsSync(assets), false);
+  main(['build', '--out-dir', setup.out, '--install-assets'], setup);
+  assert.deepEqual(readdirSync(assets).sort(), ['example.manifest.json', 'example.zip']);
+  for (const name of readdirSync(assets)) assert.deepEqual(readFileSync(join(assets, name)), readFileSync(join(setup.out, name)));
+}));
+
+test('输出目录经符号链接指向资产目录时仍拒绝直接覆盖', () => temporary((root) => {
+  const setup = fixture(root);
+  const assets = join(root, 'app/src/main/assets');
+  const alias = join(root, 'asset-alias');
+  symlinkSync(assets, alias, 'dir');
+  assert.throws(() => main(['build', '--out-dir', alias], setup), /禁止直接覆盖/);
+  assert.deepEqual(readdirSync(assets), []);
+}));
+
 test('ZIP CRC、目录穿越和重复条目不能被当作通过', () => {
   assert.throws(() => createZip(new Map([['../escape', Buffer.from('x')]])), /非法相对路径/);
   const archive = createZip(new Map([['a', Buffer.from('x')]]));
