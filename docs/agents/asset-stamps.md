@@ -5,7 +5,7 @@
 
 ## 插件资产使用内容摘要
 
-APK 插件由 [组件清单](../../tools/plugin-components.json) 与统一构建器生成。Gradle 预构建先校验全部 zip 与 manifest，再安装资产；运行时以 manifest 摘要判定出厂内容，不再以手工 `*_VERSION` 戳作为插件升级依据。市场版本与用户禁用/卸载状态优先。具体命令与更新语义见 [内置插件与市场更新](plugin-updates.md)。
+APK 插件由 [组件清单](../../catalogs/plugin-components.json) 与统一构建器生成。Gradle 预构建先校验全部 zip 与 manifest，再安装资产；运行时以 manifest 摘要判定出厂内容，不再以手工 `*_VERSION` 戳作为插件升级依据。市场版本与用户禁用/卸载状态优先。具体命令与更新语义见 [内置插件与市场更新](plugin-updates.md)。
 
 引擎兼容资产使用 Chrome 73，戳包含引擎、polyfill、目标与工具版本摘要，manifest 记录逐文件摘要；仅覆盖官方 dist/engine。Android 插件客户端由组件构建器独立降级，不再写入 compat 的 mobileui 树。
 
@@ -26,7 +26,7 @@ APK 插件由 [组件清单](../../tools/plugin-components.json) 与统一构建
 | `ripgrep-android-arm64.zip` | 无需改（只查文件存在且非空） |
 | `node-pty-android-arm64.zip` | 无需改（只查文件存在且非空） |
 | `linkcompat.bin` | 无需改（每次启动覆盖写） |
-| `keyinject.bin` | 无需改（每次启动覆盖写；换密钥池必须重新跑 `tools/build-keyinject.ps1`，见 ⑮） |
+| `keyinject.bin` | 已退休，不再构建或打包；旧实现仅见[历史档案](../history/retired-key-pool.md) |
 | `boosandbox.bin` / `boo-sandbox-run.bin` | 无需改（每次启动覆盖写） |
 | `dsh-android-shell.mjs` | 无需改（每次启动覆盖写） |
 | `shell-tool.zip` | 无需改（每次启动解包覆盖写） |
