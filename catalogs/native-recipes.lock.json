@@ -1,0 +1,292 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Source recipes and explicit provenance gaps; does not replace runtime asset byte lock or claim historic binary reproduction.",
+  "runtimeAssetLock": "catalogs/runtime-assets.lock.json",
+  "toolchain": {
+    "ndkRevision": "27.0.12077973",
+    "api": 26,
+    "abi": "arm64-v8a",
+    "compiler": "aarch64-linux-android26-clang",
+    "supportedHostTags": [
+      "linux-x86_64",
+      "darwin-x86_64",
+      "windows-x86_64"
+    ],
+    "pinBasis": "docs/agents/regen-assets.md recorded toolchain; not an inference about existing binary build."
+  },
+  "recipes": [
+    {
+      "id": "linkcompat",
+      "kind": "shared-library",
+      "source": {
+        "path": "native/linkcompat/linkcompat.c",
+        "sha256": "dc09eaa2669011e8a1ea0fd91541aa471b63b44b0d387a420d3501fc9eb37dbf",
+        "migratedFrom": "app/src/main/jni/linkcompat.c"
+      },
+      "output": "linkcompat.bin",
+      "args": [
+        "-shared",
+        "-fPIC",
+        "-O2",
+        "-Wall",
+        "-o",
+        "{output}",
+        "{source}",
+        "-ldl"
+      ],
+      "requiredSymbols": [
+        "link",
+        "linkat"
+      ],
+      "license": {
+        "spdx": "MIT",
+        "path": "LICENSE",
+        "sha256": "72b9e40873316f9d236c611540e0664c5e69ae0bfc25bfdac81dc33b95af86cd",
+        "basis": "Repository MIT license; no separate C-source license header present."
+      },
+      "evidence": {
+        "path": "docs/agents/regen-assets.md",
+        "detail": "Recorded NDK 27.0.12077973 arm64 API26 commands; historic binary compiler revision remains unknown."
+      },
+      "verification": {
+        "androidBuild": "not-run",
+        "reason": "No Android NDK installed in current environment; host clang does not substitute Android toolchain.",
+        "byteReproduction": "unverified",
+        "existingAssetSha256": "89fbb44c3c3413761ba8e600f74b3d753ceae1895f0bba16a4288fda7305a423"
+      }
+    },
+    {
+      "id": "sandbox-library",
+      "kind": "shared-library",
+      "source": {
+        "path": "native/sandbox/boosandbox.c",
+        "sha256": "03ade7a88aab38186a94cd9dc254ad2951d672102cf8a89f1bf1f058964246e0",
+        "migratedFrom": "app/src/main/jni/boosandbox.c"
+      },
+      "output": "boosandbox.bin",
+      "args": [
+        "-shared",
+        "-fPIC",
+        "-O2",
+        "-Wall",
+        "-o",
+        "{output}",
+        "{source}",
+        "-ldl"
+      ],
+      "requiredSymbols": [
+        "open",
+        "openat",
+        "mkdirat",
+        "renameat",
+        "linkat"
+      ],
+      "license": {
+        "spdx": "MIT",
+        "path": "LICENSE",
+        "sha256": "72b9e40873316f9d236c611540e0664c5e69ae0bfc25bfdac81dc33b95af86cd",
+        "basis": "Repository MIT license; no separate C-source license header present."
+      },
+      "evidence": {
+        "path": "docs/agents/regen-assets.md",
+        "detail": "Recorded NDK 27.0.12077973 arm64 API26 commands; historic binary compiler revision remains unknown."
+      },
+      "verification": {
+        "androidBuild": "not-run",
+        "reason": "No Android NDK installed in current environment; host clang does not substitute Android toolchain.",
+        "byteReproduction": "unverified",
+        "existingAssetSha256": "998882cc7bfd8ebf36870317c68f6b42af04178eb7c2329f4de9b45d4ef7ce60"
+      }
+    },
+    {
+      "id": "sandbox-runner",
+      "kind": "executable",
+      "source": {
+        "path": "native/sandbox/boo-sandbox-run.c",
+        "sha256": "6c8684d2d30704d3bd99a80a8d03e825b30d7fcd77e4d96d05d469fd70b54d7e",
+        "migratedFrom": "app/src/main/jni/boo-sandbox-run.c"
+      },
+      "output": "boo-sandbox-run.bin",
+      "args": [
+        "-O2",
+        "-Wall",
+        "-o",
+        "{output}",
+        "{source}"
+      ],
+      "requiredSymbols": [
+        "main"
+      ],
+      "license": {
+        "spdx": "MIT",
+        "path": "LICENSE",
+        "sha256": "72b9e40873316f9d236c611540e0664c5e69ae0bfc25bfdac81dc33b95af86cd",
+        "basis": "Repository MIT license; no separate C-source license header present."
+      },
+      "evidence": {
+        "path": "docs/agents/regen-assets.md",
+        "detail": "Recorded NDK 27.0.12077973 arm64 API26 commands; historic binary compiler revision remains unknown."
+      },
+      "verification": {
+        "androidBuild": "not-run",
+        "reason": "No Android NDK installed in current environment; host clang does not substitute Android toolchain.",
+        "byteReproduction": "unverified",
+        "existingAssetSha256": "5b1a260e0dd10be0c0f448efe355cf5302e0f8f4863e6dda83406d63eb9d14f7"
+      }
+    }
+  ],
+  "externalArtifacts": [
+    {
+      "id": "termux-bootstrap",
+      "runtimeAssetId": "termux-bootstrap",
+      "observedArtifactSha256": "b3739c14a2eb7421243b908e2fe2b9e54cbdf8477d210d09e8ac4452d864cad9",
+      "upstream": {
+        "location": "https://github.com/termux/termux-packages",
+        "version": null,
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    },
+    {
+      "id": "node",
+      "runtimeAssetId": "node",
+      "observedArtifactSha256": "ba16f7f4d0cc0b0272700effe06dc0d3682206afe1b54af75ca530a3e5c0d3bf",
+      "upstream": {
+        "location": "https://github.com/termux/termux-packages",
+        "version": "26.4.0-2",
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    },
+    {
+      "id": "engine",
+      "runtimeAssetId": "engine",
+      "observedArtifactSha256": "0e19012c61669e150cc33143a9b028394183d3d54a548d554da2758a5b16e432",
+      "upstream": {
+        "location": "https://registry.npmjs.org/@deepseek-ai/dsh",
+        "version": "0.2.2-rc.1",
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    },
+    {
+      "id": "native-addon",
+      "runtimeAssetId": "native-addon",
+      "observedArtifactSha256": "37351527c134cc6b5011b81382b28233b5f4694600d226b21d96b35654a2e92e",
+      "upstream": {
+        "location": "https://registry.npmjs.org/node-addon-require-builtin-android-arm64",
+        "version": "0.1.7",
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    },
+    {
+      "id": "system-addon",
+      "runtimeAssetId": "system-addon",
+      "observedArtifactSha256": "b28598cb69cbf4a7015e8830b13e83893e70c9896d9388e68cec50c872881526",
+      "upstream": {
+        "location": "https://registry.npmjs.org/@deepseek-ai/node-addon-system-android-arm64",
+        "version": "0.1.2",
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    },
+    {
+      "id": "ripgrep",
+      "runtimeAssetId": "ripgrep",
+      "observedArtifactSha256": "c53a30002ae9695b652a2efe885bc1ae6a589883901f4d9f1337c56e543946d3",
+      "upstream": {
+        "location": "https://registry.npmjs.org/@vscode/ripgrep-android-arm64",
+        "version": "1.18.0",
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    },
+    {
+      "id": "sharp",
+      "runtimeAssetId": "sharp",
+      "observedArtifactSha256": "41ad7e41dd542bcc4f077f0edc0c39cc04944387ed44fdaa7777d9cd80a280cd",
+      "upstream": {
+        "location": "https://registry.npmjs.org/@img/sharp-wasm32",
+        "version": "0.35.5",
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    },
+    {
+      "id": "node-pty",
+      "runtimeAssetId": "node-pty",
+      "observedArtifactSha256": "ac79a96c596e6d603042f63857ab33ec0830b145f69295c871cd4e46a7efeace",
+      "upstream": {
+        "location": "https://github.com/microsoft/node-pty",
+        "version": null,
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility.",
+        "Node headers 26.4.0, node-addon-api version, exact node-pty revision, NDK C++ command inputs and zip recipe need pinning; documented -static-libstdc++ requirement remains."
+      ]
+    },
+    {
+      "id": "adb",
+      "runtimeAssetId": "adb",
+      "observedArtifactSha256": "1a0776404f4b37972a8687ba3a88562c30f52e037095eb574af3b2c344fea2eb",
+      "upstream": {
+        "location": "https://github.com/termux/termux-packages",
+        "version": null,
+        "integrity": null
+      },
+      "recipeStatus": "incomplete",
+      "gaps": [
+        "Original source/build staging recipe is not checked into this repository.",
+        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Complete transitive license inventory must be recovered before asserting source reproducibility."
+      ]
+    }
+  ],
+  "retired": [
+    {
+      "id": "keyinject",
+      "status": "retired",
+      "reason": "Gateway replaced native injection; current installer removes legacy library and returns null. Not an active source gap."
+    }
+  ]
+}

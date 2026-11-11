@@ -1,0 +1,21 @@
+# 当前源码所有者。独立插件仓库的审核与发布仍由其自身仓库负责。
+* @pht88888888
+
+# 模块合同与底层能力
+/core/ @pht88888888
+/runtime/ @pht88888888
+/platform/ @pht88888888
+/web/ @pht88888888
+/bridge/ @pht88888888
+
+# 功能与应用装配
+/feature/ @pht88888888
+/app/ @pht88888888
+
+# 插件、兼容锁、运行资产与门禁
+/plugins/ @pht88888888
+/catalogs/ @pht88888888
+/contracts/ @pht88888888
+/tools/ @pht88888888
+/.github/ @pht88888888
+/docs/runbooks/ @pht88888888

@@ -18,30 +18,11 @@ keystore.properties
 *.iml
 .DS_Store
 
-# ── APK 资产：一次性产物，构建脚本不在本仓库 ─────────────
-#
-# 这些是从 Termux debs / npm registry / NDK 编译出来的大二进制，
-# 合计 112.7 MB，且**无法从本仓库重建**（见 AGENTS.md「重新生成资产」）。
-# 单独备份，不入库。
-#
-# 例外：手写源码，必须入库。
-#   webview-polyfill.js    —— 旧 WebView 内核兼容垫片
-#   dsh-android-shell.mjs  —— uid 2000 执行通道（含 ADB 协议与密钥信任逻辑）
-#   dsh-android-root.mjs   —— root（uid 0）执行通道（经 su，含 77/78 专属退出码）
-#   ui-probe.js            —— UI 探针（页面世界，运行时 eval，见 AGENTS.md ⑫.5）
-#                             它**没有转译步骤**，源文件就是运行文件，不入库等于
-#                             别人 clone 后 APK 里没有探针、`ui` 工具全线超时。
-#   dsh-fetch-guard.mjs    —— 引擎侧 HTTP header 净化垫片（由 NODE_OPTIONS=--import
-#                             预加载）。同样是手写源码、无转译步骤，不入库等于
-#                             别人 clone 后 APK 里没有它，`--import` 指向空文件
-#                             会让引擎**直接起不来**（ERR_MODULE_NOT_FOUND）。
+# ── APK 大型运行资产 ─────────────────────────────────────
+# 输入与摘要见 catalogs/runtime-assets.lock.json；部分来源配方仍不完整。
+# 手写源码由 runtime/scripts、runtime/webview、contracts/bridge 管理，
+# Gradle 组装到 build/generated/android-assets，不回写源码资产目录。
 app/src/main/assets/*
-!app/src/main/assets/webview-polyfill.js
-!app/src/main/assets/dsh-android-shell.mjs
-!app/src/main/assets/dsh-android-root.mjs
-!app/src/main/assets/ui-probe.js
-!app/src/main/assets/dsh-fetch-guard.mjs
-!app/src/main/assets/bridge-protocol.json
 COMMIT_MSG.tmp
 
 # ── 真机调试工具的运行期产物：入库的是脚本，不是它的输出 ────────

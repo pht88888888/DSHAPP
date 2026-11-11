@@ -11,13 +11,21 @@ package com.dsh.android.ui
  *  按你要做的事找入口：
  *
  *    WebView 装配        setupWebView()        设置项、内核回调、JS 桥注入
- *    启动层与超时        showOverlay()         两级提示：12 秒中性、27 秒红字
- *                         armOverlayTimeout()
+ *    启动层与超时        BootOverlayPresenter  两级提示：12 秒中性、27 秒红字
+ *    真首帧与展示兜底    FirstFrameAwaiter     真实首帧与超时分别记账
+ *    内核恢复            WebRecoveryController 去重、退避、重试与停止
+ *    键盘预判            ImeLayoutController   高度学习、朝向缓存和交接
+ *    页面返回            PageBackNavigation    单次探针、超时与迟到隔离
+ *    系统栏帧序列        SystemBarFlashSequence 只负责帧与圈数
+ *    浏览器操作提示      BrowserActivityPill   自有视图、动画与计时
  *    权限                 requestRuntimePermission()  统一入口，串行排队
  *                         （页面要什么能力由 WebCapability 定义）
- *    下载                handleDownload()      cookie 鉴权后交系统下载器
+ *    下载                handleDownload()      授权快照交下载事务
  *                         handleDownloadStream()  gecko 内核代发的响应
  *    AI 浏览器           ensureAiBrowser()     内置浏览器，window.open 的落点
+ *    面板与标注状态      BrowserPaneCoordinator 模式、标注身份与画布世代
+ *    页面桥装配          NativePageBridgeDispatcher 领域提供者与宿主动作
+ *                         BubblePageBridge / PrivilegePageBridge
  *    引擎                engine（EngineManager）
  *
  *  ## 改这里之前必须知道的三件事
@@ -26,7 +34,7 @@ package com.dsh.android.ui
  *     地理位置 —— 不实现就不报错，页面只拿到一个含糊的失败。新增能力必须
  *     同时改三处：清单声明、内核回调、运行时申请。判定收敛在 WebCapability。
  *  2. **权限申请必须串行。** 系统同一时刻只处理一个对话框，并发 launch 会
- *     丢掉后一个。队列见 permissionSinks。
+ *     丢掉后一个。队列见 RuntimePermissionQueue。
  *  3. **启动层的收起信号来自页面**（桥的 onUiReady），不是 onPageFinished。
  *     页面加载完 ≠ 移动端插件装配完，两者真机实测差 1.4~1.7 秒。
  */
@@ -37,7 +45,6 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
@@ -85,17 +92,19 @@ import com.dsh.android.web.createWebHost
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Date
 import java.util.Locale
 import rikka.shizuku.Shizuku
 import com.dsh.android.bubble.BubbleA11yService
 import com.dsh.android.bubble.BubbleAppearance
 import com.dsh.android.bubble.FloatingBubble
+import com.dsh.android.bubble.BubbleImePreferences
+import com.dsh.android.bubble.BubbleStatusSource
+import com.dsh.android.bubble.BubblePanelActions
 import com.dsh.android.command.UiProbeBridge
 import com.dsh.android.core.DshApplication
 import com.dsh.android.engine.EngineManager
@@ -142,7 +151,7 @@ class MainActivity : AppCompatActivity() {
      * 这里给一条**不经过内核网络栈**的备用通道：`HttpURLConnection` 打
      * `127.0.0.1` —— 与「下载会话导出」用的是同一套，已验证可用。
      *
-     * ⚠️ `by lazy` 在这里是安全的：它只在 [StatusBridge] 的方法里被访问，
+     * ⚠️ `by lazy` 在这里是安全的：它只在 [ActivityPageBridge] 的方法里被访问，
      *   而那些方法要等页面加载完、JS 调用桥时才会进来，远晚于 `web` 的赋值。
      *   且 `postToPage` 是 lambda，捕获的是 `this`，真正取值时才碰 `web`。
      */
@@ -153,7 +162,7 @@ class MainActivity : AppCompatActivity() {
     /**
      * 最近一次已应用的页面底色。
      *
-     * ⚠️ 由 `StatusBridge`（WebView 的 JS 线程）读写，必须 `@Volatile`；
+     * ⚠️ 由 `ActivityPageBridge`（WebView 的 JS 线程）读写，必须 `@Volatile`；
      * 用 String 而不是 Int 是为了能区分"还没收到过"（空串）和"收到过黑色"。
      */
     @Volatile
@@ -176,175 +185,39 @@ class MainActivity : AppCompatActivity() {
     //   顺手把这次的实测高度记下来。所以是「预判 + 自学习」：
     //   高度因机器/输入法而异，不写死；第一次没有缓存值，仍会闪一下。
 
-    /**
-     * 上一次实测的键盘高度（px）。0 = 还没有缓存值，此时不做预判。
-     *
-     * ⚠️ 必须**持久化**（见 `loadImeHeight` / `saveImeHeight`）：只放内存的话，
-     *   App 每次冷启动都会丢掉，于是"每次开机第一次点输入框都要闪一下"。
-     */
-    @Volatile
-    private var lastImeHeightPx = 0
-
-    /** 是否处于「预判缩矮」状态（此时 WebView 被手动改过 bottomMargin）。 */
-    private var imePrejudging = false
-
-    /**
-     * 静止时的根视图高度（px），取历史最大值。
-     *
-     * 键盘只会让内容区变矮、不会变高，所以"历史最大"就是无键盘时的全高。
-     * 与插件侧 `setupKeepFocusGuard` 的 `restVh` 是同一套判据（那里已真机验证）。
-     */
-    private var restHeightPx = 0
-
-    /** 上一次看到的根视图宽度（px）；用于转屏时重置 `restHeightPx` 并换一份缓存。 */
-    private var lastRootWidthPx = 0
-
-    /** 预判兜底：超时仍未等到真 insets（说明键盘其实没弹）就恢复原状。 */
     private val imeHandler = Handler(Looper.getMainLooper())
-    private val imeRestoreRunnable = Runnable { restoreFromPrejudge("超时未见 insets") }
+    private val imeLayout by lazy {
+        ImeLayoutController(
+            scheduler = object : UiTaskScheduler {
+                override fun postDelayed(task: Runnable, delayMs: Long) { imeHandler.postDelayed(task, delayMs) }
+                override fun remove(task: Runnable) { imeHandler.removeCallbacks(task) }
+            },
+            loadHeight = { BubbleImePreferences.learnedHeight(this) },
+            saveHeight = { px ->
+                BubbleImePreferences.saveHeight(this, px)
+                Log.i(DshApplication.TAG, "键盘高度已学习并保存: ${px}px")
+            },
+            applyMargin = { px, reason -> setWebViewBottomMargin(px); Log.i(DshApplication.TAG, reason) },
+        )
+    }
 
     /** 启动层超时的 handler 与 runnable（见 [armOverlayTimeout]）。 */
     private val overlayHandler = Handler(Looper.getMainLooper())
 
-    /**
-     * 「等界面就绪」的轮次编号 —— 用来作废**上一轮**遗留的超时计时器。
-     *
-     * ⚠️ 计时器只该对**排定它的那一轮**负责，而这一点原先没有任何判据：
-     *   [armOverlayTimeout] 排的 12 秒计时器，全工程唯一的 `removeCallbacks`
-     *   在 [onDestroy]，**中途从不撤销**。于是只要某一轮在 12 秒内没走完，
-     *   它的计时器就会留在队列里，等在**下一轮**的某个时刻开火 —— 而
-     *   [overlayDismissed] 这道唯一的守卫又会被引擎重启显式放开
-     *   （见 [EngineManager.State.Dead] 分支），守卫便形同不存在。
-     *
-     *   真机证据（服务器诊断包，OPPO PKJ110 / Android 16，v21）：
-     *   ```
-     *   16:58:06.423 加载 Web GUI: http://127.0.0.1:3080/?token=…   ← 排定计时器(→18.423)
-     *   16:58:07.839 插件已激活（onUiReady）                          ← 本轮已就绪
-     *   16:58:07.874 Web 内核已提交首帧，收起启动动画                 ← 守卫关上
-     *   16:58:16.176 用户请求退出降级态（当前 rescue）                ← 引擎要重启
-     *   16:58:16.479 引擎已退出: …，准备自动重启（第 2 次）           ← 守卫被放开
-     *   16:58:17.195 启动引擎: …                                      ← 新一轮，还没起好
-     *   16:58:18.443 界面就绪回调超时（WebView 内核 138，页面错误: 无） ← 旧计时器开火
-     *   ```
-     *   此刻距新引擎的 `loadUrl` 还有一秒多，页面根本没开始解析 —— 「超时」
-     *   是一句假话，而用户看到的是红层盖住一个**本来正常的启动过程**。
-     *
-     *   判据是编号而不是「有没有计时器在队列里」：只有 [armOverlayTimeout]
-     *   记录它，作废点（引擎重启）自增它，两者不相等即说明到点的是旧轮次。
-     */
-    private var overlayWaitGeneration = 0
-
-    /** [overlayTimeoutRunnable] 被排定时所属的 [overlayWaitGeneration]。 */
-    private var overlayTimeoutArmedAt = 0
-
-    /*
-     * ⚠️ 这里**必须**写显式类型 `Runnable`。
-     *
-     * 第一轮提示之后要把自己再排一次（见下面的分级处理），于是初始化器里
-     * 出现了对自身的引用。省略类型时 Kotlin 无法推导（报
-     * `Type checking has run into a recursive problem`），
-     * 写全 `Runnable` 就好了。
-     */
-    private val overlayTimeoutRunnable: Runnable = Runnable {
-        if (overlayDismissed) return@Runnable
-        // ⚠️ 旧轮次的计时器必须**静默作废**：它描述的是上一轮那次等待，
-        //   对当前这一轮没有任何意义（见 [overlayWaitGeneration]）。
-        if (overlayTimeoutArmedAt != overlayWaitGeneration) return@Runnable
-        // ⚠️ 这里**不再静默收起**。原做法是「到点无条件收起」，理由是
-        //   「启动层永久盖住界面是最糟的失败方式」—— 但在旧 WebView 内核上，
-        //   收起之后露出来的是**一片白屏**（前端 bundle 解析失败、React 没挂载），
-        //   用户看到的就是反馈里那个「卡在空白页」，连原因都看不到。
-        //   所以改成把原因摆出来，并留一个点击出口（见 onCreate 里的
-        //   `overlay.setOnClickListener`）：既说清问题，又不会被永久挡住。
-        Log.w(
-            DshApplication.TAG,
-            "界面就绪回调超时（WebView 内核 $webViewMajor，页面错误: " +
-                "${webError.ifEmpty { "无" }}）",
-        )
-        // 优先显示页面自己报出来的原因（最准确）；没有就只说「还没就绪」。
-        //
-        // ⚠️ **这里不能推断「内核过旧」** —— 那个结论在构造上永远为假。
-        //   `observeEngine` 的 `Ready` 分支里，`webViewMajor < effectiveMinWebViewMajor`
-        //   时会直接 `return@collect`：**既不 `loadUrl`、也就不会调 [armOverlayTimeout]**
-        //   （唯一调用点在 loadUrl 之后）。所以能走到这里的设备，内核**必然已达门槛**。
-        //
-        //   原文案却写「可能是系统 WebView 内核过旧（当前 N，需要 73+）」，
-        //   于是真机上出现自相矛盾的提示：内核 150 的设备被劝去「更新 Android
-        //   System WebView」—— 而它已经是最新的，用户照做也永远解决不了问题。
-        //
-        //   真机取证（8 个真实用户、6 家厂商、内核 114/132/138/140/143/150/153/154）：
-        //   **每一条**「界面就绪回调超时」后面 0.4~9.3 秒内都紧跟着
-        //   `插件已激活（onUiReady）` + `Web 内核已提交首帧，收起启动动画`。
-        //   也就是说这不是错误，只是「解析 5.5MB 前端 + 挂载 React」比 12 秒慢，
-        //   红层随后自己就收掉了。真正的错误由 `webViewMajor` 门槛与
-        //   `State.Failed` 两条路各自负责提示。
-        if (webError.isNotEmpty()) {
-            showOverlay("界面加载失败", hint = "$webError（点一下这里可继续）", isError = true)
-            return@Runnable
-        }
-        /*
-         * ## ⚠️⚠️ 第一轮到点**不是错误态**（2026-10-30 修）
-         *
-         * 原实现到这里直接 `isError = true`，而 `showOverlay` 在错误态下会：
-         *   ① 把标题染成红色；② 挂上「点一下收起」的点击出口；
-         *   ③ **把「进入安全模式」按钮摆出来**。
-         *
-         * 但上面那段真机取证（8 个真实用户、6 家厂商）已经证明：每一条超时之后
-         * **0.4~9.3 秒内** `onUiReady` 都会到，红层随后自己就收了 —— 也就是说
-         * 绝大多数情况下**什么都没坏**，只是「解析 5.5MB 前端 + 挂载 React」
-         * 比 12 秒慢。
-         *
-         * 两个用户因此反复报障（20261029-072906、20261029-212648）：
-         *
-         *   「冷启动时间太短。每次都拉横幅，每次都要修」
-         *   「打开软件时界面加载不出来」（截图里正是这条红字）
-         *
-         * 而且危害不只是「难看」：红字旁边就是「进入安全模式」按钮，用户以为
-         * App 坏了就去点 —— 那会推开他的插件配置并重解包 15 秒，**把一次正常
-         * 的慢启动变成真的需要修复的事故**。「每次都要修」就是这么做出来的。
-         *
-         * 所以分两级：
-         *   · 第一轮到点 ⇒ 中性提示（不染红、不给出口、不露安全模式按钮），
-         *     并再等一轮（[UI_READY_SOFT_EXTRA_MS]）；
-         *   · 第二轮仍未就绪 ⇒ 这时才真的是「起不来」，给红色提示 + 出口 +
-         *     安全模式按钮（沿用原行为）。
-         *
-         * 保留第二轮是必须的：只去掉红字而不给出路的话，万一前端真的挂死，
-         * 用户会永远看着一句「还在解析」而没有点击出口 —— 比误报更糟。
-         */
-        if (!overlaySoftNoticed) {
-            overlaySoftNoticed = true
-            showOverlay(
-                "界面加载中",
-                hint = "页面还在解析，通常再等几秒就好，不用做任何操作。",
-                isError = false,
-            )
-            overlayHandler.postDelayed(overlayTimeoutRunnable, UI_READY_SOFT_EXTRA_MS)
-            return@Runnable
-        }
-        showOverlay(
-            "界面加载较慢",
-            hint = "已等 ${(UI_READY_TIMEOUT_MS + UI_READY_SOFT_EXTRA_MS) / 1000} 秒仍未就绪，" +
-                "页面可能还在解析。稍等一下；点一下这里可继续",
-            isError = true,
+    private val bootOverlay by lazy {
+        BootOverlayPresenter(
+            scheduler = object : UiTaskScheduler {
+                override fun postDelayed(task: Runnable, delayMs: Long) { overlayHandler.postDelayed(task, delayMs) }
+                override fun remove(task: Runnable) { overlayHandler.removeCallbacks(task) }
+            },
+            pageError = { webError },
+            render = ::renderOverlay,
+            onTimeout = {
+                Log.w(DshApplication.TAG, "界面就绪回调超时（WebView 内核 $webViewMajor，页面错误: ${webError.ifEmpty { "无" }}）")
+            },
         )
     }
-
-    /**
-     * 启动层是否已经收起。
-     *
-     * ⚠️ 一旦置位就不再放动画回来：引擎重启、`uiStage` 重复推送都不该让启动页
-     *   重新盖住用户正在用的界面。
-     */
-    private var overlayDismissed = false
-
-    /**
-     * 第一轮超时是否已经提示过（见 [overlayTimeoutRunnable] 的两级处理）。
-     *
-     * 每轮加载开始时由 [armOverlayTimeout] 清零 —— 否则第二轮加载一上来
-     * 就会直接走「真的起不来」那个分支，等于把分级提示废掉。
-     */
-    private var overlaySoftNoticed = false
+    private val overlayDismissed: Boolean get() = bootOverlay.dismissed
 
     /** 当前 WebView 内核的主版本号；0 = 读不到（此时不做版本拦截）。 */
     private var webViewMajor = 0
@@ -376,91 +249,40 @@ class MainActivity : AppCompatActivity() {
     /**
      * 页面侧上报的第一条脚本错误（见 `webview-polyfill.js` 的错误上报）。
      *
-     * ⚠️ 由 `StatusBridge`（WebView 的 JS 线程）写、主线程读，必须 `@Volatile`。
+     * ⚠️ 由 `ActivityPageBridge`（WebView 的 JS 线程）写、主线程读，必须 `@Volatile`。
      * 空串 = 页面没报过错。
      */
     @Volatile
     private var webError = ""
 
-    /** WebView 是否已经提交过至少一帧（见 [awaitWebViewPainted]）。 */
-    private var webViewPainted = false
-
-    /**
-     * **真正**收到了内核的首帧回调（区别于 [webViewPainted]：那个在兜底超时时也会被置 true）。
-     *
-     * `reloadWithRetry` 判「界面恢复了没有」必须用这个 —— 用 [webViewPainted] 会把
-     * 「兜底超时到了」当成「恢复成功」。
-     */
-    private var firstFrameReallyArrived = false
-
-    /** 是否已有一个等待首帧的回调在飞，避免重复注册。 */
-    private var paintPending = false
-
-    /** 等待 Web 内核首帧的兜底超时（见 [awaitWebViewPainted]）。 */
-    private val paintTimeoutRunnable = Runnable {
-        if (!webViewPainted) {
-            Log.w(DshApplication.TAG, "等待 Web 内核首帧超时，仍收起启动动画")
-            webViewPainted = true
-            paintPending = false
-            hideOverlay()
-        }
+    private val firstFrame by lazy {
+        FirstFrameAwaiter(
+            scheduler = object : UiTaskScheduler {
+                override fun postDelayed(task: Runnable, delayMs: Long) { overlayHandler.postDelayed(task, delayMs) }
+                override fun remove(task: Runnable) { overlayHandler.removeCallbacks(task) }
+            },
+            requestFrame = { done -> web.awaitFirstFrame { done() } },
+            onPainted = { Log.i(DshApplication.TAG, "Web 内核已提交首帧，收起启动动画") },
+            onFallback = {
+                Log.w(DshApplication.TAG, "等待 Web 内核首帧超时，仍收起启动动画")
+                hideOverlay()
+            },
+        )
     }
 
-    /**
-     * **短时间内连续**为「内核进程死亡」重载过几次。
-     *
-     * ⚠️ **必须有上界**：如果重载之后立刻又崩（比如某个必然让渲染进程 OOM 的
-     *   页面状态），无限重载就变成一个「白屏 ↔ 重载」的死循环，比直接告诉用户
-     *   出了什么事更难排查 —— 而且日志会被刷屏。
-     *
-     * ⚠️ **但「连续」必须真的判成连续**：它原先是个纯计数器、从头到尾不归零，
-     *   于是统计的是「本次运行累计死过几次」。而「内核被系统回收」在内存压力下
-     *   是**正常且分散**的 —— 服务器诊断包实测同一个用户三次回收分别隔了
-     *   31 分、32 分、4.8 小时（V2357A，每次都在 0.4 秒内恢复成功）。攒够 4 次
-     *   就宣告「界面反复出错，已停止自动恢复」，而实际上每一次都自愈了。
-     *
-     *   真出问题的形态完全不同：服务器上唯一的「反复」样本是**秒级连发**——
-     *   `02:37:31 → 36 → 41 → 46 → 54`（14 个包同一现场，堆内存压垮渲染进程），
-     *   相邻间隔 5~8 秒。两类之间隔着两个数量级，所以判据用时间窗是稳的。
-     *
-     *   与引擎重启的 [ENGINE_RESTART_WINDOW_MS] 是**同一个模式**（那里已经这么做了，
-     *   见它的 KDoc），渲染重载这条路当时漏了。
-     */
-    private var rendererRestarts = 0
-
-    /**
-     * 上一次「内核没了」的时刻（见 [RENDERER_RESTART_WINDOW_MS]）。
-     *
-     * ⚠️ 与 [lastEngineDeadAt] **同一个模式**：只靠计数器、没有时间窗的话，
-     *   它统计的就成了「本次运行累计死过几次」而不是「是不是在反复死」。
-     */
-    private var lastRendererGoneAt = 0L
-
-    /** 重载界面的退避 handler（见 [onRendererGone]）。 */
     private val rendererHandler = Handler(Looper.getMainLooper())
-
-    /** 已经排队但还没执行的重载（用于去重，见 [onRendererGone]）。 */
-    private var rendererReloadQueued = false
-
-    /**
-     * 是否已经放弃自动恢复（见 [onRendererGone] 的上界分支）。
-     *
-     * ⚠️ **光靠「不再排新的重载」停不下来**：判定是「先排重载、再等
-     *   [RELOAD_RECOVERY_TIMEOUT_MS] 看首帧」，所以在飞的那条链（[reloadWithRetry]
-     *   的 `postDelayed`）并不知道上界已经触发，它会照常往下走 —— 再次
-     *   `web.reload()`，把刚贴给用户的「已停止自动恢复」提示顶掉，日志上表现为
-     *   「说了停却还在重载」。
-     *   真机证据（CDY-TN90 / v21 system，堆内存压垮渲染进程）：
-     *   ```
-     *   02:37:46.893 界面内核崩溃，准备重载（第 4 次）
-     *   02:37:46.914 界面内核反复崩溃，停止自动重载      ← 宣称已停
-     *   02:37:47.964 界面重载 2 次仍未恢复为可用状态    ← 旧链仍在跑
-     *   02:37:50.171 界面未恢复，再试一次               ← 而且又排了一次
-     *   02:37:50.176 重载界面: http://127.0.0.1:3080/…  ← 真的又重载了
-     *   ```
-     *   置位后 [reloadWithRetry] 的每一处入口与延时回调都会立刻放弃。
-     */
-    private var rendererGaveUp = false
+    private val webRecovery by lazy {
+        WebRecoveryController(
+            scheduler = object : UiTaskScheduler {
+                override fun postDelayed(task: Runnable, delayMs: Long) { rendererHandler.postDelayed(task, delayMs) }
+                override fun remove(task: Runnable) { rendererHandler.removeCallbacks(task) }
+            },
+            now = System::currentTimeMillis,
+            reload = ::reloadWebHost,
+            hasFirstFrame = { firstFrame.reallyArrived },
+            onEvent = ::onWebRecoveryEvent,
+        )
+    }
 
     /**
      * 引擎重启后，即使 URL 与上次相同也**必须**重新加载页面。
@@ -519,352 +341,76 @@ class MainActivity : AppCompatActivity() {
      */
     private val webRescueInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /**
-     * 承载页面的内核进程死了 —— 重载界面把它带回来。
-     *
-     * ## 为什么这件事必须由宿主做
-     *
-     * 两个内核都不会自己恢复（见 [WebHost.rendererGone] 的说明）：WebView 的
-     * `onRenderProcessGone` 默认实现**直接杀掉应用进程**（用户看到的是「App 突然
-     * 自己退了」）；GeckoView 的 `onCrash` / `onKill` 默认什么都不做，界面就永久
-     * 停在一块画不出东西的空壳上。两种情况都**没有任何提示**，因为进程还活着、
-     * 只是页面没了。
-     *
-     * ## 恢复动作
-     *
-     * 引擎（Node 进程）**不受影响** —— 死的是渲染进程，不是引擎。URL 与 token
-     * 都还有效，所以 `reload()` 一次就能把界面带回来，不需要重启引擎。
-     *
-     * ⚠️ **必须延迟一点再重载**：回调到达时内核正在收拾崩溃的现场，立刻 `loadUrl`
-     *   多半会被丢掉。实测在 WebView 上留一小段间隔（[RENDERER_RELOAD_DELAY_MS]）
-     *   重载成功率明显更高。
-     *
-     * ⚠️ **首次重载静默做**（用户通常察觉不到：界面闪一下而已）。超过
-     *   [MAX_RENDERER_RESTARTS] 次之后就必须明说了 —— 反复崩溃是真的有问题，
-     *   而静默重载会让用户以为「App 什么都没发生」。
-     *
-     * @param didCrash true = 崩溃；false = 被系统回收（低内存时的正常行为）。
-     */
+    /** 内核回调可来自 Gecko 线程，恢复策略只在主线程推进。 */
     private fun onRendererGone(didCrash: Boolean) {
-        // 内核的回调可能在非主线程来（GeckoView 的 contentDelegate 就在
-        // Gecko 线程），而这里要碰 View、还要 postDelayed，必须先切主线程。
         if (Looper.myLooper() != Looper.getMainLooper()) {
             rendererHandler.post { onRendererGone(didCrash) }
             return
         }
-
-        val reason = if (didCrash) "崩溃" else "被系统回收"
-        // ⚠️ **已经放弃自动恢复就到此为止**：不再计数、不再写现场、不再重贴提示。
-        //   上界分支（见下面的 `rendererRestarts > MAX_RENDERER_RESTARTS`）只挡住了
-        //   「新排一条重载链」，而**本函数是排重载的另一个入口** —— 内核此后每崩溃
-        //   /被回收一次都会再走一遍这里，于是 `rendererRestarts` 继续往上涨、又写一份
-        //   现场文件、并把用户刚要读的那条「界面反复出错」提示换成新的一份。
-        //   真机证据（CDY-TN90 / v21 system，`3c52fcd` 修复前）：
-        //   ```
-        //   02:37:46.914 界面内核反复崩溃，停止自动重载     ← 已宣称放弃
-        //   02:37:54.692 界面内核崩溃，准备重载（第 5 次）  ← 却又记了一次（n=5）
-        //   ```
-        //   ⚠️ `3c52fcd` 只给 [reloadWithRetry] 加了守卫，那个守卫管不到这里 ——
-        //   两处入口都要挡，少一处就还是「说了停却还在记」。
-        if (rendererGaveUp) {
-            Log.i(DshApplication.TAG, "已停止自动恢复，忽略内核$reason")
-            return
-        }
-        // 已经排好一次重载就不要再排 —— 一次崩溃可能同时从几个回调报上来。
-        if (rendererReloadQueued) {
-            Log.i(DshApplication.TAG, "界面内核$reason，已有重载在排队，忽略")
-            return
-        }
-
-        // ⚠️ 计数只统计**短时间内连续**的死亡（见 RENDERER_RESTART_WINDOW_MS）：
-        //   一次长期运行之后被系统回收（实测有隔了 4.8 小时的）是**正常的**，
-        //   把它算进「反复崩溃」会让用户无端看到「界面反复出错」并失去自动恢复。
-        //   与引擎重启那条路径（见 `State.Dead` 分支）保持同一套判据。
-        val now = System.currentTimeMillis()
-        if (now - lastRendererGoneAt > RENDERER_RESTART_WINDOW_MS) rendererRestarts = 0
-        lastRendererGoneAt = now
-        rendererRestarts++
-        Log.w(
-            DshApplication.TAG,
-            "界面内核$reason，准备重载（第 $rendererRestarts 次）",
-        )
-        // ⚠️ 「白屏」最常见的根因就是渲染进程崩溃/被回收，而内核这个回调是**唯一**
-        //   能区分「崩溃」与「被系统回收」的地方 —— 前者是内核 bug，后者是内存压力，
-        //   处置完全不同（前者报 bug，后者降内存占用）。记进崩溃现场文件，
-        //   别只留在 logcat 里（logcat 在用户手机上拿不到）。
-        CrashRecorder.recordRendererGone(didCrash, "第 $rendererRestarts 次重载")
-        EventLog.record(
-            "renderer.gone",
-            mapOf("crash" to didCrash.toString(), "n" to rendererRestarts.toString()),
-        )
-
-        // ⚠️ 状态复位：新渲染进程的第一帧还没提交，沿用旧值会让启动层立刻收尾。
-        //   （同时作废在飞的「首帧兜底超时」—— 它到点会 `hideOverlay()`，把下面
-        //   gaveUp 分支刚贴上的终态错误提示收走；见 [resetFirstFrameAwait]。）
-        resetFirstFrameAwait()
-
-        if (rendererRestarts > MAX_RENDERER_RESTARTS) {
-            Log.e(DshApplication.TAG, "界面内核反复$reason，停止自动重载")
-            // ⚠️ 必须置位：在飞的那条重载链（reloadWithRetry 的 postDelayed）不会
-            //   因为这里 return 而停下，它会继续 reload() 并把下面这条提示顶掉。
-            //   见 rendererGaveUp 的 KDoc。
-            rendererGaveUp = true
-            // 把出路摆给用户：不再自动重载，但说清发生了什么、以及该做什么。
-            // ⚠️ 这里显式放开 `overlayDismissed`（见 showOverlay 的第一行守卫），
-            //   否则界面早就收起过启动层，这条提示永远贴不上去。
-            // ⚠️ 并作废旧计时器：这是**终态**（不再恢复），若留着它，到点会
-            //   再贴一条「界面就绪回调超时」把这条更准确的提示顶掉。
-            invalidateOverlayTimeout()
-            overlayDismissed = false
-            showOverlay(
-                "界面反复出错",
-                hint = "Web 内核$reason 了 $rendererRestarts 次，已停止自动恢复。" +
-                    "点一下这里收起提示；若界面仍然空白，请重开 App",
-                isError = true,
-            )
-            return
-        }
-
-        rendererReloadQueued = true
-        rendererHandler.postDelayed({
-            rendererReloadQueued = false
-            // 用户可能已经手动恢复了（重开 Activity），此时不必再重载
-            if (isFinishing || isDestroyed) return@postDelayed
-            // ⚠️ 用带重试的封装：首次重载若仍失败（内核还没准备好新进程），
-            //   再补一次。不这样做的话，实测有一半概率停在白屏上不动。
-            reloadWithRetry(attempt = 1)
-        }, RENDERER_RELOAD_DELAY_MS)
+        webRecovery.rendererGone(didCrash)
     }
 
-    /** 页面菜单与 UI 探针共用入口；只在主线程操作存活的内核。 */
+    private fun onWebRecoveryEvent(event: WebRecoveryController.Event) {
+        when (event) {
+            is WebRecoveryController.Event.RendererGone -> {
+                val reason = if (event.crashed) "崩溃" else "被系统回收"
+                Log.w(DshApplication.TAG, "界面内核$reason，准备重载（第 ${event.count} 次）")
+                CrashRecorder.recordRendererGone(event.crashed, "第 ${event.count} 次重载")
+                EventLog.record("renderer.gone", mapOf("crash" to event.crashed.toString(), "n" to event.count.toString()))
+                resetFirstFrameAwait()
+            }
+            is WebRecoveryController.Event.CrashLimitReached -> {
+                val reason = if (event.crashed) "崩溃" else "被系统回收"
+                Log.e(DshApplication.TAG, "界面内核反复$reason，停止自动重载")
+                invalidateOverlayTimeout()
+                bootOverlay.reopen()
+                showOverlay("界面反复出错",
+                    hint = "Web 内核$reason 了 ${event.count} 次，已停止自动恢复。" +
+                        "点一下这里收起提示；若界面仍然空白，请重开 App", isError = true)
+            }
+            is WebRecoveryController.Event.ReloadExhausted -> {
+                Log.e(DshApplication.TAG, "界面重载 ${event.attempts} 次仍未恢复为可用状态")
+                invalidateOverlayTimeout()
+                bootOverlay.reopen()
+                if (!degradeToRescue(
+                        reason = "界面重载 ${event.attempts} 次仍无首帧（前端起不来）",
+                        eventName = "web.frame-giveup", extra = mapOf("attempts" to event.attempts.toString()),
+                    )) {
+                    showOverlay("界面没能恢复",
+                        hint = "已自动重载 ${event.attempts} 次，Web 内核仍未提交首帧。" +
+                            "点一下这里收起提示；若界面仍然空白，请重开 App", isError = true)
+                }
+            }
+        }
+    }
+
+    /** 页面菜单与 UI 探针共用入口。重试控制器不持有 WebHost 或授权 URL。 */
     private fun requestSafeReload(): Boolean {
         if (isFinishing || isDestroyed || !::web.isInitialized) return false
-        if (rendererGaveUp) {
+        if (webRecovery.gaveUp) {
             Toast.makeText(this, "界面此前反复出错，已停止自动恢复。请重开 App。", Toast.LENGTH_LONG).show()
             return false
         }
         if (web.currentUrl.isNullOrEmpty()) return false
-        reloadWithRetry(attempt = 1)
+        return webRecovery.requestReload()
+    }
+
+    /** 重置首帧 → reload → 注册新首帧，顺序不能交换。 */
+    private fun reloadWebHost(attempt: Int): Boolean {
+        if (isFinishing || isDestroyed || !::web.isInitialized || web.currentUrl.isNullOrEmpty()) return false
+        Log.i(DshApplication.TAG, "重载界面（第 $attempt 次尝试）")
+        firstFrame.reset(clearActual = true)
+        web.resetFirstFrame()
+        web.reload()
+        awaitWebViewPainted {
+            Log.i(DshApplication.TAG, "界面已恢复（第 $attempt 次尝试拿到首帧）")
+        }
         return true
     }
 
-    /**
-     * 重载界面，失败就再试一次。
-     *
-     * ⚠️ 判据是「重载之后有没有拿到首帧」，而不是 `loadUrl` 有没有抛异常
-     *   （它从不抛）。
-     *
-     * ⚠️ **必须重新武装首帧等待**（[awaitWebViewPainted]）。重载之后插件会再走一次
-     *   `onUiReady`，但 `uiStage` 这个 StateFlow 的值**已经是 `UiReady`**，相同值
-     *   不会重复发射 —— 于是 `observeEngine` 里那个「等首帧再收启动层」的分支
-     *   一次都不会跑到，`webViewPainted` 就永远停在 `false`。这里主动注册一次，
-     *   它同时也是「重载成功了没有」的观测点。
-     */
-    private fun reloadWithRetry(attempt: Int) {
-        // ⚠️ 已放弃自动恢复（见 rendererGaveUp）就一步都不许再走 —— 包括在飞的
-        //   重试链。这里必须在最前面，晚一步就已经 loadUrl 出去了。
-        if (rendererGaveUp) {
-            Log.i(DshApplication.TAG, "已停止自动恢复，放弃重载（第 $attempt 次尝试）")
-            return
-        }
-        // ⚠️ **还没有加载过任何页面时，这一轮重载压根无从进行** —— 必须在这里
-        //   就退出，不能照常往下走。
-        //
-        //   内核在**引擎就绪之前**被回收就会走到这里（引擎要 20~30 秒才起来，
-        //   而回收随时可能发生），此时两个内核的 `reload()` 内部都判
-        //   `lastLoadedUrl` 为空、静默 `return`（连 `loadUrl` 都不会调）。
-        //
-        //   原先没有这道门，于是它照样走完「重置状态 → reload（什么都没做）→
-        //   等 8 秒 → 判失败 → 再试一次 → 又什么都没做 → 判失败」，
-        //   最后打出「界面重载 2 次仍未恢复为可用状态」并置 `rendererGaveUp` ——
-        //   **而这两次重载一次都没有真的发生**。用户随后看到的是错误浮层，
-        //   十几秒后引擎就绪、`forceReloadOnReady` 本来能把界面正常带回来。
-        //
-        //   真机证据（服务器诊断包 `20261015-001141-b27a5b12`，v21 gecko /
-        //   `20261014-121146-7115a47c` 等，同一形态共 53 次）：
-        //   ```
-        //   12:10:27.643 界面内核被系统回收，准备重载（第 1 次）
-        //   12:10:28.083 内容进程已死但没有可用的 URL，无法重载   ← reload 空转
-        //   12:10:29.985 界面未恢复，再试一次
-        //   12:10:29.986 内容进程已死但没有可用的 URL，无法重载   ← 又一次空转
-        //   12:10:31.888 界面重载 2 次仍未恢复为可用状态          ← 误判
-        //   12:10:47.174 引擎就绪: http://127.0.0.1:3080/?token=…  ← 16 秒后正常
-        //   ```
-        //   这又是本项目缺陷族的一例：**结论（「重载 2 次仍未恢复」）与它描述的
-        //   对象（实际发生了 0 次重载）不是同一个**。
-        //
-        //   判据用 [WebHost.currentUrl]：它的语义就是「最近一次发起加载的 URL」，
-        //   与两个内核 `reload()` 内部用的 `lastLoadedUrl` **同源** —— 不会漂开。
-        //   退出后不需要额外补动作：引擎就绪时 `observeEngine` 的 `Ready` 分支
-        //   判 `web.currentUrl != state.url`（这里是 null，必然不等）会自己
-        //   `loadUrl`，界面照常起来。
-        val url = web.currentUrl
-        if (url.isNullOrEmpty()) {
-            Log.i(
-                DshApplication.TAG,
-                "还没有加载过任何页面（引擎尚未就绪），本轮重载无从进行，等引擎就绪后自动加载",
-            )
-            return
-        }
-        Log.i(DshApplication.TAG, "重载界面（第 $attempt 次尝试）")
-        // ⚠️ **必须在 reload() 之前重置首帧记忆**，否则 awaitFirstFrame 会因为
-        //   `painted` 早就是 true 而**同步立刻**回调 —— 判据在 reload 还没发生时就
-        //   被满足，「界面已恢复」是假的，而下面那个重试分支也永远命中
-        //   `if (webViewPainted) return`（真机全量 53 包：`界面未恢复，再试一次` 0 次）。
-        //   证据与时序见 WebHost.resetFirstFrame 的 KDoc。
-        // ⚠️ **三个状态都要清干净，少一个都会让下面的 awaitWebViewPainted 注册不上**
-        //   （见 [resetFirstFrameAwait] 的 KDoc）。这里比那三件套多两件事：
-        //   `firstFrameReallyArrived` 与内核侧的 `resetFirstFrame()`—— 它们按
-        //   `requestId` 作废旧回调，必须紧挨着 reload()，所以留在调用点上。
-        resetFirstFrameAwait()
-        firstFrameReallyArrived = false
-        web.resetFirstFrame()
-        // ⚠️ **重载必须排在「重新武装首帧等待」之前。**
-        //   `WebHost.reload()` 内部会把「在飞的等首帧动作」清掉
-        //   （SystemWebHost.reload() 里 `pendingPaintAction = null`，
-        //   GeckoWebHost 同理）—— 那是为了不让重载前的旧回调把 painted 置回 true。
-        //   顺序反了的话，刚注册进去的 `done()` 会被紧接着的 reload() 丢掉：
-        //   真首帧回调照常到来，却**没有任何动作被调用**，`firstFrameReallyArrived`
-        //   永远是 false ⇒ 每次都走到「界面未恢复 / 仍未恢复为可用状态」，
-        //   哪怕页面其实早就正常渲染了。
-        //   真机证据（CDY-TN90 / v21 system，内核崩溃触发的重载）：
-        //   ```
-        //   02:39:14.951 重载界面（第 1 次尝试）
-        //   02:39:16.460 等待 Web 内核首帧超时，仍收起启动动画   ← 兜底先到
-        //   02:39:16.904 Web 界面加载完成                       ← 页面其实好了
-        //   02:39:22.991 界面未恢复，再试一次                    ← 却判失败
-        //   ```
-        //   `resetFirstFrame()` 仍留在 reload() 之前（它要按 requestId 作废旧回调，
-        //   放后面就作废不掉新注册的那个了）。
-        web.reload()
-        awaitWebViewPainted {
-            // 首帧回来了 = 界面真的恢复到可用状态
-            Log.i(DshApplication.TAG, "界面已恢复（第 $attempt 次尝试拿到首帧）")
-        }
-        rendererHandler.postDelayed({
-            if (firstFrameReallyArrived) return@postDelayed
-            if (attempt < MAX_RELOAD_ATTEMPTS) {
-                Log.w(DshApplication.TAG, "界面未恢复，再试一次")
-                reloadWithRetry(attempt + 1)
-            } else {
-                Log.e(DshApplication.TAG, "界面重载 $attempt 次仍未恢复为可用状态")
-                // ⚠️ **必须把出路摆给用户**，不能只打一行日志。
-                //
-                //   走到这里时屏幕上是**一片白屏**：启动层早在第一次重载的
-                //   [PAINT_TIMEOUT_MS] 兜底到点时就被 `hideOverlay()` 收掉了
-                //   （见 `paintTimeoutRunnable`），而重载又没拿到首帧 —— 于是
-                //   界面既没有内容、也没有任何说明。用户唯一的线索是自己手机上
-                //   看不到的 logcat。
-                //
-                //   这与 [onRendererGone] 的上界分支是**同一种失败、两种到达路径**：
-                //   那条路径（内核反复崩溃）贴了「界面反复出错」，这条（重载两次都
-                //   拿不到首帧）却只有日志 —— 而后者在真机上真实发生过。
-                //   服务器诊断包证据（v21 gecko，`界面重载 2 次仍未恢复为可用状态`）：
-                //   ```
-                //   04:37:11.074 界面内核被系统回收，准备重载（第 1 次）
-                //   04:37:11.488 重载界面: http://127.0.0.1:3080/?token=…
-                //   04:37:12.987 等待 Web 内核首帧超时，仍收起启动动画   ← 启动层被收起
-                //   04:37:13.391 重载界面: …（第 2 次尝试）
-                //   04:37:14.891 等待 Web 内核首帧超时，仍收起启动动画
-                //   04:37:15.293 界面重载 2 次仍未恢复为可用状态        ← 只有日志，屏幕全白
-                //   ```
-                //   注：该包本身是 pre-`fa0ee24` 的旧构建（判定窗口 1900ms），
-                //   但它暴露的这个**缺口在当前代码里仍然存在** —— 放宽窗口只是让
-                //   它更少发生，一旦发生就还是白屏无提示。
-                //
-                //   ⚠️ 置 `rendererGaveUp` 是这里的关键：不置的话，内核下一次
-                //   崩溃/被回收时 [onRendererGone] 会再排一轮重载，而重载链路里的
-                //   兜底超时会 `hideOverlay()` 把刚贴上的提示**顶掉**，用户又回到
-                //   白屏。这与上界分支的处置保持同一语义：既然两条重载都拿不到
-                //   首帧，继续自动重载没有意义。
-                rendererGaveUp = true
-                // ⚠️ 同上：终态，留着的旧计时器会把这条提示顶掉。
-                invalidateOverlayTimeout()
-                overlayDismissed = false
-                // ⚠️ **先试自动恢复，失败才贴提示。** 重载拿不到首帧最常见的原因不是
-                //   内核坏了，而是**前端整批 client bundle 加载失败**：前端把所有
-                //   client.js 合并成一个 `/plugins/??a,b,c` 请求下发，任何一个有语法
-                //   错误就整批失败 ⇒ 页面永远到不了首帧。那种情况重载一万次也没用，
-                //   而**换个 profile**（救援模式不含任何第三方 bundle）就一定能渲染出来。
-                //   真机复现（CDY-TN90）：界面停在 `Failed to load plugins`，
-                //   而原先这里只弹「界面没能恢复」⇒ 用户点「进入安全模式」也进不去。
-                //   ⚠️ 降级成功时**不要**再贴自己的提示 —— 会把这轮
-                //   「正在进入救援模式…」的层顶掉（同 [maybeRescueFromWebFailure]）。
-                if (
-                    degradeToRescue(
-                        reason = "界面重载 $attempt 次仍无首帧（前端起不来）",
-                        eventName = "web.frame-giveup",
-                        extra = mapOf("attempts" to attempt.toString()),
-                    )
-                ) {
-                    return@postDelayed
-                }
-                showOverlay(
-                    "界面没能恢复",
-                    hint = "已自动重载 $attempt 次，Web 内核仍未提交首帧。" +
-                        "点一下这里收起提示；若界面仍然空白，请重开 App",
-                    isError = true,
-                )
-            }
-        }, reloadRecoveryTimeoutMs(attempt))
-    }
-
-    /** 第 [attempt] 次重载的判失败窗口：首次 16 秒，之后每次 +6 秒（慢设备越往后越慢）。 */
-    private fun reloadRecoveryTimeoutMs(attempt: Int): Long =
-        RELOAD_RECOVERY_TIMEOUT_MS + (attempt - 1).coerceAtLeast(0) * 6000L
-
-    /**
-     * 键盘高度缓存的 key。
-     *
-     * ⚠️ 竖屏与横屏的键盘高度不同（横屏键盘更矮），必须分开存，
-     *   否则转屏后预判会缩错高度。
-     */
-    private fun imePrefsKey(): String = imePrefsKeyOf(this)
-
-    private fun loadImeHeight() {
-        val v = getSharedPreferences(IME_PREFS, MODE_PRIVATE).getInt(imePrefsKey(), 0)
-        lastImeHeightPx = if (v > 0) v else 0
-    }
-
-    private fun saveImeHeight(px: Int) {
-        if (px <= 0) return
-        getSharedPreferences(IME_PREFS, MODE_PRIVATE).edit().putInt(imePrefsKey(), px).apply()
-    }
-
-    /**
-     * 页面通知「输入框即将获得焦点」——这是比键盘 insets 更早的信号。
-     *
-     * ⚠️ 运行在 WebView 的 JS 线程，必须切主线程再碰 View。
-     */
+    /** 页面比 insets 更早通知输入焦点；实际布局修改仍在主线程。 */
     private fun onImeWillShow() {
-        runOnUiThread { applyImePrejudge() }
-    }
-
-    /**
-     * 用缓存高度提前把 WebView 缩矮，抵消「窗口变矮滞后约 200ms」造成的遮挡。
-     *
-     * 只改 WebView 的 `bottomMargin`，**不动窗口本身** —— 等真 insets 到达时
-     * `adjustResize` 会正常缩小窗口，我们把 margin 归零即可无缝交接。
-     */
-    private fun applyImePrejudge() {
-        if (imePrejudging) return
-        val cached = lastImeHeightPx
-        if (cached <= 0) return              // 还没学到高度：第一次只能让它闪
-        if (currentImeHeightPx() > 0) return // 键盘已经在了：不用预判
-        imePrejudging = true
-        setWebViewBottomMargin(cached)
-        Log.i(DshApplication.TAG, "键盘预判：提前缩矮 ${cached}px")
-        imeHandler.removeCallbacks(imeRestoreRunnable)
-        imeHandler.postDelayed(imeRestoreRunnable, IME_PREJUDGE_TIMEOUT_MS)
-    }
-
-    /** 退出预判状态，把 WebView 的 margin 还给系统布局。 */
-    private fun restoreFromPrejudge(reason: String) {
-        imeHandler.removeCallbacks(imeRestoreRunnable)
-        if (!imePrejudging) return
-        imePrejudging = false
-        setWebViewBottomMargin(0)
-        Log.i(DshApplication.TAG, "键盘预判结束（$reason）")
+        runOnUiThread { imeLayout.willShow(binding.root.height) }
     }
 
     private fun setWebViewBottomMargin(px: Int) {
@@ -875,58 +421,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 当前键盘占用的高度（px）；0 = 键盘不可见。
-     *
-     * ⚠️ **不能**用 `getWindowVisibleDisplayFrame()`：`adjustResize` 下窗口本身
-     *   已经被缩小，可见区域始终等于窗口高度，算出来恒为 0。
-     *   这里改用「静止高度 − 当前高度」，与插件侧已验证的判据一致。
-     */
-    private fun currentImeHeightPx(): Int {
-        if (restHeightPx <= 0) return 0
-        val hidden = restHeightPx - binding.root.height
-        return if (hidden > IME_VISIBLE_THRESHOLD_PX) hidden else 0
-    }
-
-    /**
-     * 监听根视图高度变化 —— 这就是 `adjustResize` 下"键盘来了"的唯一可靠信号。
-     *
-     * 真机实测：无键盘 764、键盘弹起 475（各 2~3 轮一致，且只有 1 次跳变）。
-     */
     private fun observeImeInsets() {
-        binding.root.addOnLayoutChangeListener { v, _, top, _, bottom, _, oldTop, _, oldBottom ->
-            val h = bottom - top
-            val oldH = oldBottom - oldTop
-            if (h <= 0) return@addOnLayoutChangeListener
-
-            // ⚠️ 转屏时宽度也变，而"历史最大高度"是竖屏的，会算出一个巨大的
-            //   「隐藏高度」被误判成键盘可见。宽度一变就重新起算，
-            //   并换用该朝向的键盘高度缓存（横竖屏键盘高度不同）。
-            val w = v.width
-            if (w != lastRootWidthPx) {
-                lastRootWidthPx = w
-                restHeightPx = h
-                loadImeHeight()
-                return@addOnLayoutChangeListener
-            }
-            if (h > restHeightPx) restHeightPx = h
-
-            val ime = currentImeHeightPx()
-            if (ime > 0) {
-                // 自学习：记下这台机器 + 当前输入法的真实高度，并**落盘**
-                if (ime != lastImeHeightPx) {
-                    lastImeHeightPx = ime
-                    saveImeHeight(ime)
-                    Log.i(DshApplication.TAG, "键盘高度已学习并保存: ${ime}px")
-                }
-                // 真 insets 到了：把预判设的 margin 交还给系统
-                //（不归零的话 WebView 会比窗口再矮一截）
-                if (imePrejudging) restoreFromPrejudge("真 insets 已到 ${oldH}→${h}")
-            }
-            // ⚠️ 这里**故意不写**「布局变化但 ime==0 就撤销预判」的分支：
-            //   预判自己改 WebView 的 layoutParams 会让根视图重新布局并触发本回调，
-            //   那种情况下 ime 必然为 0，一撤销就等于预判从未生效。
-            //   真正的"点了输入框但键盘没弹"由 IME_PREJUDGE_TIMEOUT_MS 兜底。
+        binding.root.addOnLayoutChangeListener { view, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            imeLayout.layout(view.width, bottom - top, oldBottom - oldTop)
         }
     }
 
@@ -937,7 +434,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         engine = EngineManager.get(this)
-        loadImeHeight()   // 把上次学到的键盘高度取回来（跨冷启动有效）
+        imeLayout.load()
 
         // 失败浮层上的唯一出路。⚠️ Button 是 clickable 的子 View，点击不会冒泡到
         // overlay 自己的监听器（那个只负责"点一下收起浮层"），两者不冲突。
@@ -988,7 +485,7 @@ class MainActivity : AppCompatActivity() {
         // ⚠️ 必须在这里就绪：插件可能**在 App 前台**下发悬浮球外观，而那时
         //   onAppBackground 还没跑过。不提前记 context 的话 bubbleApply 会静默返回
         //   false（真机实测踩到），表现为"插件改了没反应"。
-        FloatingBubble.attach(this)
+        FloatingBubble.attach(this, BubbleStatusSource { EngineService.currentStatus() })
         // 同上：AI 可能在 App 刚起、还没走到 onResume 时下发系统栏配色，
         // 不提前登记窗口宿主的话这一轮就只能落盘、看不到效果。
         SystemBarAppearance.attach(this)
@@ -1148,51 +645,22 @@ class MainActivity : AppCompatActivity() {
      * 而系统同一时刻只处理一个权限对话框 —— 并发 `launch` 会丢掉后一个。
      * 所以统一排队，串行发起。
      */
-    private class PermissionBatch(val permission: String) {
-        val sinks = mutableListOf<(Boolean) -> Unit>()
+    private val permissionQueue: RuntimePermissionQueue by lazy {
+        RuntimePermissionQueue(
+            isGranted = { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED },
+            launch = {
+                Log.i(DshApplication.TAG, "申请运行时权限 $it")
+                runtimePermissionLauncher.launch(it)
+            },
+            onFailure = { permission, failure -> Log.w(DshApplication.TAG, "权限请求/回调失败 $permission", failure) },
+        )
     }
-    private val permissionSinks = ArrayDeque<PermissionBatch>()
-    private var permissionInFlight: PermissionBatch? = null
-    private var deliveringPermissionResult = false
 
     private val runtimePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        Log.i(DshApplication.TAG, "运行时权限结果 ${permissionInFlight?.permission}: $granted")
-        finishPermissionBatch(granted)
-    }
-
-    /** 先摘除整批，再通知；回调重入只能进入下一批。 */
-    private fun finishPermissionBatch(granted: Boolean) {
-        val batch = permissionInFlight ?: return
-        permissionInFlight = null
-        deliveringPermissionResult = true
-        try {
-            batch.sinks.forEach { sink ->
-                runCatching { sink(granted) }.onFailure {
-                    Log.w(DshApplication.TAG, "权限结果回调失败 ${batch.permission}", it)
-                }
-            }
-        } finally {
-            deliveringPermissionResult = false
-            drainPermissionQueue()
-        }
-    }
-
-    /** launcher 同时只处理一个权限；已授权与发起失败也只结算当前批。 */
-    private fun drainPermissionQueue() {
-        if (permissionInFlight != null || deliveringPermissionResult || permissionSinks.isEmpty()) return
-        val batch = permissionSinks.removeFirst()
-        permissionInFlight = batch
-        if (checkSelfPermission(batch.permission) == PackageManager.PERMISSION_GRANTED) {
-            finishPermissionBatch(true)
-            return
-        }
-        Log.i(DshApplication.TAG, "申请运行时权限 ${batch.permission}")
-        runCatching { runtimePermissionLauncher.launch(batch.permission) }.onFailure {
-            Log.w(DshApplication.TAG, "发起权限申请失败 ${batch.permission}", it)
-            finishPermissionBatch(false)
-        }
+        Log.i(DshApplication.TAG, "运行时权限结果 ${permissionQueue.activePermission}: $granted")
+        permissionQueue.finish(granted)
     }
 
     /**
@@ -1207,11 +675,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (isFinishing || isDestroyed) { onResult(false); return }
-        val batch = permissionInFlight?.takeIf { it.permission == permission }
-            ?: permissionSinks.firstOrNull { it.permission == permission }
-            ?: PermissionBatch(permission).also { permissionSinks.addLast(it) }
-        batch.sinks.add(onResult)
-        drainPermissionQueue()
+        permissionQueue.request(permission, onResult)
     }
 
     /**
@@ -1324,7 +788,11 @@ class MainActivity : AppCompatActivity() {
         web = createWebHost(
             this,
             WebHostCallbacks(
-                bridge = StatusBridge(),
+                bridge = NativePageBridgeDispatcher(
+                    activity = ActivityPageBridge(),
+                    bubble = BubblePageBridge(applicationContext),
+                    privilege = PrivilegePageBridge(applicationContext) { engine.rootToolMounted },
+                ),
                 onPageFinished = { url ->
                     Log.i(DshApplication.TAG, "Web 界面加载完成: $url")
                     // ⚠️ 记下「本次启动成功出过界面」。下一次启动靠它区分
@@ -1464,7 +932,7 @@ class MainActivity : AppCompatActivity() {
                                 // 面板里，而不是整屏糊上来。
                                 requestBrowserPane()
                                 b.visibility = View.VISIBLE
-                                syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
+                                syncAiBrowserVisible()
                                 b.bringToFront()
                                 notifyBrowserPane(visible = true)
                                 b.createPopupTarget()
@@ -1505,132 +973,32 @@ class MainActivity : AppCompatActivity() {
     // AI 操作状态胶囊（对话页）
     // ══════════════════════════════════════════════════════════════════
 
-    /**
-     * 对话页顶部那个「AI 正在操作浏览器」的胶囊。
-     *
-     * 与 [com.dsh.android.browser.AiBrowserView] 内部那个胶囊**视觉一致**，
-     * 但挂在 Activity 根布局上，所以即使 WebView 不可见也能显示。
-     */
-    private var activityPill: android.widget.LinearLayout? = null
-    private var activityPillText: android.widget.TextView? = null
-    private var activityPillHideTask: Runnable? = null
+    private var activityPill: BrowserActivityPill? = null
 
-    /** 胶囊至少停留这么久（毫秒），避免高速连调时闪个不停。 */
-    private val ACTIVITY_PILL_MIN_MS = 1400L
-
-    /**
-     * 显示 / 更新 AI 操作状态胶囊。**主线程**。
-     *
-     * @param text 模型的 `describe`；空串表示立刻收起。
-     */
     private fun showActivityPill(text: String) {
-        /*
-         * 只在侧栏**没展开**时显示。
-         *
-         * 面板展开时 WebView 就在用户眼前，它内部自带那条胶囊（AI 正在做什么
-         * 实时显示在浏览器上方居中），这里再飘一个就重复了、还挡内容。
-         * 面板收起/在后台时，用户在对话页，这里补上反馈 —— 正是用户要的：
-         * 「我们在对话界面，它在后台运行，那么我们又少了一些反馈」。
-         */
         if (isBrowserPaneOpen()) return
-        val t = text.trim()
-        if (t.isEmpty()) {
-            hideActivityPillSoon()
-            return
-        }
-        runOnUiThread {
-            val pill = ensureActivityPill() ?: return@runOnUiThread
-            activityPillText?.text = t
-            // 连调时只是换文案，不重播入场动画，避免整块区域来回跳。
-            if (pill.visibility != View.VISIBLE) {
-                pill.alpha = 0f
-                pill.visibility = View.VISIBLE
-                pill.scaleX = 0.92f
-                pill.scaleY = 0.92f
-                pill.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(160L).start()
-            }
-            // 每次新动作都重置「自动收起」计时，保证用户至少能看清最后一句。
-            activityPillHideTask?.let { mainHandler.removeCallbacks(it) }
-            val task = Runnable { hideActivityPill() }
-            activityPillHideTask = task
-            mainHandler.postDelayed(task, ACTIVITY_PILL_MIN_MS + 1200L)
-        }
+        val message = text.trim()
+        if (message.isEmpty()) { hideActivityPillSoon(); return }
+        runOnUiThread { ensureActivityPill()?.showAction(message) }
     }
 
     private fun hideActivityPillSoon() {
-        runOnUiThread {
-            activityPillHideTask?.let { mainHandler.removeCallbacks(it) }
-            val task = Runnable { hideActivityPill() }
-            activityPillHideTask = task
-            mainHandler.postDelayed(task, 900L)
-        }
+        runOnUiThread { activityPill?.hideSoon() }
     }
 
-    private fun hideActivityPill() {
-        val pill = activityPill ?: return
-        if (pill.visibility != View.VISIBLE) return
-        pill.animate().alpha(0f).setDuration(180L)
-            .withEndAction { if (activityPill?.visibility == View.VISIBLE) activityPill?.visibility = View.GONE }
-            .start()
-    }
-
-    /**
-     * 建一次胶囊并挂到根布局。之后只改文字。
-     *
-     * 样式照抄 [com.dsh.android.browser.AiBrowserView] 里那个胶囊（同样的
-     * 圆角、同样的小圆点、同样的字号），让用户在两处看到的是同一种东西。
-     */
-    private fun ensureActivityPill(): android.widget.LinearLayout? {
+    /** Activity 只决定胶囊在根布局的挂载位置。 */
+    private fun ensureActivityPill(): BrowserActivityPill? {
         activityPill?.let { return it }
         if (isFinishing || isDestroyed) return null
-
-        val d = resources.displayMetrics.density
-        fun dp(v: Int) = (v * d).toInt()
-
-        val dot = View(this).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(0xFFE0A33A.toInt())
-            }
-        }
-        val label = android.widget.TextView(this).apply {
-            setTextColor(0xFFF2F4F7.toInt())
-            textSize = 12.5f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            includeFontPadding = false
-        }
-        val pill = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(13), dp(9), dp(17), dp(9))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                cornerRadius = dp(18).toFloat()
-                setColor(0xE620242B.toInt())
-            }
-            elevation = dp(8).toFloat()
-            alpha = 0f
-            visibility = View.GONE
-        }
-        pill.addView(
-            dot,
-            android.widget.LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(9) },
-        )
-        pill.addView(label)
-
-        // 挂在根布局、状态栏下方居中：不挡输入框，也不跟顶部工具栏打架。
-        binding.root.addView(
-            pill,
-            android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                topMargin = statusBarHeightPx() + dp(10)
-            },
-        )
+        val pill = BrowserActivityPill(this)
+        binding.root.addView(pill, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            topMargin = statusBarHeightPx() + (10 * resources.displayMetrics.density).toInt()
+        })
         activityPill = pill
-        activityPillText = label
         return pill
     }
 
@@ -1648,8 +1016,8 @@ class MainActivity : AppCompatActivity() {
      *
      * 用户从侧栏点开「AI 浏览器」tab 时由 [openAiBrowser] 复位成 `false`。
      */
-    @Volatile
-    private var aiBrowserQuiet = false
+    private val browserPane = BrowserPaneCoordinator()
+    private val aiBrowserQuiet: Boolean get() = browserPane.state.mode == BrowserPaneCoordinator.Mode.TOOL
 
 
 
@@ -1717,7 +1085,7 @@ class MainActivity : AppCompatActivity() {
     /** 打开 AI 浏览器（覆盖在官方界面之上）。 */
     fun openAiBrowser(url: String? = null) {
         // 用户主动打开 ⇒ 退出静默，侧栏该切过来就切（与 AI 后台用区分开）。
-        aiBrowserQuiet = false
+        browserPane.openByUser()
         val view = ensureAiBrowser() ?: return
         /*
          * 用户主动打开 ⇒ 复位「AI 静默」标志。
@@ -1728,7 +1096,7 @@ class MainActivity : AppCompatActivity() {
          */
         view.silentForTool = false
         view.visibility = View.VISIBLE
-        syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc：必须同步镜像
+        syncAiBrowserVisible()
         view.bringToFront()
         if (url != null) view.loadUrl(url)
         else if (view.currentUrl().isEmpty()) view.loadUrl(com.dsh.android.browser.AiBrowserView.HOME_URL)
@@ -1780,7 +1148,7 @@ class MainActivity : AppCompatActivity() {
      * 方法名为了少改调用点而保留，语义已经是「AI 主动启用浏览器」。
      */
     private fun openAiBrowserQuietly() {
-        aiBrowserQuiet = true
+        browserPane.prepareForTool()
         val view = ensureAiBrowser() ?: return
 
         /*
@@ -1843,7 +1211,7 @@ class MainActivity : AppCompatActivity() {
      */
     fun closeAiBrowser(closeTab: Boolean = false) {
         aiBrowser?.visibility = View.GONE
-        syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc：必须同步镜像
+        syncAiBrowserVisible()
         notifyBrowserPane(visible = false, userClosed = closeTab)
         Log.i(
             DshApplication.TAG,
@@ -1865,14 +1233,14 @@ class MainActivity : AppCompatActivity() {
      * 用来决定「对话页要不要补一条状态胶囊」：面板开着时，浏览器自己上方就有
      * 实时胶囊，宿主再飘一个既重复又挡内容。
      *
-     * 判据取 [aiBrowserVisible] 与视图可见性的交集 —— 单看哪一个都不准：
+     * 判据取 [isAiBrowserVisible] 与视图可见性的交集 —— 单看哪一个都不准：
      *   · 只有 `aiBrowserVisible` 为真、但视图是 INVISIBLE（面板被收起）⇒
      *     用户其实看不到，这时**应该**显示宿主胶囊；
      *   · 只有视图可见、但 `aiBrowserVisible` 为假（尚未同步）⇒ 同样当作不可见，
      *     宁可多显示一条反馈，也不要让用户以为 AI 卡住了。
      */
     private fun isBrowserPaneOpen(): Boolean =
-        aiBrowserVisible && aiBrowser?.visibility == View.VISIBLE && aiBrowserQuiet
+        browserPane.state.visible && aiBrowser?.visibility == View.VISIBLE && aiBrowserQuiet
 
     private fun notifyBrowserPane(visible: Boolean, userClosed: Boolean = false) {
         if (!::web.isInitialized) return
@@ -1881,18 +1249,6 @@ class MainActivity : AppCompatActivity() {
         runCatching { web.evaluateJavascript(script, null) }
             .onFailure { Log.w(DshApplication.TAG, "通知侧栏面板失败: ${it.message}") }
     }
-
-    /**
-     * 待前端取走的标注结果：图片文件 + 提问。
-     *
-     * ⚠️ **必须 `@Volatile`**：写发生在**主线程**（[showAnnotate] 里
-     *   `AnnotateView.onSend` 的回调），读发生在 **WebView 的 JS 线程**
-     *   （`StatusBridge.aiAnnotateResult()`）。不加的话 JS 线程可能一直读到
-     *   过期的 `null` —— 现象是用户圈完画点「发送」，**什么都没发生**，
-     *   而且没有任何提示。这与本文件其它跨线程字段（L96/L122/L263）同因。
-     */
-    @Volatile
-    private var pendingAnnotate: Pair<java.io.File, String>? = null
 
     /** 正在显示的标注画布。 */
     private var annotateView: com.dsh.android.browser.AnnotateView? = null
@@ -1914,11 +1270,12 @@ class MainActivity : AppCompatActivity() {
         }
         annotateView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
 
+        val canvas = browserPane.beginAnnotation() ?: return
         val v = com.dsh.android.browser.AnnotateView(this)
         v.setBase(bmp)
-        v.onCancel = { dismissAnnotate() }
-        v.onSend = { png, question ->
-            pendingAnnotate = png to question
+        v.onCancel = { if (browserPane.cancelAnnotation(canvas)) dismissAnnotate() }
+        v.onSend = send@{ png, question ->
+            if (!browserPane.submitAnnotation(canvas, png, question)) return@send
             dismissAnnotate()
             // 告诉前端「有东西可取」。前端收到后调 aiAnnotateResult() 拿数据，
             // 再填进当前会话的输入框并发送。
@@ -1977,31 +1334,12 @@ class MainActivity : AppCompatActivity() {
             .onFailure { Log.w(DshApplication.TAG, "请求展开侧栏失败: ${it.message}") }
     }
 
-    /** AI 浏览器是否正在显示。 */
-    /**
-     * AI 浏览器是否可见 —— **任意线程可读**的缓存。
-     *
-     * ⚠️ **不能直接写成 `aiBrowser?.visibility == View.VISIBLE`。**
-     *   `View.getVisibility()` 是 View 的方法，Android 规定只能在主线程调用；
-     *   而本方法会被 `GeckoWebHost.pushSnapshot()` 从**内核线程**调到
-     *   （快照里带 `aiBrowser` 字段给页面的 `aiBrowserState()` 同步读）。
-     *   跨线程读 View 属于未定义行为：轻则读到撕裂的旧值，重则在某些 ROM 上
-     *   直接抛 `CalledFromWrongThreadException`，而它出现在快照推送路径上 ——
-     *   表现会是「设置页/侧栏某些状态一直不更新」，很难联想到线程问题。
-     *
-     * 所以按本项目既有做法（见 MainActivity 里其他 `@Volatile` 的 KDoc），
-     * 把 UI 状态**镜像**到一个 volatile 字段里：主线程在改可见性的同时更新它，
-     * 任意线程读这个字段。
-     */
-    @Volatile
-    private var aiBrowserVisible = false
-
-    /** 同步镜像。**只能在主线程调用**（它读 View）。 */
+    /** 只在主线程读取 View，跨线程查询读取协调器的不可变快照。 */
     private fun syncAiBrowserVisible() {
-        aiBrowserVisible = aiBrowser?.visibility == View.VISIBLE
+        browserPane.syncVisibility(aiBrowser?.visibility == View.VISIBLE)
     }
 
-    fun isAiBrowserVisible(): Boolean = aiBrowserVisible
+    fun isAiBrowserVisible(): Boolean = browserPane.state.visible
 
     /**
      * 拉起系统的文件选择器，把结果交回内核。
@@ -2053,35 +1391,17 @@ class MainActivity : AppCompatActivity() {
      * ⚠️ 读流必须在 IO 线程：`WebResponse.body` 是内核那边挂过来的管道，
      *   在主线程上读会把 UI 卡住（大文件尤其明显）。
      */
+    private val sessionDownloads = SessionDownloadService()
+
     private fun handleDownloadStream(stream: DownloadStream) {
         // ⚠️ 必须清洗：文件名来自页面的 anchor.download，可含 ../ → 路径穿越
-        val filename = sanitizeDownloadName(stream.filename)
+        val filename = SessionDownloadService.sanitizeName(stream.filename)
         val target = downloadTargetDir()
         Toast.makeText(this, "开始下载 $filename", Toast.LENGTH_SHORT).show()
 
-        lifecycleScope.launch(Dispatchers.IO) {
+        lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
             val result = runCatching {
-                val file = File(target, filename)
-                // ⚠️ **先写 .part 再改名**：直接写目标文件的话，中途失败（存储写满、
-                //   用户杀进程、引擎断流）会在下载目录里留下一个**看起来正常、
-                //   实际残缺**的文件 —— 用户拿到手才发现解压失败/打不开，
-                //   而且没有任何提示。用临时名 + 原子改名，失败时删掉临时文件即可，
-                //   下载目录永远只会出现完整文件。
-                val part = File(target, "$filename.part")
-                try {
-                    stream.body.use { input -> part.outputStream().use { input.copyTo(it) } }
-                    if (!part.renameTo(file)) {
-                        // 目标已存在等情况：先删再改名，仍失败就把旧的一起覆盖掉
-                        file.delete()
-                        if (!part.renameTo(file)) {
-                            error("无法写入 ${file.absolutePath}")
-                        }
-                    }
-                    file
-                } catch (t: Throwable) {
-                    runCatching { part.delete() }
-                    throw t
-                }
+                sessionDownloads.save(stream.body, target, filename)
             }
             withContext(Dispatchers.Main) {
                 result
@@ -2108,49 +1428,18 @@ class MainActivity : AppCompatActivity() {
 
         // 优先用 Content-Disposition 里的文件名（引擎给的是 dsh-session-<id>.zip）。
         // ⚠️ 必须清洗：Content-Disposition 是服务端可控的，可含 ../ → 路径穿越
-        val filename = sanitizeDownloadName(
+        val filename = SessionDownloadService.sanitizeName(
             URLUtil.guessFileName(url, req.contentDisposition, req.mimeType),
         )
         val cookie = cookieForDownload(url)
         val target = downloadTargetDir()
         Toast.makeText(this, "开始下载 $filename", Toast.LENGTH_SHORT).show()
 
-        lifecycleScope.launch(Dispatchers.IO) {
+        lifecycleScope.launch {
             val result = runCatching {
-                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 15_000
-                    readTimeout = 60_000
-                    if (cookie.isNotEmpty()) setRequestProperty("Cookie", cookie)
-                    req.userAgent?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("User-Agent", it) }
-                    setRequestProperty("Referer", "http://127.0.0.1:3080/")
-                }
-                try {
-                    val code = conn.responseCode
-                    if (code != HttpURLConnection.HTTP_OK) {
-                        error("HTTP $code")
-                    }
-                    val file = File(target, filename)
-                    // ⚠️ 同 gecko 侧：先写 .part 再原子改名，避免留下残缺文件。
-                    val part = File(target, "$filename.part")
-                    try {
-                        conn.inputStream.use { input ->
-                            part.outputStream().use { input.copyTo(it) }
-                        }
-                        if (!part.renameTo(file)) {
-                            file.delete()
-                            if (!part.renameTo(file)) {
-                                error("无法写入 ${file.absolutePath}")
-                            }
-                        }
-                        file
-                    } catch (t: Throwable) {
-                        runCatching { part.delete() }
-                        throw t
-                    }
-                } finally {
-                    conn.disconnect()
-                }
+                sessionDownloads.download(
+                    SessionDownloadService.Request(url, cookie, req.userAgent), target, filename,
+                )
             }
             withContext(Dispatchers.Main) {
                 result
@@ -2200,41 +1489,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 把内核/页面给的文件名洗成「只能用在本目录里的一个名字」。
-     *
-     * ⚠️ **这不是防御性编程，是一条真实的路径穿越通道。**
-     *
-     * gecko 版的下载文件名来自页面的 `anchor.download` 属性
-     * （见 `content.js` 的 `handleDownload(url, filename)`），
-     * 页面拿到什么就原样 `p('downloadChunk', [.., url, name])` 发过来，
-     * 原生侧一路没改，最后落到：
-     *
-     *     File(target, filename)     // filename = "../../../data/data/com.dsh.android/x"
-     *
-     * `File(parent, child)` 对含 `..` 的 child **不做任何限制**，
-     * 于是可以写到下载目录之外 —— 沙箱内任意可写路径。
-     * Content-Disposition 那条路（system 版）同理，头是服务端/页面控制的。
-     *
-     * 清洗规则（够用且不破坏正常文件名）：
-     *   · 只取最后一段（去掉任何目录成分）；
-     *   · 去掉 `..`、`/`、`\\`、NUL 这些危险字符；
-     *   · 空名字 / 只剩点的名字 → 用兜底名；
-     *   · 长度截断，避免超长文件名在部分文件系统上创建失败。
-     */
-    private fun sanitizeDownloadName(raw: String, fallback: String = "dsh-download"): String {
-        // 统一分隔符后取末段：同时挡掉 "/" 与 "\" 两种分隔符
-        val lastSegment = raw.replace('\\', '/').substringAfterLast('/')
-        val cleaned = lastSegment
-            .replace("\u0000", "")
-            .filter { it != '/' && it != '\\' }
-            .trim()
-            .trimStart('.')          // 去掉前导点：挡 "." ".." 以及隐藏文件
-        if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") return fallback
-        // 200 字符上限：主流文件系统 255 字节，留出扩展名与 .part 后缀的余量
-        return if (cleaned.length > 200) cleaned.take(200) else cleaned
-    }
-
-    /**
      * 当前挂起的文件选择结果接收者；null 表示没有等待中的选择。
      *
      * ⚠️ 由 `launchFileChooser` 装、由 `fileChooserLauncher` 的回调消费，
@@ -2267,22 +1521,22 @@ class MainActivity : AppCompatActivity() {
     //   「关掉这个应用」—— 启动器、微信、浏览器都是退到后台保留现场；真要退出
     //   可以用最近任务列表划掉。引擎不随 Activity 退后台而停（跑在 EngineService 里）。
 
-    /** 是否有一次"问页面"的往返正在进行中（防止连按返回键叠加调用）。 */
-    private var backQueryPending = false
-
-    /**
-     * 返回键探针的世代号 —— 用来作废"超时之后才姗姗来迟"的回调。
-     *
-     * 每次发起探针递增一次；**超时兜底也会递增**，于是晚到的回调会因
-     * `seq != backQuerySeq` 被直接丢弃，不会重复执行收尾动作。
-     */
-    private var backQuerySeq = 0
-
-    /** 上一次「返回键退到后台」的时刻（见 [interceptBackExit]）。 */
     private var lastBackExitAt = 0L
-
-    /** 返回键探针的兜底定时器（见 [queryPageBack]）。 */
     private val backHandler = Handler(Looper.getMainLooper())
+    private val pageBack by lazy {
+        PageBackNavigation(
+            scheduler = object : UiTaskScheduler {
+                override fun postDelayed(task: Runnable, delayMs: Long) { backHandler.postDelayed(task, delayMs) }
+                override fun remove(task: Runnable) { backHandler.removeCallbacks(task) }
+            },
+            query = { done -> web.evaluateJavascript(BACK_PROBE_JS, done) },
+            onUnhandled = { timedOut ->
+                if (timedOut) Log.w(DshApplication.TAG, "返回键探针超时（页面未响应），按无可退层级处理")
+                else Log.i(DshApplication.TAG, "返回键：页面已无可退层级，退到后台（不结束进程）")
+                if (!interceptBackExit()) moveTaskToBack(true)
+            },
+        )
+    }
 
     /**
      * 安装返回键处理。
@@ -2300,38 +1554,14 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    /**
-     * 问页面「有没有一层可以退」，有就消费掉，没有才退出 App。
-     *
-     * 页面侧的 `window.__DSH_MOBILE_BACK__()` 返回布尔值（`evaluateJavascript`
-     * 会把它序列化成字符串 `"true"` / `"false"`）。
-     *
-     * ⚠️ **桥不存在时必须直接退出**，不能"当作页面说 true" —— 那会让返回键
-     *   在插件还没激活（或激活失败）时**完全失效**，用户被困在 App 里出不去。
-     *   反过来，插件没起来时页面里也确实没有任何自建层级需要关，退出是对的。
-     *
-     * ## ⚠️⚠️ 为什么必须有超时兜底（用户反馈「返回不了对话界面」的根因）
-     *
-     * `WebHost.evaluateJavascript` 的契约**明确写着「不保证一定被调用」**
-     * （渲染进程崩溃、View 已销毁、GeckoView 扩展还没就绪时都不会回调）。
-     * 而本方法原先只在**回调里**复位 `backQueryPending` —— 于是只要有一次回调
-     * 没来，这个标志就**永久卡在 true**，此后每一次返回键都在第一行
-     * `if (backQueryPending) return` 处静默返回，返回键**彻底失效**。
-     *
-     * 用户的症状正是如此：界面卡住之后返回键毫无反应，只能靠右上角 ⋯ 或手势退出。
-     * 触发条件与「切回前台黑/白屏」同源 —— WebView 的渲染进程被系统回收后，
-     * `evaluateJavascript` 就是那个"永远不回"的调用。
-     *
-     * 兜底语义与「页面说 false」一致（退到后台）：超时说明**问不到**页面，
-     * 此时最不该做的就是继续把用户困在 App 里。
-     */
+    /** 浏览器标签与历史优先；官方页面由单次探针决定是否退到后台。 */
     private fun queryPageBack() {
         // ── AI 浏览器优先 ──────────────────────────────────────────────
         // 浏览器是整个 App 最上面的一层，返回键先归它：
         //   标签 > 1 且当前页无历史 → 关掉这个标签；
         //   当前页有历史 → 后退；
         //   否则 → 收起浏览器（回到官方界面），**不退出 App**。
-        // ⚠️ 必须放在 `backQueryPending` 守卫之前：那条路是问页面要
+        // ⚠️ 必须放在 `PageBackNavigation` 守卫之前：那条路是问页面要
         //    `__DSH_MOBILE_BACK__`，而浏览器盖住页面时页面根本不该被问到。
         if (isAiBrowserVisible()) {
             val b = aiBrowser
@@ -2352,35 +1582,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (backQueryPending) return
-        backQueryPending = true
-        val seq = ++backQuerySeq
-
-        backHandler.postDelayed({
-            // 已经被回调正常收尾过（或又发起了新的一次探针）：什么都不做。
-            if (seq != backQuerySeq) return@postDelayed
-            // ⚠️ 递增世代号，让可能还在路上的回调作废 —— 否则它会再执行一次
-            //   moveTaskToBack，而且会把 backQueryPending 复位成"看起来正常"。
-            backQuerySeq++
-            backQueryPending = false
-            Log.w(DshApplication.TAG, "返回键探针超时（页面未响应），按无可退层级处理")
-            if (interceptBackExit()) return@postDelayed
-            moveTaskToBack(true)
-        }, BACK_PROBE_TIMEOUT_MS)
-
-        web.evaluateJavascript(BACK_PROBE_JS) { result ->
-            // 超时兜底已经收尾过：丢弃这次迟到的回调。
-            if (seq != backQuerySeq) return@evaluateJavascript
-            backQuerySeq++
-            backQueryPending = false
-            // 页面回 "true" ⇒ 已消费；其余（"false" / "null" / 异常）一律退到后台。
-            val consumed = result != null && result.trim('"') == "true"
-            if (!consumed) {
-                Log.i(DshApplication.TAG, "返回键：页面已无可退层级，退到后台（不结束进程）")
-                if (interceptBackExit()) return@evaluateJavascript
-                moveTaskToBack(true)
-            }
-        }
+        pageBack.request()
     }
 
     /** 返回键「再按一次才退」：反馈 `badea0`（vivo）返回键「不小概率直接退出 App」
@@ -2407,7 +1609,7 @@ class MainActivity : AppCompatActivity() {
      *   通知交给 `EngineService.updateStatus()`（内部只走 NotificationManager），
      *   底色则 `runOnUiThread` 切回主线程再设。gecko 版由 [WebHost] 统一切主线程。
      */
-    private inner class StatusBridge : PageBridge, com.dsh.android.web.AnnotationSource {
+    private inner class ActivityPageBridge : ActivityPageBridgeActions {
         override fun onStatus(json: String) {
             val status = EngineStatus.parse(json) ?: return
             EngineService.updateStatus(this@MainActivity, status)
@@ -2428,37 +1630,11 @@ class MainActivity : AppCompatActivity() {
             this@MainActivity.onImeWillShow()
         }
 
-        /**
-         * 设置页点「配对无线调试」—— 发起 Android 11+ 的无线调试配对。
-         *
-         * ⚠️ 走 JS 桥而不是宿主半的 HTTP 路由：配对码要经**通知栏**输入，
-         * 而通知是 Android 的能力，Node 侧够不到。这里立即返回，
-         * 真正的发现在后台协程里做（见 [AdbPairingNotifier.start]）。
-         *
-         * 运行在 WebView 的 JS 线程，所以只做「发一条通知」这种轻量动作。
-         */
-        override fun startWirelessPairing() {
-            Log.i(DshApplication.TAG, "设置页请求配对无线调试")
-            AdbPairingNotifier.start(this@MainActivity)
-        }
 
-        /** 设置页取消配对（撤掉那条带输入框的通知）。 */
-        override fun cancelWirelessPairing() {
-            AdbPairingNotifier.cancel(this@MainActivity)
-        }
 
-        /**
-         * 配对需要的通知是否可用。
-         *
-         * 配对流程的一切交互（提示、配对码输入框、取消按钮）**都挂在那条常驻通知上**，
-         * 所以通知被系统关掉时配对根本无法进行。原生侧会直接拒绝开始（见
-         * [AdbPairingNotifier.start]），但那样用户只会看到「点了没反应」——
-         * 界面必须能问出原因并明说。
-         *
-         * 返回 Boolean（`@JavascriptInterface` 支持基本类型）。
-         */
-        override fun pairingNotificationsEnabled(): Boolean =
-            AdbPairingNotifier.notificationsEnabled(this@MainActivity)
+
+
+
 
         /**
          * 移动端 UI 插件激活完成 —— 界面真正可用的时刻。
@@ -2479,7 +1655,7 @@ class MainActivity : AppCompatActivity() {
          *
          * 这类失败原本在设备上完全无声：页面起不来，但宿主收不到任何回调，
          * 只能靠 12 秒兜底超时收掉启动层，露给用户一片白屏。
-         * 有了它，启动层就能把**真实原因**摆出来（见 `overlayTimeoutRunnable`）。
+         * 有了它，启动层就能把**真实原因**摆出来（见 `BootOverlayPresenter`）。
          *
          * ⚠️ 运行在 WebView 的 JS 线程，只写一个 volatile 字段，不碰 View。
          * ⚠️ 只记第一条：启动失败时后续错误多半是连锁反应。
@@ -2523,7 +1699,7 @@ class MainActivity : AppCompatActivity() {
          *   正确做法是重载 `lastLoadedUrl`（带 token 的原始地址），
          *   即 [com.dsh.android.web.WebHost.reload]。
          *
-         * ⚠️ 走 [reloadWithRetry] 而不是直接 `web.reload()`：这条链路已经带上了
+         * ⚠️ 走 [WebRecoveryController] 而不是直接 `web.reload()`：这条链路已经带上了
          *   「重置首帧记忆 → 重载 → 等新首帧 → 失败再试一次」的完整判据
          *   （见 [WebHost.resetFirstFrame] 的 KDoc）。绕过它会让「刷新后白屏」
          *   重新变成不可观测的静默失败。
@@ -2540,111 +1716,17 @@ class MainActivity : AppCompatActivity() {
         // + Settings.canDrawOverlays），Node 侧读不到；拉起系统授权页更是 Android 的能力。
         // 宿主半那条路（特权权限用的）是为「需要 spawn 进程探测」的场景准备的，这里不需要。
 
-        /**
-         * 读气泡当前状态。返回 JSON 字符串。
-         *
-         * ⚠️ 必须返回 String —— `@JavascriptInterface` 只支持基本类型和 String，
-         *   返回自定义对象会被序列化成 `undefined`（静默，不报错）。
-         *
-         * `granted` 与 `enabled` 是**两个独立的事实**：用户可能已经授权但没开开关，
-         * 也可能开了开关但授权被系统撤销了。分开报，设置页才能给出正确的下一步。
-         */
-        override fun bubbleState(): String = try {
-            // ⚠️ 这几个字段是「悬浮气泡」设置页的**开关状态**，页面渲染时直接读这里。
-            //   两个新开关都带能力判据：`imeFlingAvailable` 为 false 时页面必须把
-            //   「键盘顶飞」置灰并显示 `imeFlingReason`，而不是让用户打开一个注定
-            //   不生效的开关（读 `dumpsys input_method` 需要 DUMP 权限，普通应用没有）。
-            val ap = BubbleAppearance.load(this@MainActivity)
-            val priv = ShellPrivilege.status(this@MainActivity)
-            JSONObject()
-                .put("enabled", FloatingBubble.isEnabled(this@MainActivity))
-                .put("granted", FloatingBubble.canDrawOverlays(this@MainActivity))
-                .put("throwEnabled", ap.throwEnabled)
-                .put("imeFlingEnabled", ap.imeFlingEnabled)
-                .put("imeFlingAvailable", priv.available)
-                .put("imeFlingReason", priv.reason ?: JSONObject.NULL)
-                .put("shakeEnabled", ap.shakeEnabled)
-                // 键盘避让所需的无障碍是否已开。与上两项独立：悬浮窗授权了、
-                // 开关也打开了，没有无障碍照样不会避让键盘。
-                .put("a11y", BubbleA11yService.isEnabled(this@MainActivity))
-                .toString()
-        } catch (t: Throwable) {
-            Log.w(DshApplication.TAG, "读取气泡状态失败: ${t.message}")
-            "{}"
-        }
 
-        /** 开关气泡。关掉时立刻收起已显示的窗口，不用等下次切后台。 */
-        override fun bubbleSetEnabled(enabled: Boolean) {
-            Log.i(DshApplication.TAG, "设置页切换悬浮气泡: $enabled")
-            FloatingBubble.setEnabled(this@MainActivity, enabled)
-            if (!enabled) FloatingBubble.hideNow()
-            // ⚠️ 这里**不弹关联权限的提示**：键盘避让有自己那张卡片（开关 + 去开启权限），
-            //   在"开气泡"这个动作上顺手弹一个无障碍对话框，用户会不知道自己在确认什么。
-        }
 
-        /**
-         * 设置「键盘顶飞」。
-         *
-         * ⚠️ 无特权通道时**拒绝并回退**：`BubbleAppearance.merge()` 里有同一道闸门，
-         *   就算这里写进了 true，下次 `load()` 也会被强制纠正回 false —— 与其让它
-         *   「看起来打开了但其实没生效」，不如当场拒绝并记日志。设置页本就会用
-         *   `imeFlingAvailable` 把开关置灰，正常路径下走不到这里。
-         */
-        override fun bubbleSetImeFling(enabled: Boolean) {
-            val priv = ShellPrivilege.status(this@MainActivity)
-            if (enabled && !priv.available) {
-                ShellPrivilege.logDenied("键盘顶飞", priv)
-                Log.i(DshApplication.TAG, "拒绝打开键盘顶飞：${priv.reason}")
-                return
-            }
-            Log.i(DshApplication.TAG, "设置页切换键盘顶飞: $enabled")
-            val cur = BubbleAppearance.load(this@MainActivity)
-            BubbleAppearance.save(this@MainActivity, cur.copy(imeFlingEnabled = enabled))
-            // 立即生效（同 [bubbleSetThrow]：只 save 不会让活的球重新读配置）。
-            runCatching { FloatingBubble.applyAppearance(FloatingBubble.currentAppearanceJson()) }
-                .onFailure { Log.w(DshApplication.TAG, "键盘顶飞即时生效失败: ${it.message}") }
-        }
 
-        /**
-         * 设置「晃动甩飞」。加速度计零权限，直接写盘即可。
-         *
-         * ⚠️ 同样要 apply 到活的球 —— 见 [bubbleSetThrow] 的说明。
-         */
-        override fun bubbleSetShake(enabled: Boolean) {
-            Log.i(DshApplication.TAG, "设置页切换晃动甩飞: $enabled")
-            val cur = BubbleAppearance.load(this@MainActivity)
-            BubbleAppearance.save(this@MainActivity, cur.copy(shakeEnabled = enabled))
-            runCatching { FloatingBubble.applyAppearance(FloatingBubble.currentAppearanceJson()) }
-                .onFailure { Log.w(DshApplication.TAG, "晃动甩飞即时生效失败: ${it.message}") }
-        }
 
-        /**
-         * 徽标刷新配置下发。
-         *
-         * ⚠️ 运行在 WebView 的 JS 线程上，只读 SharedPreferences，不碰 View。
-         */
-        override fun bubbleBadgeConfig(): String {
-            return try {
-                val b = BubbleAppearance.load(this@MainActivity).balanceBadge
-                JSONObject().apply {
-                    put("refreshEverySec", b.refreshEverySec)
-                    put("refreshOnTurnEnd", b.refreshOnTurnEnd)
-                    put("refreshOnTap", b.refreshOnTap)
-                    put("tapRefreshMinIntervalSec", b.tapRefreshMinIntervalSec)
-                }.toString()
-            } catch (t: Throwable) {
-                Log.w(DshApplication.TAG, "读徽标刷新配置失败: ${t.message}")
-                // 兜底给"只按轮末刷新"：最省接口、且一定有数据更新。
-                // `tapRefreshMinIntervalSec` 用 3 而不是 20：读不到配置时应该尽量
-                // 让功能可用，而不是把用户挡在门外（见页面侧那段注释）。
-                """{"refreshEverySec":0,"refreshOnTurnEnd":true,"refreshOnTap":false,"tapRefreshMinIntervalSec":3}"""
-            }
-        }
 
-        /**
-         * 点球刷新计数（见 `PageBridge.bubbleTapRefreshSeq` 的说明）。
-         */
-        override fun bubbleTapRefreshSeq(): Int = tapRefreshSeq
+
+
+
+
+
+
 
         /**
          * 把页面侧的诊断文字写进 `app.log`。
@@ -2687,65 +1769,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /**
-         * 设置「拖拽抛掷」（手甩球）。纯本地物理，无权限要求。
-         *
-         * ⚠️⚠️ **必须走 `FloatingBubble.applyAppearance`，不能只 save。**
-         *   早先这里只 `BubbleAppearance.save(...)` 就返回了 —— 配置确实落盘，
-         *   但**正在运行的悬浮球不读这份新配置**，于是用户看到的是
-         *   「开了没反应，要等下次改别的参数把整份配置重新 apply 才生效」。
-         *
-         *   而下方「动作与交互」折叠卡片里那个同名开关走的是 `bubbleApply`，
-         *   一按就生效 —— 同一个功能两个入口、两种行为，这才是用户报的那个 bug。
-         *
-         *   现在两个入口统一：都先 save，再 apply 到活的球上。
-         */
-        override fun bubbleSetThrow(enabled: Boolean) {
-            Log.i(DshApplication.TAG, "设置页切换拖拽抛掷: $enabled")
-            val cur = BubbleAppearance.load(this@MainActivity)
-            BubbleAppearance.save(this@MainActivity, cur.copy(throwEnabled = enabled))
-            // 立即生效：把含新 `throwEnabled` 的整份配置推给活的球。
-            runCatching { FloatingBubble.applyAppearance(FloatingBubble.currentAppearanceJson()) }
-                .onFailure { Log.w(DshApplication.TAG, "拖拽抛掷即时生效失败: ${it.message}") }
-        }
 
-        /**
-         * 页面侧拉到的余额 → 原生徽标。
-         *
-         * ⚠️ 运行在 WebView 的 JS 线程上，**不能碰 View**：
-         *   `applyBalanceToActive` 内部自己 `main.post`，这里只做解析。
-         *
-         * ⚠️ 解析失败**不能抛**（会打断 JS 桥调用，页面侧看到异常）。
-         *   失败按空快照处理，徽标隐藏即可。
-         */
-        override fun bubbleReportBalance(json: String) {
-            val snap = try {
-                val o = JSONObject(json)
-                BalanceSnapshot.fromWallets(
-                    rechargeJson = o.optJSONArray("wallets"),
-                    bonusJson = o.optJSONArray("bonusWallets"),
-                    costLast = runCatching {
-                        java.math.BigDecimal(o.opt("costLast")?.toString() ?: "0")
-                    }.getOrDefault(java.math.BigDecimal.ZERO),
-                    previous = null,
-                ).copy(
-                    costSession = runCatching {
-                        java.math.BigDecimal(o.opt("costSession")?.toString() ?: "0")
-                    }.getOrDefault(java.math.BigDecimal.ZERO),
-                    error = o.optString("error", ""),
-                )
-            } catch (t: Throwable) {
-                Log.w(DshApplication.TAG, "解析余额载荷失败: ${t.message}")
-                BalanceSnapshot(error = "载荷解析失败")
-            }
-            val ok = FloatingBubble.applyBalanceToActive(snap)
-            Log.i(
-                DshApplication.TAG,
-                "页面上报余额: 钱包=${snap.wallets.size} 赠送=${snap.bonusWallets.size} " +
-                    "合计=${snap.total().toPlainString()} 本次=${snap.costLast.toPlainString()} " +
-                    "已送达=$ok",
-            )
-        }
+
+
 
         /**
          * 拉起系统的「显示在其他应用上层」授权页。
@@ -2831,9 +1857,10 @@ class MainActivity : AppCompatActivity() {
                 val view = ensureAiBrowser() ?: return@runOnUiThread
                 view.applyTheme(dark, themeBg)
                 view.applyEmbedRect(left, top, widthPx, heightPx)
+                browserPane.embedded()
                 if (view.visibility != View.VISIBLE) {
                     view.visibility = View.VISIBLE
-                    syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
+                    syncAiBrowserVisible()
                     view.bringToFront()
                     Log.i(
                         DshApplication.TAG,
@@ -2877,55 +1904,30 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        override fun peekAnnotation(): String {
-            val pending = pendingAnnotate ?: return ""
-            return runCatching {
-                org.json.JSONObject().apply {
-                    put("annotationId", pending.first.name)
-                    put("png", android.util.Base64.encodeToString(pending.first.readBytes(), android.util.Base64.NO_WRAP))
-                    put("text", pending.second)
+        override fun peekAnnotation(): String = runCatching {
+            browserPane.readAnnotation(consume = false) { pending ->
+                JSONObject().apply {
+                    put("annotationId", pending.id)
+                    put("png", android.util.Base64.encodeToString(pending.file.readBytes(), android.util.Base64.NO_WRAP))
+                    put("text", pending.question)
                 }.toString()
-            }.getOrDefault("")
-        }
-
-        override fun acknowledgeAnnotation(annotationId: String) {
-            if (pendingAnnotate?.first?.name == annotationId) pendingAnnotate = null
-        }
-
-        override fun aiAnnotateResult(): String {
-            Log.i(DshApplication.TAG, "前端索取标注结果，待发送=${pendingAnnotate != null}")
-            val pending = pendingAnnotate ?: return ""
-            // ⚠️ **先读成功、再清空**（原来是先清空后读）。
-            //   旧顺序下只要 `readBytes()` 抛错（文件被清掉 / 空间不足 / 权限），
-            //   这一份标注就**永久丢失**：用户圈完画点「发送」，结果什么都没发生，
-            //   而且界面上没有任何提示 —— 又一处静默失败。
-            //   现在读失败会保留 pending，并且**必须报给用户**（见下面的 Toast）。
-            val encoded = runCatching {
-                // 主 WebView 的 allowFileAccess=false，前端读不到 file://，
-                // 所以这里直接把字节 base64 化递过去。
-                val bytes = pending.first.readBytes()
-                val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                org.json.JSONObject().apply {
-                    put("png", b64)
-                    put("text", pending.second)
-                }.toString()
-            }.getOrElse {
-                Log.w(DshApplication.TAG, "编码标注图失败: ${it.message}")
-                // 手机上只看日志等于没提示，用户会以为「点了没反应」。
-                // 这条必须上屏：他刚花了功夫圈画，丢了要马上知道。
-                runOnUiThread {
-                    android.widget.Toast.makeText(
-                        this@MainActivity,
-                        "标注图读取失败：${it.message ?: "未知原因"}，请重新圈画",
-                        android.widget.Toast.LENGTH_LONG,
-                    ).show()
-                }
-                null
             }
-            // 只有真拿到了结果才清空 —— 失败时保留，给前端重试一次的机会
-            // （前端下次调 this 时还能读到同一份）。
-            if (encoded != null) pendingAnnotate = null
-            return encoded ?: ""
+        }.getOrDefault("")
+
+        override fun acknowledgeAnnotation(annotationId: String) = browserPane.acknowledgeAnnotation(annotationId)
+
+        override fun aiAnnotateResult(): String = runCatching {
+            browserPane.readAnnotation(consume = true) { pending ->
+                JSONObject().apply {
+                    put("png", android.util.Base64.encodeToString(pending.file.readBytes(), android.util.Base64.NO_WRAP))
+                    put("text", pending.question)
+                }.toString()
+            }
+        }.getOrElse {
+            Log.w(DshApplication.TAG, "编码标注图失败: ${it.message}")
+            runOnUiThread { Toast.makeText(this@MainActivity,
+                "标注图读取失败：${it.message ?: "未知原因"}，请重新圈画", Toast.LENGTH_LONG).show() }
+            ""
         }
 
         override fun aiBrowserDetach() {
@@ -2933,10 +1935,11 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 aiBrowser?.let {
                     it.visibility = View.GONE
-                    syncAiBrowserVisible()   // 见 aiBrowserVisible 的 KDoc
+                    syncAiBrowserVisible()
                     // ⚠️ 必须清掉嵌入矩形：否则面板关掉后 AI 再调工具打开时，
                     //   浏览器会出现在上一次那块（已经不存在的）面板位置。
                     it.clearEmbedRect()
+                    browserPane.hide(clearEmbedding = true)
                 }
                 Log.i(DshApplication.TAG, "AI 浏览器已随面板收起")
             }
@@ -2994,35 +1997,11 @@ class MainActivity : AppCompatActivity() {
         //   TYPE_APPLICATION_OVERLAY），只有持有 View 层级的那一侧能操作它；
         //   Node 侧连 View 是什么都看不到。
 
-        /**
-         * 会话转录上报。
-         *
-         * ⚠️ 运行在 WebView 的 JS 线程上，`FloatingBubble.onTranscript()` 内部自己
-         *   切主线程 —— 这里不能碰 View。
-         */
-        override fun onTranscript(json: String) {
-            FloatingBubble.onTranscript(json)
-        }
 
-        /**
-         * 插件下发悬浮球外观配置。
-         *
-         * 用法（页面里任何插件都可以）：
-         *
-         * ```js
-         * window.DSHAndroid.bubbleApply(JSON.stringify({ shape: 'square', size: 72 }))
-         * ```
-         *
-         * ⚠️ 返回 Boolean 而不是 String：调用方只关心"接受了吗"。
-         *   真正的应用是**下一帧**的事，返回值不代表视图已刷新。
-         */
-        override fun bubbleApply(json: String): Boolean {
-            Log.i(DshApplication.TAG, "插件下发悬浮球配置: ${json.take(200)}")
-            return FloatingBubble.applyAppearance(json)
-        }
 
-        /** 读回当前外观配置（JSON 文本），供插件做「读取-修改-写回」。 */
-        override fun bubbleAppearance(): String = FloatingBubble.currentAppearanceJson()
+
+
+
 
         // ══ root（uid 0）：设置页的状态显示与重新检测 ══════════════════════
         //
@@ -3034,80 +2013,11 @@ class MainActivity : AppCompatActivity() {
         // 走 JS 桥而不是宿主半的 HTTP 路由：探测结论落在 `filesDir`（原生私有目录），
         // 而「重新检测」要起 `su` 进程、可能弹授权框 —— 两件都是 Android 侧的事。
 
-        /**
-         * 读 root 探测结论。返回 JSON 字符串。
-         *
-         * ⚠️ 必须返回 String —— `@JavascriptInterface` 只支持基本类型和 String，
-         *   返回自定义对象会被序列化成 `undefined`（静默，不报错）。
-         *
-         * ⚠️ **只读缓存、不触发探测**，这是有意的：本方法运行在 WebView 的 JS
-         *   线程上，而探测最多要等 [RootAccess.PROBE_TIMEOUT_SEC] 秒，会卡住整个
-         *   页面。要重新探测走 [rootRecheck]。
-         *
-         * `at` 是结论的落盘时刻（毫秒）：一个 23 小时前的结论与刚测出来的不是
-         * 一回事，界面要能表达这个差别，所以时间戳必须一起给出去。
-         */
-        override fun rootState(): String = try {
-            val snap = RootAccess.snapshot(this@MainActivity)
-            JSONObject()
-                .put("known", snap != null)
-                .put("state", snap?.result?.state?.name ?: "")
-                .put("granted", snap?.result?.granted ?: false)
-                .put("detail", snap?.result?.detail ?: "")
-                .put("at", snap?.at ?: 0L)
-                // ⚠️ 「探测到有 root」与「本会话里 root 工具真的挂上了」是**两件事**。
-                //   工具是 `--patch` 挂的，只在引擎启动那一刻生效；用户点「重新检测」
-                //   把结论刷成 GRANTED 之后，引擎已经在跑，overlay 不会再读 ——
-                //   这个会话里**没有** root 工具。
-                //   不把这两个事实分开暴露，界面就只能在「结论已可用」时一律宣称
-                //   「root 工具已注册」，那是在说假话，而且用户无法自行发现（只能
-                //   靠重启 App 才「突然好了」）。所以这里把挂载事实一并给出去。
-                .put("mounted", EngineManager.get(this@MainActivity).rootToolMounted)
-                .toString()
-        } catch (t: Throwable) {
-            Log.w(DshApplication.TAG, "读取 root 状态失败: ${t.message}")
-            "{}"
-        }
 
-        /**
-         * 设置页点「重新检测」：清掉缓存并**在后台**强制重探一次。
-         *
-         * ⚠️ 必须丢到后台线程：探测要起 `su` 进程，首次还会弹授权框（最多等
-         *   [RootAccess.PROBE_TIMEOUT_SEC] 秒），在 JS 线程上做会卡死页面。
-         * ⚠️ 立即返回、不在这里回结果：界面靠轮询 [rootState] 拿结论（见客户端半
-         *   的 `recheckRoot()`）。所以**不能**同步等它跑完 —— 那样就退回了上面那个
-         *   卡页面的问题。
-         */
-        override fun rootRecheck() {
-            Log.i(DshApplication.TAG, "设置页请求重新检测 root")
-            val app = applicationContext
-            Thread {
-                val result = RootAccess.detect(app, force = true)
-                Log.i(DshApplication.TAG, "root 重新检测结果: ${result.state} ${result.detail}")
-            }.start()
-        }
 
-        /**
-         * 读 Shizuku 通道状态。返回 JSON 字符串。
-         *
-         * 四个字段是**四个独立的事实**（装了 / 服务在跑 / 已授权 / 服务端身份），
-         * 合成一个布尔会让用户照错的提示去行动 —— 见 [PageBridge.shizukuState]。
-         *
-         * ⚠️ 全程 `runCatching`：这个方法的结果直接拼进页面 DOM，抛异常会让 JS 桥
-         *   把错误吞掉、那一行变成空白，用户以为功能没做（与 [logSummary] 同理）。
-         */
-        override fun shizukuState(): String = runCatching {
-            JSONObject()
-                .put("installed", ShizukuChannel.isManagerInstalled(this@MainActivity))
-                .put("binder", ShizukuChannel.isBinderAlive())
-                .put("granted", ShizukuChannel.hasPermission())
-                .put("uid", ShizukuChannel.serverUid())
-                .put("version", ShizukuChannel.serverVersion())
-                .toString()
-        }.getOrElse { t ->
-            Log.w(DshApplication.TAG, "读取 Shizuku 状态失败: ${t.message}")
-            "{}"
-        }
+
+
+
 
         /**
          * 设置页点「授权」：让 Shizuku 弹它自己的确认界面。
@@ -3537,23 +2447,25 @@ class MainActivity : AppCompatActivity() {
     // 根本闪不起来。正解是把「颜色序列」一次性交给原生、这里自己轮转，
     // 与悬浮球的 `spin` / `pulse` 同一个思路。
 
-    /** 闪烁驱动。与其它 Handler 一样用主线程 —— 改窗口属性必须在主线程。 */
     private val flashHandler = Handler(Looper.getMainLooper())
-
-    /** 当前帧下标。两条栏共用同一帧号，序列短的那条自然回绕。 */
-    private var flashFrame = 0
-
-    /** 已完成的圈数，用于 `flashLoops` 收尾。 */
-    private var flashLoopsDone = 0
-
-    /** 本次闪烁用到的配置快照；null 表示没在闪。 */
-    private var flashConfig: SystemBarAppearance? = null
-
-    /**
-     * 推进一帧的 Runnable。**每帧重新 post**（不是 `scheduleAtFixedRate`）：
-     * 逐帧时长可以不同（`flashDurations`），固定周期表达不了。
-     */
-    private val flashRunnable = Runnable { flashStep() }
+    private val flashSequence by lazy {
+        SystemBarFlashSequence(
+            scheduler = object : UiTaskScheduler {
+                override fun postDelayed(task: Runnable, delayMs: Long) { flashHandler.postDelayed(task, delayMs) }
+                override fun remove(task: Runnable) { flashHandler.removeCallbacks(task) }
+            },
+            onFrame = { config, status, navigation ->
+                setSystemBarColors(
+                    status?.let(::parseColorOrNull) ?: parseColorOrNull(config.statusBar.ifEmpty { appliedBgHex }),
+                    navigation?.let(::parseColorOrNull) ?: parseColorOrNull(config.navBar.ifEmpty { appliedBgHex }),
+                )
+            },
+            onComplete = { loops ->
+                Log.i(DshApplication.TAG, "系统栏闪烁已完成 $loops 圈，停在钦定色上")
+                applySystemBarColors(appliedBgHex)
+            },
+        )
+    }
 
     /**
      * 统一的系统栏刷新入口：**全面屏优先，其次闪，最后静态色**。
@@ -3586,77 +2498,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 开始/重启闪烁。配置或帧号有变时会被再调一次（幂等：先清旧的再排新的）。
-     *
-     * ⚠️ **重启时要把帧号归零**：不归零的话，AI 改完序列后用户会看到它从
-     *   「上一次闪到一半的位置」接着闪，而不是从第一色开始 —— 很容易被误判成
-     *   「新序列没生效」。
-     */
     private fun startFlash(config: SystemBarAppearance) {
-        flashHandler.removeCallbacks(flashRunnable)
-        flashConfig = config
-        flashFrame = 0
-        flashLoopsDone = 0
-        Log.i(
-            DshApplication.TAG,
-            "系统栏开始闪烁: 状态栏 ${config.statusBarFlash.size} 色, 导航栏 ${config.navBarFlash.size} 色, " +
-                "${config.flashIntervalMs}ms/帧, 圈数=${if (config.flashLoops < 0) "无限" else config.flashLoops.toString()}",
-        )
-        flashStep()
+        Log.i(DshApplication.TAG, "系统栏开始闪烁: 状态栏 ${config.statusBarFlash.size} 色, 导航栏 ${config.navBarFlash.size} 色, " +
+            "${config.flashIntervalMs}ms/帧, 圈数=${config.flashLoops}")
+        flashSequence.start(config)
     }
 
-    /**
-     * 停掉闪烁（撤回所有未执行的帧）。**不停留在中间色上**：配置里的钦定色才是
-     * 用户/模型表达的那个「我要的颜色」，闪到一半停下会留下一个谁都没指定的颜色。
-     */
     private fun stopFlash() {
-        if (flashConfig != null) {
-            Log.i(DshApplication.TAG, "系统栏闪烁已停止")
-        }
-        flashHandler.removeCallbacks(flashRunnable)
-        flashConfig = null
-        flashFrame = 0
-        flashLoopsDone = 0
+        if (flashSequence.running) Log.i(DshApplication.TAG, "系统栏闪烁已停止")
+        flashSequence.stop()
     }
-
-    /**
-     * 画一帧并排下一帧。
-     *
-     * 两条栏的序列**各取各的第 `flashFrame % size` 项**，所以长度不同是可以的
-     * （一栏 3 色、另一栏 7 色都成立）。某一条栏没有序列时，那一帧它保持
-     * 配置里的静态色（而不是变成「不动」），这样「另一栏闪、这栏不闪」也符合直觉。
-     */
-    private fun flashStep() {
-        val config = flashConfig ?: return
-        val statusList = config.statusBarFlash
-        val navList = config.navBarFlash
-
-        val statusHex = statusList.getOrNull(flashFrame % statusList.size.coerceAtLeast(1))
-        val navHex = navList.getOrNull(flashFrame % navList.size.coerceAtLeast(1))
-        setSystemBarColors(
-            statusHex?.let { parseColorOrNull(it) } ?: parseColorOrNull(config.statusBar.ifEmpty { appliedBgHex }),
-            navHex?.let { parseColorOrNull(it) } ?: parseColorOrNull(config.navBar.ifEmpty { appliedBgHex }),
-        )
-
-        // 圈数判定：以**最长的**那条序列走完一圈为准，否则两条长度不同时
-        // 会有「短的那条多闪了几轮」的观感。
-        val cycle = maxOf(statusList.size, navList.size).coerceAtLeast(1)
-        flashFrame++
-        if (flashFrame >= cycle) {
-            flashFrame = 0
-            flashLoopsDone++
-            if (config.flashLoops >= 0 && flashLoopsDone >= config.flashLoops) {
-                // 闪够了：停在配置里的静态色上，而不是随机一帧
-                Log.i(DshApplication.TAG, "系统栏闪烁已完成 $flashLoopsDone 圈，停在钦定色上")
-                stopFlash()
-                applySystemBarColors(appliedBgHex)
-                return
-            }
-        }
-        flashHandler.postDelayed(flashRunnable, config.frameDelayMs(flashFrame))
-    }
-
 
     /**
      * 系统栏钦定配置变了（[SystemBarAppearance.apply] / [reset] / [stopFlash] 后回调）。
@@ -3817,11 +2668,11 @@ class MainActivity : AppCompatActivity() {
                             invalidateOverlayTimeout()
                             // ⚠️ **同 [onRendererGone] 的 gaveUp 分支**：这是终态，
                             //   刚贴上的「引擎反复停止」是**错误提示**，而在飞的
-                            //   [paintTimeoutRunnable] 到点会 `hideOverlay()` 把它收走，
+                            //   [FirstFrameAwaiter] 到点会 `hideOverlay()` 把它收走，
                             //   用户只看到一闪。[invalidateOverlayTimeout] 管的是另一个
-                            //   计时器（`overlayTimeoutRunnable`），管不到这一个。
+                            //   计时器（`BootOverlayPresenter`），管不到这一个。
                             resetFirstFrameAwait()
-                            overlayDismissed = false
+                            bootOverlay.reopen()
                             showOverlay(
                                 "引擎反复停止",
                                 hint = "${state.message}（已自动重启 $MAX_ENGINE_RESTARTS 次）。" +
@@ -3837,18 +2688,18 @@ class MainActivity : AppCompatActivity() {
                         //   等于让上一轮的计时器重新变得能开火 —— 而它描述的是
                         //   **上一次**加载（往往早就成功了），到点会对着刚启动的
                         //   新页面报「界面就绪回调超时」。真机上就是这样盖住了一次
-                        //   正常的启动过程（完整证据见 [overlayWaitGeneration] 的 KDoc）。
+                        //   正常的启动过程（完整证据见 [BootOverlayPresenter] 的 KDoc）。
                         invalidateOverlayTimeout()
-                        overlayDismissed = false
+                        bootOverlay.reopen()
                         showOverlay("引擎已停止，正在重新启动…", hint = state.message)
                         // ⚠️ 页面此刻是**活的**，但它连的是已经没人监听的端口 ——
                         //   必须等引擎起来后重新加载，否则界面永远连不上。
-                        // ⚠️ 清掉 webViewPainted 让新一轮的「等首帧」重新生效。
+                        // ⚠️ 清掉 firstFrame 让新一轮的「等首帧」重新生效。
                         //   还要撤销在飞的「首帧兜底超时」—— 它到点会执行
                         //   `hideOverlay()`，把刚贴上的「引擎已停止，正在重新启动…」
                         //   这个**提示**（不是启动动画）收走，用户只看到一闪。
                         //   下面那句 `invalidateOverlayTimeout()` 只管
-                        //   `overlayTimeoutRunnable`，管不到这一个 —— 两个计时器
+                        //   `BootOverlayPresenter`，管不到这一个 —— 两个计时器
                         //   都要作废，所以走同一个入口 [resetFirstFrameAwait]。
                         resetFirstFrameAwait()
                         // ⚠️ 还要把页面阶段退回 None：否则 `uiStage` 停在 UiReady，
@@ -3943,94 +2794,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 重新武装「等内核首帧」：把 [awaitWebViewPainted] 用到的三个状态全部归零。
-     *
-     * ## 为什么要有这个入口（而不是在各调用点各写一遍）
-     *
-     * 这三个状态**必须一起清**，少一个都会静默失效；而它们原先散在四五个调用点，
-     * 已经漂开过两次：
-     *
-     * | 少清哪个 | 症状 |
-     * |---|---|
-     * | [paintPending] | 还停在 true ⇒ `awaitWebViewPainted` 走 `if (paintPending) return`，**动作根本不注册**，首帧永远等不到 |
-     * | [webViewPainted] | 还停在 true ⇒ 新一轮 `UiReady` 一到就**立刻**收启动层，不等新首帧，退回「DOM 就绪但像素没上屏」那约 1.6 秒白屏 |
-     * | 在飞的 [paintTimeoutRunnable] | 到点会把 `webViewPainted` 置回 true **并 `hideOverlay()`** —— 若那一刻刚贴的是一条终态错误提示（「界面反复出错」/「引擎已停止，正在重新启动…」），提示会被收走，用户只看到一闪 |
-     *
-     * 前两条是本方法要保的**功能正确性**；第三条在 2026-10-15 才被逐处核对出来
-     * （`71d986b`），此前只有 [reloadWithRetry] 一处是清全的 —— 也就是说
-     * 「清干净」这件事**一直是靠人记得**，这正是它漂开的机制。
-     *
-     * ⚠️ 内核侧的 `web.resetFirstFrame()` **刻意不放进来**：它按 `requestId` 作废
-     *   在飞的旧回调，必须紧挨着 `reload()`/`loadUrl()` 调用，顺序有讲究
-     *   （见 [reloadWithRetry] 里那段说明），所以留在各自调用点上。
-     */
-    private fun resetFirstFrameAwait() {
-        overlayHandler.removeCallbacks(paintTimeoutRunnable)
-        paintPending = false
-        webViewPainted = false
-    }
+    /** 内核 resetFirstFrame 必须紧挨 reload/loadUrl，由调用点保持顺序。 */
+    private fun resetFirstFrameAwait() = firstFrame.reset()
 
-    /**
-     * 等 WebView 把当前内容**真正画到屏幕上**，然后执行 [action]。
-     *
-     * **为什么需要它**：DOM 就绪和像素上屏之间有一段落差。真机实测（用 CDP 的
-     * `Page.startScreencast` 抓 WebView 内部帧，85 帧样本）：
-     *
-     * ```
-     *   DOM 已是真实 UI（body.innerText = "探索未至之境…"）  t=2154ms
-     *   WebView 帧从 1939B（启动页白底）跳到 31518B（真实 UI） t≈541s ← 落后 1.6 秒
-     * ```
-     *
-     * 旧代码在 `onUiReady` 里立刻收起启动层，于是这 1.6 秒里屏幕上是启动页或空白，
-     * 用户看到的就是"动画结束后闪过几帧白屏"。
-     *
-     * `postVisualStateCallback`（system 版）与 `ContentDelegate.onFirstComposite`
-     * （gecko 版）的语义正是「这一帧已经提交、可以显示了」，它比 `onPageFinished`、
-     * 比任何 DOM 信号都更贴近"用户真的看到了"。
-     *
-     * ⚠️ 回调**不保证一定触发**（内核被销毁、渲染进程崩溃时不会来），
-     *   所以配一个 [PAINT_TIMEOUT_MS] 兜底 —— 宁可早收也不能不收，
-     *   启动层永久盖住界面是最糟的失败方式。
-     *
-     * ⚠️ 回调在**主线程**触发，可以直接碰 View。
-     */
-    private fun awaitWebViewPainted(action: () -> Unit) {
-        if (webViewPainted) { action(); return }
-        if (paintPending) return          // 已经在等了，避免重复注册
-        paintPending = true
-
-        val done = {
-            // ⚠️ 「真首帧到了没有」必须**无条件**记账，不能和下面的收启动层共用一个
-            //   守卫。兜底超时（[paintTimeoutRunnable]，1.5 秒）会把 webViewPainted
-            //   提前置 true —— 那个标志只代表「可以收启动层了」，**不代表首帧到了**。
-            //   原先两者共用 `if (!webViewPainted)`，于是兜底一旦先跑（页面要 2~4 秒
-            //   才出来，必然先跑），真首帧到达时这个分支为假 ⇒ firstFrameReallyArrived
-            //   永远是 false ⇒ [reloadWithRetry] 拿它判「界面恢复了没有」永远是
-            //   「没恢复」。真机证据（服务器诊断包 15/29，v21 gecko）：
-            //   ```
-            //   00:27:40.191 重载界面（第 1 次尝试）
-            //   00:27:41.692 等待 Web 内核首帧超时，仍收起启动动画   ← +1501ms，兜底
-            //   00:27:42.096 界面未恢复，再试一次                    ← +1905ms，判失败
-            //   ```
-            //   两件事叠加才让用户彻底卡住，只放宽判定窗口治不了本。
-            firstFrameReallyArrived = true
-            if (!webViewPainted) {
-                webViewPainted = true
-                paintPending = false
-                overlayHandler.removeCallbacks(paintTimeoutRunnable)
-                Log.i(DshApplication.TAG, "Web 内核已提交首帧，收起启动动画")
-                action()
-            }
-        }
-
-        // 兜底：到点无条件执行（正常路径实测约几十毫秒内就会回调）
-        overlayHandler.postDelayed(paintTimeoutRunnable, PAINT_TIMEOUT_MS)
-        // ⚠️ 「等首帧」的机制在两个内核里完全不同（WebView 是
-        //   `postVisualStateCallback`、GeckoView 是 `onFirstComposite`），
-        //   所以交给 [WebHost] 实现 —— 本类不再关心是哪一个。
-        web.awaitFirstFrame { done() }
-    }
+    private fun awaitWebViewPainted(action: () -> Unit) = firstFrame.await(action)
 
     /**
      * 显示启动层并更新文案。
@@ -4046,9 +2813,11 @@ class MainActivity : AppCompatActivity() {
         progress: Float? = null,
         isError: Boolean = false,
     ) {
-        // 已经收起来过（淡出完成）就不再弹回来 —— 否则引擎重启会让动画闪一下
-        if (overlayDismissed && !isError) return
+        bootOverlay.show(BootOverlayPresenter.State(text, hint, progress, isError))
+    }
 
+    private fun renderOverlay(state: BootOverlayPresenter.State) {
+        val (text, hint, progress, isError) = state
         binding.overlay.animate().cancel()
         if (binding.overlay.visibility != View.VISIBLE) {
             binding.overlay.alpha = 1f
@@ -4094,7 +2863,7 @@ class MainActivity : AppCompatActivity() {
         //   中间那段白屏（实测约 1.6 秒）又回来了 —— 正是 [awaitWebViewPainted]
         //   存在要解决的那个问题。
         resetFirstFrameAwait()
-        overlayDismissed = false
+        bootOverlay.reopen()
         showOverlay(
             "连续多次没能启动，正在自动进入安全模式…",
             hint = "已自动推开可能损坏的插件配置并重新解包引擎（约 15 秒）。" +
@@ -4294,7 +3063,7 @@ class MainActivity : AppCompatActivity() {
      * 把界面切到救援模式并重启引擎。**两个入口共用**：
      *
      * ① [maybeRescueFromWebFailure] —— 前端 console 自报 / 整批 `/plugins/??` 失败；
-     * ② [reloadWithRetry] 耗尽 —— 重载若干次仍拿不到首帧（前端根本没渲染出来）。
+     * ② [WebRecoveryController] 耗尽 —— 重载若干次仍拿不到首帧（前端根本没渲染出来）。
      *
      * ② 是 ① 的**兜底**：① 依赖前端把话说出来，而前端整个挂掉时它说不了话。
      * 两条路都判「引擎是好的、坏的是 client 半」，处置完全相同 —— 所以只留一份实现，
@@ -4360,7 +3129,7 @@ class MainActivity : AppCompatActivity() {
                 // ⚠️ 先武装首帧等待 + 清「已收起」标记：这一轮之后要重新加载界面，
                 //   同 [autoEnterSafeMode] 的两条论证。
                 resetFirstFrameAwait()
-                overlayDismissed = false
+                bootOverlay.reopen()
                 RescueBoot.setTier(RescueBoot.Tier.RESCUE, reason)
                 refreshRescueBanner()
                 engine.requestRestart("$reason，切救援模式")
@@ -4389,7 +3158,7 @@ class MainActivity : AppCompatActivity() {
         invalidateOverlayTimeout()
         // ⚠️ 同 [autoEnterSafeMode]：这一轮之后要重新加载界面，首帧等待必须重新武装。
         resetFirstFrameAwait()
-        overlayDismissed = false
+        bootOverlay.reopen()
         showOverlay(
             "正在进入安全模式…",
             hint = "推开损坏的插件配置并重新解包引擎（约 15 秒）",
@@ -4624,8 +3393,7 @@ class MainActivity : AppCompatActivity() {
      *   `uiStage` 重复推送）把动画又弹回来。
      */
     private fun hideOverlay() {
-        if (overlayDismissed) return
-        overlayDismissed = true
+        if (!bootOverlay.dismiss()) return
         // 启动层收起 = 页面底色开始可见，此时才把系统栏交给页面底色
         // （之前一直保持 themes.xml 的深色，与深色启动页一致）。
         // 用最近一次上报的底色；还没收到过就保持主题里的深色不动。
@@ -4676,47 +3444,10 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
-    /**
-     * 启动层兜底超时。
-     *
-     * 插件激活的完成信号（`onUiReady`）来自 WebView 的 JS 桥，**它是不可靠的**：
-     * 插件版本不匹配、JS 抛异常、桥被清理，任何一种都会让那个回调永远不来，
-     * 于是启动层永久盖住界面 —— 那是最糟的失败方式（看起来像卡死）。
-     *
-     * 所以给一个上限：到点无条件收起。真机实测激活约 1.7 秒，取 8 秒留足余量，
-     * 只有真出问题时才会走到这里。
-     */
-    private fun armOverlayTimeout() {
-        // ⚠️ 先撤销队列里可能还躺着的旧计时器：`postDelayed` 不会覆盖同一个
-        //   Runnable 的既有排期（只会再加一条），不撤销就会攒出多个计时器，
-        //   到点各报一次（见 [overlayWaitGeneration]）。
-        overlayHandler.removeCallbacks(overlayTimeoutRunnable)
-        // ⚠️ 分级提示的标记必须**每轮清零**：不清零的话，第二轮加载一上来
-        //   就会直接走「真的起不来」那个红字分支，分级形同虚设
-        //   （见 [overlaySoftNoticed] 与 [overlayTimeoutRunnable]）。
-        overlaySoftNoticed = false
-        overlayTimeoutArmedAt = overlayWaitGeneration
-        overlayHandler.postDelayed(overlayTimeoutRunnable, UI_READY_TIMEOUT_MS)
-    }
+    private fun armOverlayTimeout() = bootOverlay.arm()
 
-    /**
-     * 作废**上一轮**遗留的「界面就绪」计时器（见 [overlayWaitGeneration]）。
-     *
-     * ⚠️ 必须与「放开 [overlayDismissed] 守卫」成对调用：那条守卫是计时器
-     *   唯一的自我约束，一旦被放开，上一轮的计时器就重新变得能开火 ——
-     *   而它描述的是**上一次**加载（多半已经成功过），到点会对着刚开始的
-     *   新一轮报「界面就绪回调超时」。
-     *
-     * 四类调用点都是「界面马上要重新加载」或「已经放弃恢复」的时刻：
-     * [EngineManager.State.Dead] 分支（引擎自己死了，即将重启）、
-     * [enterSafeMode] 与 [autoEnterSafeMode]（推开配置后重启）、
-     * 以及 [onRendererGone] / [reloadWithRetry] 的两条**终态**分支
-     * （不再恢复，此时留着旧计时器只会把更准确的提示顶掉）。
-     */
-    private fun invalidateOverlayTimeout() {
-        overlayWaitGeneration++
-        overlayHandler.removeCallbacks(overlayTimeoutRunnable)
-    }
+    /** 页面切换或进入终态时作废上一轮等待。 */
+    private fun invalidateOverlayTimeout() = bootOverlay.invalidate()
 
     // ══ 悬浮气泡：注入通道 ══════════════════════════════════════════════
     //
@@ -4729,25 +3460,28 @@ class MainActivity : AppCompatActivity() {
     // 所以走 DOM 事件：把文本"打字"进官方 composer，再点它的发送按钮 ——
     // 官方前端完全感知不到区别，后续所有流程（附件、上下文、会话记录）都照旧。
 
-    /**
-     * 装好气泡的两个回调。
-     *
-     * ⚠️ `sendText` 必须在 `onDestroy` 里清掉：WebView 跟着 Activity 一起销毁，
-     *   留着旧闭包会让气泡对着一个已死的 WebView 调 `evaluateJavascript`
-     *   （不报错、静默无效），用户以为发出去了其实没有。
-     */
-    private fun installBubbleBridge() {
-        FloatingBubble.sendText = { text -> sendToComposer(text) }
-        FloatingBubble.stopRun = { stopComposerRun() }
-        FloatingBubble.openApp = {
-            runOnUiThread {
-                startActivity(
-                    Intent(this, MainActivity::class.java).addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    )
-                )
+    /** Activity 强持端口，进程控制器仅弱引用；销毁只解除当前 owner 的绑定。 */
+    private val bubblePanelActions: BubblePanelActions by lazy {
+        object : BubblePanelActions {
+            override fun sendText(text: String): Boolean =
+                !isFinishing && !isDestroyed && ::web.isInitialized && sendToComposer(text)
+
+            override fun stopRun(): Boolean =
+                !isFinishing && !isDestroyed && ::web.isInitialized && stopComposerRun()
+
+            override fun openApp() {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    startActivity(Intent(this@MainActivity, MainActivity::class.java).addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                    ))
+                }
             }
         }
+    }
+
+    private fun installBubbleBridge() {
+        FloatingBubble.attachPanelActions(this, bubblePanelActions)
     }
 
     /**
@@ -4821,11 +3555,12 @@ class MainActivity : AppCompatActivity() {
      * ② 它可能**还没被创建** —— `browserOrNull()` 会按需建出来并显示，
      *    所以模型说「打开 example.com」时用户会看到浏览器自己弹出来。
      *
-     * ⚠️ [BrowserBridge.start] 幂等，Activity 重建时重复调用安全，
+     * ⚠️ [com.dsh.android.browser.BrowserBridge.attach] 幂等，Activity 重建时重复调用安全，
      *   且正好把 provider 换成新实例。
      */
     private fun installBrowserBridge() {
-        com.dsh.android.browser.BrowserBridge.start(
+        com.dsh.android.browser.BrowserBridge.attach(
+            owner = this,
             home = engine.dshHomeDir,
             host = {
                 // ⚠️ 未初始化时返回 null 而不是抛 —— 轮询线程抛异常会直接死掉
@@ -4949,26 +3684,27 @@ class MainActivity : AppCompatActivity() {
         //   一个已销毁的 Activity 调 setStatusBarColor（静默无效）。
         SystemBarAppearance.detach(this)
         UiProbeBridge.detach(this)
+        com.dsh.android.browser.BrowserBridge.detach(this)
+        browserPane.close()
+        dismissAnnotate()
         // ⚠️ 闪烁的帧是 postDelayed 排的，不清会在 Activity 销毁后继续打窗口属性
         //   （那些帧还持有旧 window，轻则无效、重则抛异常）。
-        flashHandler.removeCallbacks(flashRunnable)
-        flashConfig = null
-        imeHandler.removeCallbacks(imeRestoreRunnable)
-        overlayHandler.removeCallbacks(overlayTimeoutRunnable)
-        overlayHandler.removeCallbacks(paintTimeoutRunnable)
+        flashSequence.stop()
+        permissionQueue.close()
+        imeLayout.close()
+        bootOverlay.close()
+        activityPill?.close()
+        firstFrame.close()
         // ⚠️ 返回键探针的兜底定时器也要清：留着它会在 Activity 销毁后调
         //   moveTaskToBack（对着已销毁的 Activity）。世代号自增让残留回调失效，
         //   这里再显式移除一次，双保险。
-        backQuerySeq++
+        pageBack.close()
         backHandler.removeCallbacksAndMessages(null)
         // ⚠️ 渲染进程恢复的退避定时器同样要清：留着它会在 Activity 销毁后
         //   继续重载一个已经拆掉的 Web 视图。
+        webRecovery.close()
         rendererHandler.removeCallbacksAndMessages(null)
-        // ⚠️ 必须清掉：Web 视图随 Activity 一起销毁，留着这些闭包会让气泡
-        //   对着一具"尸体"调 evaluateJavascript（静默无效，用户以为发成功了）。
-        FloatingBubble.sendText = null
-        FloatingBubble.stopRun = null
-        FloatingBubble.openApp = null
+        FloatingBubble.detachPanelActions(this)
         bubbleHandler.removeCallbacksAndMessages(null)
         // ⚠️ 内核的销毁各不一样（WebView 要 destroy()，GeckoView 要关 session、
         //   拆 WebExtension），交给 [WebHost]。必须在 super 之前 ——
@@ -4983,11 +3719,6 @@ class MainActivity : AppCompatActivity() {
             it.destroy()
         }
         aiBrowser = null
-        // ⚠️ 镜像标志必须一起清：`aiBrowserVisible` 是给**任意线程**读的缓存
-        //   （见其 KDoc），而销毁后 aiBrowser 已为 null。留着 true 会让
-        //   之后任何 `isAiBrowserVisible()` 的调用都回错值 —— 若 Activity 因
-        //   配置变更重建、而引擎的快照推送还在跑，页面就会读到 "visible"。
-        aiBrowserVisible = false
         // destroy() 之后 WebView 就关了，内存里没落盘的 Cookie 会直接丢。
         // 必须在销毁**之后**再 flush 一次（此时内核已经把最后的 Cookie 写进
         // CookieManager，正是 flush 的时机）。
@@ -5071,29 +3802,14 @@ class MainActivity : AppCompatActivity() {
 
     internal companion object {
         /** 键盘高度缓存的 SharedPreferences 文件名。 */
-        const val IME_PREFS = "dsh_ime"
+        const val IME_PREFS = BubbleImePreferences.PREFS
 
-        /**
-         * 点球刷新计数（页面侧 `bubbleTapRefreshSeq()` 读它）。
-         *
-         * ⚠️ 放在 `companion object` 而不是 [StatusBridge] 里：球（`FloatingBubble`）
-         *   和桥（`StatusBridge`）是**两个不相干的对象**，球拿不到桥的实例引用
-         *   （桥是 `private inner class`）。用静态计数是两者唯一能共享的位置。
-         *
-         * ⚠️ `@Volatile` 保证可见性：写发生在主线程（球的触摸回调），
-         *   读发生在 WebView 的 JS 线程。不加锁 —— 这只决定"什么时候刷新"，
-         *   读到旧值顶多晚一轮刷新，不会出错。
-         */
-        @Volatile
+        /** 兼容旧宿主 API；唯一计数源由悬浮球进程控制器拥有。 */
         @JvmStatic
-        var tapRefreshSeq: Int = 0
-            private set
+        val tapRefreshSeq: Int get() = FloatingBubble.tapRefreshSequence()
 
-        /** 点了一下球。由 `FloatingBubble` 的触摸回调调。 */
         @JvmStatic
-        fun bumpTapSeq() {
-            tapRefreshSeq += 1
-        }
+        fun bumpTapSeq() = FloatingBubble.recordTapRefresh()
 
         /**
          * Shizuku 授权请求码。
@@ -5113,59 +3829,10 @@ class MainActivity : AppCompatActivity() {
          *   键盘要来"来预留空间），所以做成 `Context` 入参的静态函数两边共用 ——
          *   写死两处的话，将来改 key 必然漏改一边，症状是气泡预判高度永远取不到值。
          */
-        fun imePrefsKeyOf(context: Context): String =
-            if (context.resources.configuration.orientation ==
-                Configuration.ORIENTATION_LANDSCAPE
-            ) {
-                "ime_height_land"
-            } else {
-                "ime_height_port"
-            }
-
-        /**
-         * 判定"键盘可见"的阈值（px）。
-         *
-         * 真机实测键盘高 289 CSS px × 3 = 867 物理 px，取 150 留足余量：
-         * 只用来区分"有键盘"和"没键盘"，不参与高度计算。
-         */
-        const val IME_VISIBLE_THRESHOLD_PX = 150
-
-        /**
-         * 预判兜底超时（ms）。
-         *
-         * 实测真 insets 在 180~220ms 到达。取 700ms：即便本次点输入框没弹键盘
-         * （比如只做选择操作），也不会让 WebView 长时间保持错误高度。
-         */
-        const val IME_PREJUDGE_TIMEOUT_MS = 700L
+        fun imePrefsKeyOf(context: Context): String = BubbleImePreferences.keyFor(context)
 
         /** 启动层淡出时长（ms）。太快像硬切，太慢显得拖沓。 */
         const val OVERLAY_FADE_OUT_MS = 420L
-
-        /**
-         * 界面就绪的兜底超时（ms）。
-         *
-         * ⚠️ 计时起点是「开始 `loadUrl`」那一刻（见 `observeEngine`），**不是**
-         *   `onCreate` —— 引擎启动要 7~10 秒、首次还要先解包 15 秒，
-         *   从 onCreate 起算会让兜底在引擎还没起来时就触发。
-         *
-         * 实测这段（页面加载 + 插件激活）共约 3.8 秒，取 12 秒留足余量：
-         * 只在 `onUiReady` 回调丢失时才生效（插件异常、桥不可用），
-         * 目的是避免启动层永久盖住界面。
-         */
-        const val UI_READY_TIMEOUT_MS = 12000L
-
-        /**
-         * 第一次到点之后**再给**的宽限（ms）。见 [overlayTimeoutRunnable] 的两级处理。
-         *
-         * 真机取证里超时后 `onUiReady` 在 **0.4~9.3 秒**内到达（最慢 9.3s），
-         * 取 15 秒（> 9.3s 的最大值，留一倍余量）：
-         * 这之内到达的属于「正常慢启动」，不该被当成故障。
-         *
-         * ⚠️ 总时长因此是 12 + 15 = 27 秒才走到红色提示。这**不是**把阈值调松
-         *   到 27 秒就完事 —— 12 秒那一档仍然会给用户一句中性提示（说明还在解析、
-         *   不用操作），只是不再吓人、也不再摆出「进入安全模式」。
-         */
-        const val UI_READY_SOFT_EXTRA_MS = 15000L
 
         /**
          * WebView 内核的最低主版本号。
@@ -5178,7 +3845,7 @@ class MainActivity : AppCompatActivity() {
          * 真机现象正是如此（用户反馈的 45 秒录屏，vivo Y52s / Android 10）：
          * HTML 到了（`onPageFinished` 触发，启动层走到「正在准备界面…」）、
          * CSS 也生效了（页面是官方前端的白底），但 `onUiReady` 永不到达
-         * —— React 根本没挂载。12 秒后 [UI_READY_TIMEOUT_MS] 兜底收起启动层，
+         * —— React 根本没挂载。旧实现曾在 12 秒后收起启动层，
          * 露出来的就是一片白屏。
          *
          * 所以把门槛显式化：低于它就不再静默白屏，而是把原因摆到启动层上。
@@ -5221,12 +3888,6 @@ class MainActivity : AppCompatActivity() {
          */
         const val MIN_WEBVIEW_MAJOR_COMPAT = 73
 
-        /**
-         * 等待 WebView 提交首帧的兜底超时（ms）。1.5 秒只够「首帧马上就来」：反馈
-         * `2fd557` 实测重载后 1.503 s 仍未首帧，而引擎健康 ⇒ 启动层收起、用户看到白屏。
-         */
-        const val PAINT_TIMEOUT_MS = 4000L
-
         // ══ 悬浮气泡：注入脚本 ══════════════════════════════════════════
 
         /** 文本占位符。用 `replace` 而不是字符串拼接，避免文本里的引号破坏 JS 语法。 */
@@ -5268,84 +3929,9 @@ class MainActivity : AppCompatActivity() {
          */
         const val BUBBLE_SEND_DELAY_MS = 500L
 
-        /**
-         * 返回键探针的兜底超时（ms）。
-         *
-         * 真机实测：正常一次往返在 WebView 上是**毫秒级**（同一个 JS 线程，
-         * `evaluateJavascript` 走 IPC 到 JS 引擎再回来）。GeckoView 侧要过一次
-         * 扩展的 IPC，明显更慢，但仍远在 1 秒以内。
-         *
-         * 取 1200ms：既比两个内核的正常路径宽裕得多，又不至于让用户觉得
-         * "按了返回键卡住不动"。超时后按「无可退层级」处理（退到后台），
-         * 与页面回 false 的语义一致 —— 最不该做的是把用户困在 App 里。
-         */
-        const val BACK_PROBE_TIMEOUT_MS = 1200L
         const val BACK_EXIT_WINDOW_MS = 2000L
 
-        /**
-         * 内核进程死亡之后，等多久再重载界面（ms）。
-         *
-         * ⚠️ **不能为 0**：回调到达时内核还在收拾崩溃现场，紧接着 `loadUrl` 有
-         *   相当概率被丢掉（然后用户就一直停在白屏上）。留一小段间隔让内核把
-         *   新渲染进程拉起来。
-         * 取值 400ms：远小于用户能察觉"怎么卡了一下"的量级，又足够避开收尾期。
-         */
-        const val RENDERER_RELOAD_DELAY_MS = 400L
 
-        /** 单次恢复最多重载几次（见 [reloadWithRetry]）。2 → 3：反馈 `2fd557` 在引擎
-         *  完全健康时被判成「两次都没恢复」而降级进救援模式。 */
-        const val MAX_RELOAD_ATTEMPTS = 3
-
-        /**
-         * 重载之后，等多久判断「界面恢复了没有」（ms）。
-         *
-         * ⚠️ **不能用 [PAINT_TIMEOUT_MS] + [RENDERER_RELOAD_DELAY_MS]**（= 1900ms）。
-         *   那个口径只覆盖「一次帧提交」，而重载要等的是**整页重新加载 + 插件
-         *   重新激活**，两者不是一个量级。真机实测（gecko flavor，`引擎就绪 →
-         *   加载 Web GUI → 提交首帧`）：包 29 是 2225ms、包 15 是 2080ms，
-         *   注释里另一处独立记的启动实测值也是「共约 3.8 秒」。
-         *   1900ms 的窗口**必然**在页面出来之前就先判失败。
-         *
-         * ⚠️ 后果不是「多试一次」，而是**越试越糟**：判定超时后进入
-         *   `reloadWithRetry(attempt + 1)`，而它会再 `web.reload()` 一次 ——
-         *   把上一次仍在飞的加载**打断并重新起算**。两轮都在 1.9 秒时被打断，
-         *   于是页面永远到不了首帧，最后落进
-         *   `界面重载 2 次仍未恢复为可用状态`，用户只剩「重开 App」。
-         *   真机证据（服务器诊断包 15 / 29，RE5C4FL1，v21 gecko）：
-         *   ```
-         *   00:27:40.191 重载界面（第 1 次尝试）
-         *   00:27:42.096 界面未恢复，再试一次        ← 1905ms，判太早
-         *   00:27:42.097 重载界面（第 2 次尝试）
-         *   00:27:44.000 界面重载 2 次仍未恢复为可用状态
-         *   ```
-         *   取 8 秒：与 [armOverlayTimeout] 的口径一致（同为「等页面可用」），
-         *   给足 3.8 秒实测值两倍余量，又不至于让用户觉得卡住不动。
-         *
-         * ⚠️ 8 秒仍不够（冷启动实测值）：反馈 `2fd557` 两次 8 秒都没等到首帧。
-         */
-        const val RELOAD_RECOVERY_TIMEOUT_MS = 16000L
-
-        /**
-         * 允许**自动**恢复的次数上界。
-         *
-         * 超过之后不再静默重载，改为把问题摆到界面上。理由见 [onRendererGone]：
-         * 反复崩溃是真的有问题，静默重载会让用户以为「什么都没发生」。
-         */
-        const val MAX_RENDERER_RESTARTS = 3
-
-        /**
-         * 「连续崩溃」的判定窗口（ms），用于 [rendererRestarts]。
-         *
-         * 两次「内核没了」间隔超过它 ⇒ 计数归零、重新开始数。依据同
-         * [ENGINE_RESTART_WINDOW_MS]：「用了一阵才被回收」与「刚重载完就又崩」
-         * 是两种不同的事 —— 前者是内存压力下的正常回收（实测间隔 31 分~4.8 小时，
-         * 每次都自愈），后者才说明页面状态真的有问题。
-         *
-         * 取 90 秒（与引擎那个窗口同值）：远大于「重载 + 拿到首帧」的耗时
-         * （实测约 0.4 秒，见 `界面已恢复（第 N 次尝试拿到首帧）`），所以「刚恢复
-         * 就又崩」必定落在窗口内；而真实反复崩溃是 5~8 秒一次，也在窗口内。
-         */
-        const val RENDERER_RESTART_WINDOW_MS = 90_000L
 
         /**
          * 允许**自动**重启引擎的次数上界。

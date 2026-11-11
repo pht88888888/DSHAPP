@@ -6,8 +6,10 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import test from 'node:test';
-import { ROOT, checkNpmPack, compareFiles, createZip, installAssets, loadCatalog, main, prepareComponent, readZip } from './build-plugin-components.mjs';
+import vm from 'node:vm';
+import { ROOT, checkNpmPack, compileClient, compareFiles, createZip, installAssets, loadCatalog, main, prepareComponent, readZip } from '../tooling/plugins/build.mjs';
 
 const script = join(ROOT, 'tools/build-plugin-components.mjs');
 const digest = (data) => createHash('sha256').update(data).digest('hex');
@@ -54,29 +56,71 @@ function command(args) {
 
 test('清单覆盖全部实际内置包且资产常量对应 EngineConstants', () => {
   const catalog = loadCatalog();
-  assert.equal(catalog.components.length, 17);
-  const mobile = readdirSync(join(ROOT, 'mobile-ui-plugin')).sort();
-  assert.deepEqual(catalog.components.filter((component) => component.source.startsWith('mobile-ui-plugin/')).map((component) => component.source.split('/')[1]).sort(), mobile);
+  assert.equal(catalog.components.length, 18);
+  assert.equal(catalog.components.filter((component) => !component.bundledIn).length, 4);
+  const bundle = catalog.components.find((component) => component.id === 'android-bundle');
+  assert.equal(bundle.members.length, 14);
+  assert.deepEqual(bundle.members.map(({ id }) => id).sort(), catalog.components.filter((component) => component.bundledIn).map(({ id }) => id).sort());
+  const parent = dirname(bundle.members[0].source);
+  assert.deepEqual(bundle.members.map(component => component.source).sort(), readdirSync(join(ROOT, parent)).map(name => `${parent}/${name}`).sort());
+  assert.ok(!existsSync(join(ROOT, 'tools/plugin-components.json')), '组件 JSON 只能在 catalogs 保留一个事实源');
+  assert.ok(catalog.components.every(component => component.source.startsWith('plugins/')));
   for (const id of ['market', 'agnes', 'core-memory', 'preset-razor', 'mobile-settings', 'host-bridge', 'balance']) assert.ok(catalog.components.some((component) => component.id === id));
 });
 
 test('实际全部组件构建后逐文件 check，manifest 包含源码及产物摘要', () => temporary((work) => {
   const output = command(['build', '--out-dir', work]);
-  assert.equal(output.split('\n').filter((line) => line.includes('已构建')).length, 17);
+  assert.equal(output.split('\n').filter((line) => line.includes('已构建')).length, 4);
   const checked = command(['check', '--out-dir', work]);
-  assert.equal(checked.split('\n').filter((line) => line.includes('逐文件一致')).length, 17);
-  for (const component of loadCatalog().components) {
+  assert.equal(checked.split('\n').filter((line) => line.includes('逐文件一致')).length, 4);
+  for (const component of loadCatalog().components.filter((component) => !component.bundledIn)) {
     const zip = readFileSync(join(work, component.asset));
     const files = readZip(zip);
-    assert.deepEqual([...files.keys()].sort(), [...component.files].sort());
+    assert.deepEqual([...files.keys()].sort(), [...prepareComponent(component).files.keys()].sort());
     const manifest = JSON.parse(readFileSync(join(work, `${component.id}.manifest.json`)));
     assert.equal(manifest.assetSha256, digest(zip));
     assert.equal(manifest.target, 'chrome73');
     assert.equal(manifest.version, JSON.parse(readFileSync(join(ROOT, component.source, 'package.json'))).version);
     assert.equal(manifest.revision, `${manifest.version}+sha256.${manifest.sourceDigest}`);
-    for (const source of manifest.sourceFiles) assert.equal(source.sha256, digest(readFileSync(join(ROOT, component.source, source.path))));
+    for (const source of manifest.sourceFiles) assert.equal(source.sha256, digest(readFileSync(join(ROOT, manifest.sourceRoot === 'repository' ? '' : component.source, source.path))));
     for (const file of manifest.files) assert.equal(file.sha256, digest(files.get(file.path)));
   }
+}));
+
+test('Android 聚合包保留14个稳定入口、原客户端模块名和完整相对引用', () => temporary((work) => {
+  const bundle = loadCatalog().components.find(({ id }) => id === 'android-bundle');
+  const prepared = prepareComponent(bundle);
+  assert.equal(prepared.pkg.name, 'dsh-android-bundle');
+  assert.equal(prepared.pkg.version, '1.1.1');
+  assert.equal(prepared.pkg.dsh.android.builtinId, 'android-bundle');
+  assert.equal(prepared.pkg.dsh.client, undefined);
+  assert.equal(Object.keys(prepared.pkg.dependencies).length, 14);
+  assert.deepEqual(prepared.pkg.bundledDependencies, Object.keys(prepared.pkg.dependencies));
+  const patch = prepared.files.get('cordis.patch.yml').toString();
+  assert.equal((patch.match(/^- insert:/gm) || []).length, 1);
+  assert.equal((patch.match(/^    - id:/gm) || []).length, 14);
+  assert.ok(!/dsh-core-memory|dsh-preset-razor|dsh-agnes/.test(patch));
+  const stage = join(work, 'node_modules/dsh-android-bundle');
+  for (const [path, content] of prepared.files) put(stage, path, content);
+  for (const member of bundle.members) {
+    const original = prepareComponent(member);
+    const prefix = `node_modules/${original.pkg.name}/`;
+    const bundleRequire = createRequire(join(stage, 'package.json'));
+    assert.match(patch, new RegExp(`    - id: ${original.pkg.name}\\n      name: ${original.pkg.name}(?:\\n|$)`));
+    assert.equal(prepared.pkg.dependencies[original.pkg.name], original.pkg.version);
+    assert.equal(bundleRequire.resolve(original.pkg.name), join(stage, prefix, original.pkg.main));
+    assert.equal(bundleRequire.resolve(`${original.pkg.name}/package.json`), join(stage, prefix, 'package.json'));
+    assert.equal(JSON.parse(prepared.files.get(`${prefix}package.json`)).name, original.pkg.name);
+    for (const [path, content] of original.files) assert.deepEqual(prepared.files.get(`${prefix}${path}`), content);
+    for (const path of member.clientFiles || []) {
+      assert.equal(bundleRequire.resolve(`${original.pkg.name}/client`), join(stage, prefix, path));
+      assert.match(prepared.files.get(`${prefix}${path}`).toString(), new RegExp(`id: ["']${original.pkg.name}["']`));
+    }
+  }
+  assert.ok(prepared.files.has('node_modules/dsh-android-uiagent/lib/screens.js'));
+  assert.ok(prepared.files.has('node_modules/dsh-android-market/lib/collect.mjs'));
+  assert.ok(prepared.files.has('node_modules/dsh-android-market/lib/seed.json'));
+  assert.equal(checkNpmPack(prepared).files, prepared.files.size);
 }));
 
 test('zip 与 manifest 不受源码 mtime/输出目录影响，客户端 chrome73 降级', () => temporary((root) => {
@@ -92,6 +136,52 @@ test('zip 与 manifest 不受源码 mtime/输出目录影响，客户端 chrome7
   main(['build', '--out-dir', other], setup);
   assert.deepEqual(readFileSync(join(other, 'example.zip')), zip);
   assert.deepEqual(readFileSync(join(other, 'example.manifest.json')), manifest);
+}));
+
+test('局部模块合并保留官方工厂和延迟 require，源码变更进入摘要与产物', () => temporary((root) => {
+  const setup = fixture(root, { clientBundles: ['lib/client.js'] });
+  put(root, 'plugin/example/src/feature.js', 'export const answer = globalThis.config?.answer ?? 42;\n');
+  put(root, 'plugin/example/lib/client.js', `import { answer } from '../src/feature.js';
+window.__ModuleLoader__.load({ id: 'dsh-example', factory(require) {
+  return { apply(ctx) { ctx.answer = answer; ctx.react = require('react'); } };
+}});`);
+  const first = prepareComponent(setup.component, setup);
+  const compiled = first.files.get('lib/client.js').toString();
+  assert.doesNotMatch(compiled, /\?\.|\?\?|import\s/);
+  let definition, required = 0;
+  vm.runInNewContext(compiled, { window: { __ModuleLoader__: { load(value) { definition = value; } } } });
+  const react = {};
+  const plugin = definition.factory(id => { assert.equal(id, 'react'); required++; return react; });
+  assert.equal(required, 0, '加载源码与运行工厂时不能提前读取 React');
+  const ctx = {};
+  plugin.apply(ctx);
+  assert.equal(ctx.answer, 42); assert.equal(ctx.react, react); assert.equal(required, 1);
+  assert.ok(first.manifest.sourceFiles.some(item => item.path === 'src/feature.js'));
+  assert.equal(checkNpmPack(first).files, first.files.size, 'tarball 只需已合并客户端即可独立运行');
+  put(root, 'plugin/example/src/feature.js', 'export const answer = 43;\n');
+  const second = prepareComponent(setup.component, setup);
+  assert.notEqual(second.manifest.sourceDigest, first.manifest.sourceDigest);
+  assert.notDeepEqual(second.files.get('lib/client.js'), first.files.get('lib/client.js'));
+}));
+
+test('局部合并拒绝静态官方依赖、跨组件源码和 node_modules 实现', () => temporary(root => {
+  const setup = fixture(root, { clientBundles: ['lib/client.js'] });
+  const directory = join(root, 'plugin/example');
+  put(root, 'plugin/example/lib/client.js', "import React from 'react'; globalThis.react = React;\n");
+  assert.throws(() => compileClient(directory, 'lib/client.js', { bundle: true }), /官方依赖必须通过 ModuleLoader/);
+  put(root, 'plugin/sibling.js', 'export const value = 1;\n');
+  put(root, 'plugin/example/lib/client.js', "import { value } from '../../sibling.js'; globalThis.value = value;\n");
+  assert.throws(() => compileClient(directory, 'lib/client.js', { bundle: true }), /仅允许本组件局部模块/);
+  put(root, 'plugin/example/node_modules/vendor/index.js', 'export const value = 1;\n');
+  put(root, 'plugin/example/lib/client.js', "import { value } from '../node_modules/vendor/index.js'; globalThis.value = value;\n");
+  assert.throws(() => compileClient(directory, 'lib/client.js', { bundle: true }), /仅允许本组件局部模块/);
+}));
+
+test('合并入口必须属于客户端清单且不能重复', () => temporary(root => {
+  const setup = fixture(root, { clientBundles: ['lib/index.js'] });
+  assert.throws(() => loadCatalog(setup.root, setup.catalogPath), /合并入口必须属于 clientFiles/);
+  put(root, 'components.json', JSON.stringify({ schemaVersion: 1, target: 'chrome73', components: [{ ...setup.component, clientBundles: ['lib/client.js', 'lib/client.js'] }] }));
+  assert.throws(() => loadCatalog(setup.root, setup.catalogPath), /非法客户端合并清单/);
 }));
 
 test('源码变化及 package 版本变化都会改变 manifest revision', () => temporary((root) => {
@@ -165,7 +255,7 @@ test('ZIP CRC、目录穿越和重复条目不能被当作通过', () => {
 
 test('npm pack 检查全部实际组件：检查真正 tarball 的内容，包含 private 包', () => {
   const output = command(['pack-check']);
-  assert.equal(output.split('\n').filter((line) => line.includes('npm pack 已检查')).length, 17);
+  assert.equal(output.split('\n').filter((line) => line.includes('npm pack 已检查')).length, 4);
 });
 
 test('npm pack 使用降级后内容并禁用生命周期脚本，临时副本不污染源码', () => temporary((root) => {
@@ -264,14 +354,31 @@ test('install-assets 必须经过 build，不支持直接 check/pack-check 安�
   assert.deepEqual(readdirSync(join(root, 'app/src/main/assets')), []);
 }));
 
-test('Gradle 构建前任务调用统一工具，显式安装并使用 build 目录', () => {
+test('Gradle 只在 build 目录生成插件，分阶段过滤资产后由 preBuild 使用', () => {
   const gradle = readFileSync(join(ROOT, 'app/build.gradle.kts'), 'utf8');
-  assert.match(gradle, /val buildBuiltinPluginAssets by tasks\.registering\(Exec::class\)/);
-  assert.match(gradle, /workingDir\(rootProject\.projectDir\)/);
-  assert.match(gradle, /rootProject\.file\("tools\/build-plugin-components\.mjs"\)/);
-  assert.match(gradle, /"build", "--out-dir", layout\.buildDirectory\.dir\("generated\/plugin-components"\)/);
-  assert.match(gradle, /"--install-assets"/);
-  assert.match(gradle, /tasks\.named\("preBuild"\)\s*\{\s*dependsOn\(buildBuiltinPluginAssets\)/);
+  const between = (start, end) => {
+    const first = gradle.indexOf(start), last = gradle.indexOf(end, first + start.length);
+    assert.ok(first >= 0 && last > first, `缺少 Gradle 阶段: ${start}`);
+    return gradle.slice(first, last);
+  };
+  const build = between('val buildBuiltinPluginAssets ', 'val verifyRuntimeAssets ');
+  const stage = between('val stageAndroidAssets ', 'tasks.named("preBuild")');
+  assert.ok(gradle.includes('val pluginComponentsDir = layout.buildDirectory.dir("generated/plugin-components")'));
+  assert.ok(build.includes('tasks.registering(Exec::class)'));
+  assert.ok(build.includes('workingDir(rootProject.projectDir)'));
+  assert.ok(build.includes('rootProject.file("tools/build-plugin-components.mjs")'));
+  assert.ok(build.includes('outputs.dir(pluginComponentsDir)'));
+  assert.ok(build.includes('"build", "--out-dir", pluginComponentsDir.get().asFile.absolutePath'));
+  assert.doesNotMatch(gradle, /--install-assets/, 'APK 构建不能覆盖共享源码资产');
+  assert.ok(gradle.includes('val pluginAssetNames = pluginComponents.flatMap'));
+  assert.ok(gradle.includes('val generatedPluginNames = pluginComponents.filter { it["bundledIn"] == null }'));
+  assert.ok(stage.includes('tasks.registering(Sync::class)'));
+  assert.ok(stage.includes('dependsOn(buildBuiltinPluginAssets, verifyRuntimeAssets)'));
+  assert.ok(stage.includes('from("src/main/assets") { exclude(pluginAssetNames) }'));
+  assert.ok(stage.includes('from(pluginComponentsDir) { include(generatedPluginNames) }'));
+  assert.ok(stage.includes('into(layout.buildDirectory.dir("generated/android-assets"))'));
+  assert.match(gradle, /tasks\.named\("preBuild"\)\s*\{\s*dependsOn\(stageAndroidAssets\)/);
+  assert.match(gradle, /sourceSets\.named\("main"\)\s*\{[^}]*assets\.setSrcDirs\(listOf\(layout\.buildDirectory\.dir\("generated\/android-assets"\)\)\)/);
 });
 
 test('npm pack 拒绝入口未纳入组件清单', () => temporary((root) => {

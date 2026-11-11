@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "tools": {
+    "jdk": "17",
+    "gradle": "8.13",
+    "agp": "8.8.2",
+    "kotlin": "2.0.21",
+    "compileSdk": 35,
+    "minSdk": 26,
+    "targetSdk": 28,
+    "nodeTests": "24",
+    "esbuild": "0.25.0",
+    "clientTarget": "chrome73",
+    "shizuku": "13.1.5",
+    "geckoview": "140.0.20250707120347"
+  },
+  "constraints": {
+    "applicationIds": ["com.dsh.android", "com.dsh.webview"],
+    "applicationIdLength": 15,
+    "abi": "arm64-v8a",
+    "variantIds": ["system", "gecko"],
+    "dependencyUpgradePolicy": "Versions stay pinned during structural migration; upgrades require independent compatibility verification."
+  }
+}

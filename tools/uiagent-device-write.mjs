@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROBE = join(HERE, '..', 'app', 'src', 'main', 'assets', 'ui-probe.js');
+const PROBE = join(HERE, '..', 'runtime', 'scripts', 'ui-probe.js');
 const source = readFileSync(PROBE, 'utf8');
 const CDP = process.env.UIPROBE_CDP ?? 'http://127.0.0.1:19222/json/list';
 

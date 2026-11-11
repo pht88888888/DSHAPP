@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Binder 只允许系统特权身份送达；authority 随最终 App 身份展开。 -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:exported="true"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <!-- 静态注册使进程回收后的通知回复与取消仍可送达。 -->
+        <receiver
+            android:name="com.dsh.android.privilege.AdbPairingReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.dsh.android.action.PAIRING_REPLY" />
+                <action android:name="com.dsh.android.action.PAIRING_CANCEL" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

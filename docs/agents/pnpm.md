@@ -12,7 +12,7 @@
 `profiles/web/node_modules/`，并**直接编辑了用户的 `profiles/web/cordis.patch.yml`**
 （留下 `cordis.patch.yml.bak-light-green-ui`）。
 
-**做法**：`EngineManager.ensurePnpm()` 装 **pnpm 11.28.3 的纯 JS 版**
+**做法**：`EngineRuntimeDependencies.ensurePnpm()` 装 **pnpm 11.28.3 的纯 JS 版**
 （npm 包 `pnpm`，解到 `$PREFIX/lib/pnpm`），再在 `$PREFIX/bin/pnpm` 写一个
 `exec <node> <pkg>/bin/pnpm.mjs "$@"` 的启动脚本。
 

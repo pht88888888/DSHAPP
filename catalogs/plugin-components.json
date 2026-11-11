@@ -1,0 +1,282 @@
+{
+  "schemaVersion": 1,
+  "target": "chrome73",
+  "components": [
+    {
+      "id": "android-bundle",
+      "source": "plugins/android/bundle",
+      "asset": "android-bundle.zip",
+      "assetConstant": "ANDROID_BUNDLE_ASSET",
+      "files": [
+        "package.json",
+        "lib/index.js"
+      ],
+      "componentIds": [
+        "mobile-ui",
+        "mobile-settings",
+        "host-bridge",
+        "balance",
+        "shell-tool",
+        "root-tool",
+        "bubble-tool",
+        "statusbar-tool",
+        "uiagent-tool",
+        "browser-tool",
+        "browser-pane",
+        "logs-tool",
+        "pet-bridge",
+        "market"
+      ]
+    },
+    {
+      "id": "mobile-ui",
+      "source": "plugins/android/components/dsh-android-mobile",
+      "asset": "mobile-ui.zip",
+      "assetConstant": "MOBILE_UI_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/client.js"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ],
+      "bundledIn": "android-bundle",
+      "clientBundles": [
+        "lib/client.js"
+      ]
+    },
+    {
+      "id": "mobile-settings",
+      "source": "plugins/android/components/dsh-android-mobile-settings",
+      "asset": "mobile-settings.zip",
+      "assetConstant": "MOBILE_SETTINGS_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/client.js"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ],
+      "bundledIn": "android-bundle",
+      "clientBundles": [
+        "lib/client.js"
+      ]
+    },
+    {
+      "id": "host-bridge",
+      "source": "plugins/android/components/dsh-android-host-bridge",
+      "asset": "host-bridge.zip",
+      "assetConstant": "HOST_BRIDGE_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/client.js"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "balance",
+      "source": "plugins/android/components/dsh-android-balance",
+      "asset": "balance.zip",
+      "assetConstant": "BALANCE_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/client.js"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "shell-tool",
+      "source": "plugins/android/components/dsh-android-shell",
+      "asset": "shell-tool.zip",
+      "assetConstant": "SHELL_TOOL_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "root-tool",
+      "source": "plugins/android/components/dsh-android-root",
+      "asset": "root-tool.zip",
+      "assetConstant": "ROOT_TOOL_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "bubble-tool",
+      "source": "plugins/android/components/dsh-android-bubble",
+      "asset": "bubble-tool.zip",
+      "assetConstant": "BUBBLE_TOOL_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "statusbar-tool",
+      "source": "plugins/android/components/dsh-android-statusbar",
+      "asset": "statusbar-tool.zip",
+      "assetConstant": "STATUSBAR_TOOL_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "uiagent-tool",
+      "source": "plugins/android/components/dsh-android-uiagent",
+      "asset": "uiagent-tool.zip",
+      "assetConstant": "UI_TOOL_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/screens.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "browser-tool",
+      "source": "plugins/android/components/dsh-android-browser",
+      "asset": "browser-tool.zip",
+      "assetConstant": "BROWSER_TOOL_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "browser-pane",
+      "source": "plugins/android/components/dsh-android-browser-pane",
+      "asset": "browser-pane.zip",
+      "assetConstant": "BROWSER_PANE_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/client.js"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "logs-tool",
+      "source": "plugins/android/components/dsh-android-logs",
+      "asset": "logs-tool.zip",
+      "assetConstant": "LOGS_TOOL_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "pet-bridge",
+      "source": "plugins/android/components/dsh-android-pet",
+      "asset": "pet-bridge.zip",
+      "assetConstant": "PET_BRIDGE_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "market",
+      "source": "plugins/android/components/dsh-android-market",
+      "asset": "market-plugin.zip",
+      "assetConstant": "MARKET_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/client.js",
+        "lib/collect.mjs",
+        "lib/seed.json"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ],
+      "bundledIn": "android-bundle"
+    },
+    {
+      "id": "agnes",
+      "source": "plugins/standalone/dsh-agnes-multimodal",
+      "asset": "agnes-multimodal.zip",
+      "assetConstant": "AGNES_MM_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/client.js"
+      ],
+      "npmOnlyFiles": [
+        "README.md"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ]
+    },
+    {
+      "id": "core-memory",
+      "source": "plugins/standalone/dsh-core-memory",
+      "asset": "core-memory.zip",
+      "assetConstant": "CORE_MEMORY_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "lib/index.js",
+        "lib/persona.js",
+        "lib/client.js"
+      ],
+      "npmOnlyFiles": [
+        "README.md",
+        "LICENSE"
+      ],
+      "clientFiles": [
+        "lib/client.js"
+      ]
+    },
+    {
+      "id": "preset-razor",
+      "source": "plugins/standalone/dsh-preset-razor",
+      "asset": "preset-razor.zip",
+      "assetConstant": "PRESET_RAZOR_ASSET",
+      "files": [
+        "package.json",
+        "cordis.patch.yml",
+        "README.md"
+      ]
+    }
+  ]
+}

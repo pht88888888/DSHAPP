@@ -1,0 +1,282 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Lock observed current runtime artifacts; unknown provenance is explicit and does not claim full source reproducibility.",
+  "assets": [
+    {
+      "id": "termux-bootstrap",
+      "path": "app/src/main/assets/bootstrap-aarch64.zip",
+      "apkEntry": "assets/bootstrap-aarch64.zip",
+      "bytes": 24230081,
+      "sha256": "b3739c14a2eb7421243b908e2fe2b9e54cbdf8477d210d09e8ac4452d864cad9",
+      "source": {
+        "location": "https://github.com/termux/termux-packages",
+        "version": null,
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Termux bootstrap staging recipe is external; exact upstream revision is not recorded.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "node",
+      "path": "app/src/main/assets/node-runtime.bin",
+      "apkEntry": "assets/node-runtime.bin",
+      "bytes": 31630920,
+      "sha256": "ba16f7f4d0cc0b0272700effe06dc0d3682206afe1b54af75ca530a3e5c0d3bf",
+      "source": {
+        "location": "https://github.com/termux/termux-packages",
+        "version": "26.4.0-2",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Termux Node deb staging recipe is external.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "engine",
+      "path": "app/src/main/assets/engine.bin",
+      "apkEntry": "assets/engine.bin",
+      "bytes": 63261179,
+      "sha256": "0e19012c61669e150cc33143a9b028394183d3d54a548d554da2758a5b16e432",
+      "source": {
+        "location": "https://registry.npmjs.org/@deepseek-ai/dsh",
+        "version": "0.2.2-rc.1",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Archive package version verified; dependency lock and original staging recipe are not recorded.",
+        "abi": null
+      }
+    },
+    {
+      "id": "pnpm",
+      "path": "app/src/main/assets/pnpm-android-arm64.zip",
+      "apkEntry": "assets/pnpm-android-arm64.zip",
+      "bytes": 5892005,
+      "sha256": "283fb781491c06721261296c77a19589f8f5b0469fd387d6a46eede4a2797f11",
+      "source": {
+        "location": "https://registry.npmjs.org/pnpm/-/pnpm-11.28.3.tgz",
+        "version": "11.28.3",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "archive-repack",
+        "note": "Package root entries; no top-level package directory.",
+        "abi": null
+      }
+    },
+    {
+      "id": "native-addon",
+      "path": "app/src/main/assets/node-addon-android-arm64.zip",
+      "apkEntry": "assets/node-addon-android-arm64.zip",
+      "bytes": 37526,
+      "sha256": "37351527c134cc6b5011b81382b28233b5f4694600d226b21d96b35654a2e92e",
+      "source": {
+        "location": "https://registry.npmjs.org/node-addon-require-builtin-android-arm64",
+        "version": "0.1.7",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Original Android native build recipe is external.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "system-addon",
+      "path": "app/src/main/assets/node-addon-system-android-arm64.zip",
+      "apkEntry": "assets/node-addon-system-android-arm64.zip",
+      "bytes": 4327,
+      "sha256": "b28598cb69cbf4a7015e8830b13e83893e70c9896d9388e68cec50c872881526",
+      "source": {
+        "location": "https://registry.npmjs.org/@deepseek-ai/node-addon-system-android-arm64",
+        "version": "0.1.2",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Original Android native build recipe is external.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "ripgrep",
+      "path": "app/src/main/assets/ripgrep-android-arm64.zip",
+      "apkEntry": "assets/ripgrep-android-arm64.zip",
+      "bytes": 2107974,
+      "sha256": "c53a30002ae9695b652a2efe885bc1ae6a589883901f4d9f1337c56e543946d3",
+      "source": {
+        "location": "https://registry.npmjs.org/@vscode/ripgrep-android-arm64",
+        "version": "1.18.0",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "archive-repack",
+        "note": "Packaged native executable; exact upstream tarball integrity not recorded.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "sharp",
+      "path": "app/src/main/assets/sharp-wasm32.zip",
+      "apkEntry": "assets/sharp-wasm32.zip",
+      "bytes": 3709494,
+      "sha256": "41ad7e41dd542bcc4f077f0edc0c39cc04944387ed44fdaa7777d9cd80a280cd",
+      "source": {
+        "location": "https://registry.npmjs.org/@img/sharp-wasm32",
+        "version": "0.35.5",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Contains @emnapi/runtime 1.11.3; complete original recipe is external.",
+        "abi": null
+      }
+    },
+    {
+      "id": "node-pty",
+      "path": "app/src/main/assets/node-pty-android-arm64.zip",
+      "apkEntry": "assets/node-pty-android-arm64.zip",
+      "bytes": 196156,
+      "sha256": "ac79a96c596e6d603042f63857ab33ec0830b145f69295c871cd4e46a7efeace",
+      "source": {
+        "location": "https://github.com/microsoft/node-pty",
+        "version": null,
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "NDK Android build; original revision/tool invocation must be recovered.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "adb",
+      "path": "app/src/main/assets/adb-wireless-arm64.zip",
+      "apkEntry": "assets/adb-wireless-arm64.zip",
+      "bytes": 5510603,
+      "sha256": "1a0776404f4b37972a8687ba3a88562c30f52e037095eb574af3b2c344fea2eb",
+      "source": {
+        "location": "https://github.com/termux/termux-packages",
+        "version": null,
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Packaged adb; original staging recipe and revision must be recovered.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "linkcompat",
+      "path": "app/src/main/assets/linkcompat.bin",
+      "apkEntry": "assets/linkcompat.bin",
+      "bytes": 10544,
+      "sha256": "89fbb44c3c3413761ba8e600f74b3d753ceae1895f0bba16a4288fda7305a423",
+      "source": {
+        "location": "native/linkcompat/linkcompat.c",
+        "version": null,
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "source-recipe",
+        "note": "NDK arm64 API26 -shared -fPIC -O2 -Wall -ldl; exact pre-existing compiler build not recorded.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "sandbox-library",
+      "path": "app/src/main/assets/boosandbox.bin",
+      "apkEntry": "assets/boosandbox.bin",
+      "bytes": 20408,
+      "sha256": "998882cc7bfd8ebf36870317c68f6b42af04178eb7c2329f4de9b45d4ef7ce60",
+      "source": {
+        "location": "native/sandbox/boosandbox.c",
+        "version": null,
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "source-recipe",
+        "note": "NDK arm64 API26 -shared -fPIC -O2 -Wall -ldl; exact pre-existing compiler build not recorded.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "sandbox-runner",
+      "path": "app/src/main/assets/boo-sandbox-run.bin",
+      "apkEntry": "assets/boo-sandbox-run.bin",
+      "bytes": 10176,
+      "sha256": "5b1a260e0dd10be0c0f448efe355cf5302e0f8f4863e6dda83406d63eb9d14f7",
+      "source": {
+        "location": "native/sandbox/boo-sandbox-run.c",
+        "version": null,
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "source-recipe",
+        "note": "NDK arm64 API26 -O2 -Wall; exact pre-existing compiler build not recorded.",
+        "abi": "arm64-v8a"
+      }
+    },
+    {
+      "id": "preset-skills",
+      "path": "app/src/main/assets/preset-skills.zip",
+      "apkEntry": "assets/preset-skills.zip",
+      "bytes": 12926,
+      "sha256": "6d7d91838dad5180884f2824390c71ff0f39a0bf8d452a9c891624fe447b6800",
+      "source": {
+        "location": "preset-skills-plugin",
+        "version": "1.0.0-3",
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "external-recipe",
+        "note": "Legacy skills archive; source-to-archive recipe must be recovered before replacing.",
+        "abi": null
+      }
+    },
+    {
+      "id": "webview-compat",
+      "path": "app/src/main/assets/webview-compat.zip",
+      "apkEntry": "assets/webview-compat.zip",
+      "bytes": 7820046,
+      "sha256": "15086164b4e3453fd968d4cb38c5eb9f2b7bf43f1200105c522e9769ff3bb4bc",
+      "source": {
+        "location": "tools/build-webview-compat.mjs",
+        "version": null,
+        "upstreamIntegrity": null,
+        "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
+      },
+      "build": {
+        "status": "source-recipe",
+        "note": "Chrome73 official-engine compatibility; current engine archive hash is locked separately.",
+        "abi": null
+      }
+    }
+  ],
+  "retired": [
+    {
+      "id": "keyinject",
+      "reason": "Gateway replaced native key injection; current installer only removes legacy library and returns null. No current APK asset or missing-source release requirement."
+    }
+  ]
+}

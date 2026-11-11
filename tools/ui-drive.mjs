@@ -69,7 +69,7 @@ async function ev(expr) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const src = readFileSync(join(HERE, '..', 'app', 'src', 'main', 'assets', 'ui-probe.js'), 'utf8');
+const src = readFileSync(join(HERE, '..', 'runtime', 'scripts', 'ui-probe.js'), 'utf8');
 const probe = async (c) => JSON.parse(await ev(`JSON.stringify((${src})(${JSON.stringify(c)}))`));
 
 const inVp = (e) => e.inViewport && !e.offscreen;

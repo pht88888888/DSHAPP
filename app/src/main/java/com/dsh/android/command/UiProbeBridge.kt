@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit
 import com.dsh.android.bubble.BubbleCommandBridge
 import com.dsh.android.core.DshApplication
 import com.dsh.android.ui.MainActivity
+import com.dsh.android.bridge.transport.AtomicMailboxFiles
 
 /**
  * UI 调试工具的**原生侧那一半** —— 把「模型想看/点界面」变成一次真实的内核调用。
@@ -558,13 +559,7 @@ object UiProbeBridge {
             for (key in payload.keys()) put(key, payload.get(key))
         }
         try {
-            val target = File(dir, RESULT_FILE)
-            val tmp = File(dir, "$RESULT_FILE.tmp")
-            tmp.writeText(out.toString())
-            if (!tmp.renameTo(target)) {
-                target.writeText(out.toString())
-                tmp.delete()
-            }
+            AtomicMailboxFiles.publishText(File(dir, RESULT_FILE), out.toString())
         } catch (t: Throwable) {
             Log.w(TAG, "写入 UI 命令回执失败: ${t.message}")
         }

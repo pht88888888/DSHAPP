@@ -1,0 +1,839 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-11-10T17:32:55.034Z",
+  "evidence": "live-npm-and-github",
+  "policy": {
+    "publishedBaseline": "npm-latest-observed",
+    "productionSource": "independent-repository",
+    "legacy": "reference-only-preserve-unresolved",
+    "automaticPublishing": false,
+    "sameVersionImpliesSameContent": false
+  },
+  "repository": {
+    "url": "https://github.com/pht88888888/dsh-jiuling-remote-plugins",
+    "defaultBranch": "master",
+    "revision": "20e99754eddd55b4f0ea2a0aee5b7e507141681f",
+    "refs": [
+      {
+        "name": "dev",
+        "sha": "acaad63ddd81e96ee28caa2d1df771959c747d28"
+      },
+      {
+        "name": "master",
+        "sha": "20e99754eddd55b4f0ea2a0aee5b7e507141681f"
+      }
+    ],
+    "tags": [],
+    "archive": {
+      "url": "https://codeload.github.com/pht88888888/dsh-jiuling-remote-plugins/tar.gz/20e99754eddd55b4f0ea2a0aee5b7e507141681f",
+      "sha256": "243cc9568348d279cd38c4105cf0e0fce7d33f38ea3066e94c120d7e82c6ba15",
+      "bytes": 524294
+    }
+  },
+  "packages": [
+    {
+      "id": "mobile",
+      "name": "dsh-jiuling-remote-mobile",
+      "source": "dsh-remote-mobile",
+      "legacy": {
+        "version": "1.2.87",
+        "status": "legacy-reference-only",
+        "files": [
+          {
+            "path": "cordis.patch.yml",
+            "bytes": 920,
+            "sha256": "ed3aa8d4a6156c54f95e30e42b05935c0bd7e3d8ca5d66aa95f701a4b0d9e081"
+          },
+          {
+            "path": "lib/client.js",
+            "bytes": 478964,
+            "sha256": "c4c12fd8ece02182388a35fa484e3459c39d7e8f2e4213c5c519cb1a9d1f7343"
+          },
+          {
+            "path": "lib/index.js",
+            "bytes": 438406,
+            "sha256": "3ec034070c7bd67e80c85afad8b7770404ec5ebb2d2c1ca3060336fd4e6f0659"
+          },
+          {
+            "path": "lib/outbox.js",
+            "bytes": 1481,
+            "sha256": "a192c24a884584dd94b758dc4bde196760e7c7917a7672dbc2e2588bf6ec2346"
+          },
+          {
+            "path": "lib/reconnect.js",
+            "bytes": 4016,
+            "sha256": "4ecf50b9544295254815ff8c0e736ab4b733dbe5a5584a91f41ea677ee812d8a"
+          },
+          {
+            "path": "lib/session-index.js",
+            "bytes": 2871,
+            "sha256": "292cb4906c458032a1f5a975298535ff01986d906c25f61196040e0af47dfcaa"
+          },
+          {
+            "path": "package-lock.json",
+            "bytes": 28110,
+            "sha256": "a43d32399186c5d02e1f4bc86f31124b3e2d60f1ae5371e3d409593372590246"
+          },
+          {
+            "path": "package.json",
+            "bytes": 1123,
+            "sha256": "b0cb0a8dd7eb6da493c5ef0b50e166c462f0df4db34e40aede16452a365676ee"
+          },
+          {
+            "path": "test/ownership.mjs",
+            "bytes": 9522,
+            "sha256": "a5655a5581c26e0e29c54df173ff0c160b22283555097a5a6aa6c92c782d9de9"
+          },
+          {
+            "path": "test/sidebar.mjs",
+            "bytes": 9470,
+            "sha256": "76a020d5c2e3f82daa1040434d870d6e54e7e2c4024be3a376d4ca6173b9d31a"
+          },
+          {
+            "path": "test/smoke.mjs",
+            "bytes": 10916,
+            "sha256": "e5f461d420f5a1161c86b2db43cc737e045dcbc54e006348405f85d5fdabc211"
+          },
+          {
+            "path": "test/splice.mjs",
+            "bytes": 4742,
+            "sha256": "f59ced4b65da76cc1e4fc83ab896d13b9b8c3567ca0b6267271d79ef3c82a50d"
+          },
+          {
+            "path": "test/sync.mjs",
+            "bytes": 22980,
+            "sha256": "def033c01f1035507d3ac9461da2aad34e5f156a80a6b355c78bebf353d48297"
+          }
+        ],
+        "publishedComparison": [
+          {
+            "path": "cordis.patch.yml",
+            "status": "same",
+            "leftSha256": "ed3aa8d4a6156c54f95e30e42b05935c0bd7e3d8ca5d66aa95f701a4b0d9e081",
+            "rightSha256": "ed3aa8d4a6156c54f95e30e42b05935c0bd7e3d8ca5d66aa95f701a4b0d9e081"
+          },
+          {
+            "path": "lib/client.js",
+            "status": "changed",
+            "leftSha256": "c4c12fd8ece02182388a35fa484e3459c39d7e8f2e4213c5c519cb1a9d1f7343",
+            "rightSha256": "a452f5126798223b4eaadf250306e28daf8d8bec34e43574d935990ade5ce100"
+          },
+          {
+            "path": "lib/index.js",
+            "status": "changed",
+            "leftSha256": "3ec034070c7bd67e80c85afad8b7770404ec5ebb2d2c1ca3060336fd4e6f0659",
+            "rightSha256": "b71c0eaea1b5252d620ac57fc2fe14d2e6be8e48d6860e8082f04d0bb10e9cd5"
+          },
+          {
+            "path": "lib/outbox.js",
+            "status": "left-only",
+            "leftSha256": "a192c24a884584dd94b758dc4bde196760e7c7917a7672dbc2e2588bf6ec2346",
+            "rightSha256": null
+          },
+          {
+            "path": "lib/reconnect.js",
+            "status": "left-only",
+            "leftSha256": "4ecf50b9544295254815ff8c0e736ab4b733dbe5a5584a91f41ea677ee812d8a",
+            "rightSha256": null
+          },
+          {
+            "path": "lib/session-index.js",
+            "status": "left-only",
+            "leftSha256": "292cb4906c458032a1f5a975298535ff01986d906c25f61196040e0af47dfcaa",
+            "rightSha256": null
+          },
+          {
+            "path": "package.json",
+            "status": "changed",
+            "leftSha256": "b0cb0a8dd7eb6da493c5ef0b50e166c462f0df4db34e40aede16452a365676ee",
+            "rightSha256": "59aec41684e967755d6c16d6d1c6714df680af5efe6f0303035e6d486dddbafe"
+          }
+        ],
+        "repositoryUnique": [
+          {
+            "path": "lib/client.js",
+            "status": "diverged",
+            "sha256": "c4c12fd8ece02182388a35fa484e3459c39d7e8f2e4213c5c519cb1a9d1f7343",
+            "distinctLines": 10303,
+            "distinctLinesSha256": "468ce2757a068d9b9ab907a915469f5861a734e4b8c27e45a5c5b1730e039c77"
+          },
+          {
+            "path": "lib/index.js",
+            "status": "diverged",
+            "sha256": "3ec034070c7bd67e80c85afad8b7770404ec5ebb2d2c1ca3060336fd4e6f0659",
+            "distinctLines": 140,
+            "distinctLinesSha256": "6ca0ccc6f208b437afb05298e290f2ab5ee72875d7329eaeb535a6c278a7b532"
+          },
+          {
+            "path": "lib/outbox.js",
+            "status": "diverged",
+            "sha256": "a192c24a884584dd94b758dc4bde196760e7c7917a7672dbc2e2588bf6ec2346",
+            "distinctLines": 2,
+            "distinctLinesSha256": "3f0aaefe9091dda208c81e4f9dab3febe9d1c9ac839007cd7f805e18b59b4217"
+          },
+          {
+            "path": "lib/reconnect.js",
+            "status": "diverged",
+            "sha256": "4ecf50b9544295254815ff8c0e736ab4b733dbe5a5584a91f41ea677ee812d8a",
+            "distinctLines": 1,
+            "distinctLinesSha256": "e68316dd776e9fbce5828d344e43cbc3918f2688cbeea7f8adb34727101ed42f"
+          },
+          {
+            "path": "lib/session-index.js",
+            "status": "diverged",
+            "sha256": "292cb4906c458032a1f5a975298535ff01986d906c25f61196040e0af47dfcaa",
+            "distinctLines": 4,
+            "distinctLinesSha256": "de79b4db7f583787c6b167849b33efa0f1eb7c917a5023f39c9bafbbc7a39a08"
+          },
+          {
+            "path": "package-lock.json",
+            "status": "diverged",
+            "sha256": "a43d32399186c5d02e1f4bc86f31124b3e2d60f1ae5371e3d409593372590246",
+            "distinctLines": 5,
+            "distinctLinesSha256": "625cc97a9352fc68b4bf8eee185831ad90515b289ed930c8a279a78543c0e57e"
+          },
+          {
+            "path": "package.json",
+            "status": "diverged",
+            "sha256": "b0cb0a8dd7eb6da493c5ef0b50e166c462f0df4db34e40aede16452a365676ee",
+            "distinctLines": 2,
+            "distinctLinesSha256": "187b84b5833693ffb764b0cacf63d4c7a21efdd42d3db806b5f13f7da956bae7"
+          },
+          {
+            "path": "test/ownership.mjs",
+            "status": "diverged",
+            "sha256": "a5655a5581c26e0e29c54df173ff0c160b22283555097a5a6aa6c92c782d9de9",
+            "distinctLines": 2,
+            "distinctLinesSha256": "07eaa377797183ba6e2ae60b576a549c87c4f5580382ce890e733caab19a5da4"
+          },
+          {
+            "path": "test/sync.mjs",
+            "status": "diverged",
+            "sha256": "def033c01f1035507d3ac9461da2aad34e5f156a80a6b355c78bebf353d48297",
+            "distinctLines": 14,
+            "distinctLinesSha256": "329d285ed87a0994459e60f3c3fc02c6130081492cabcc7e71adbd40ef7c8274"
+          }
+        ]
+      },
+      "published": {
+        "version": "1.2.105",
+        "gitHead": "6381afde069708c2f2bb5b7c4a9df093690718e4",
+        "metadataUrl": "https://registry.npmjs.org/dsh-jiuling-remote-mobile/1.2.105",
+        "latestUrl": "https://registry.npmjs.org/dsh-jiuling-remote-mobile/latest",
+        "tarball": "https://registry.npmjs.org/dsh-jiuling-remote-mobile/-/dsh-jiuling-remote-mobile-1.2.105.tgz",
+        "integrity": "sha512-jh2kbLK+0EixSU8cUKXxLSoO7Slunevuh+JWPVY/vsVdckg4pxxL7WSfvqZjJzJfI9yiJmMV3zhea/O3b7Xf1A==",
+        "shasum": "230a3a96594b681bd12a1f31d949be0650c229c2",
+        "archiveSha256": "57bb4654cec5233ad38d7bdb463eae8f4d1f108180917d6b4f4df0f0416ee723",
+        "archiveBytes": 361849,
+        "files": [
+          {
+            "path": "cordis.patch.yml",
+            "bytes": 920,
+            "sha256": "ed3aa8d4a6156c54f95e30e42b05935c0bd7e3d8ca5d66aa95f701a4b0d9e081"
+          },
+          {
+            "path": "lib/client.js",
+            "bytes": 522891,
+            "sha256": "a452f5126798223b4eaadf250306e28daf8d8bec34e43574d935990ade5ce100"
+          },
+          {
+            "path": "lib/index.js",
+            "bytes": 519758,
+            "sha256": "b71c0eaea1b5252d620ac57fc2fe14d2e6be8e48d6860e8082f04d0bb10e9cd5"
+          },
+          {
+            "path": "package.json",
+            "bytes": 1282,
+            "sha256": "59aec41684e967755d6c16d6d1c6714df680af5efe6f0303035e6d486dddbafe"
+          }
+        ]
+      },
+      "gitHead": {
+        "url": "https://api.github.com/repos/pht88888888/dsh-jiuling-remote-plugins/commits/6381afde069708c2f2bb5b7c4a9df093690718e4",
+        "httpStatus": 422,
+        "message": "No commit found for SHA: 6381afde069708c2f2bb5b7c4a9df093690718e4",
+        "accessible": false,
+        "revision": null
+      },
+      "repository": {
+        "version": "1.2.105",
+        "files": [
+          {
+            "path": "cordis.patch.yml",
+            "bytes": 920,
+            "sha256": "ed3aa8d4a6156c54f95e30e42b05935c0bd7e3d8ca5d66aa95f701a4b0d9e081"
+          },
+          {
+            "path": "lib/client.js",
+            "bytes": 511284,
+            "sha256": "77caa8ce80769718bfbb5d67617b8f4dd624a5f91cee6f147aa6a3a3da446f0c"
+          },
+          {
+            "path": "lib/index.js",
+            "bytes": 483638,
+            "sha256": "370fb2ad068e7b6c685c49dbd931ab8f5245190cb23e33e38336264198aa891a"
+          },
+          {
+            "path": "lib/outbox.js",
+            "bytes": 1501,
+            "sha256": "57d8bc5800021c3e0eb6799918913beb4578747342a825bc43776c5274dac76a"
+          },
+          {
+            "path": "lib/reconnect.js",
+            "bytes": 4425,
+            "sha256": "392d29cb0e8d5195773a8ae69f21301f50890c646e7157b56f64f311ccb80306"
+          },
+          {
+            "path": "lib/session-index.js",
+            "bytes": 3080,
+            "sha256": "66d9bda96d3bca2bcff046d6023f6a0841238c476ac51950becf39be6b163f20"
+          },
+          {
+            "path": "package-lock.json",
+            "bytes": 28112,
+            "sha256": "72741130f5655dc97ce4ba5001846dd85043a5e966c33f8c79de28860b84ce65"
+          },
+          {
+            "path": "package.json",
+            "bytes": 1280,
+            "sha256": "76adb14ea3376052e26f9261815f65d8c921ff6607fddc4a165bdf9def9ddcb5"
+          },
+          {
+            "path": "test/ask.mjs",
+            "bytes": 17192,
+            "sha256": "0f724cce036a9a0f4132769c96bdfad799a9a8a02902f5b04acd286e28c997f5"
+          },
+          {
+            "path": "test/askhost.mjs",
+            "bytes": 13556,
+            "sha256": "b8ba93c13cc7b71308b4bfc6b99a225d9cae5734dc62b50551ea6db23f925a4f"
+          },
+          {
+            "path": "test/browser-ask.mjs",
+            "bytes": 11829,
+            "sha256": "8825016a97cbf5da03583ceb05278d7829400aabb027a487a4d8afad208b23cb"
+          },
+          {
+            "path": "test/ownership.mjs",
+            "bytes": 14555,
+            "sha256": "c3f062bb1ff065be0aff883946bff677b95de4ebc362a90d979e2ec2b4e4e2b0"
+          },
+          {
+            "path": "test/poll.mjs",
+            "bytes": 12258,
+            "sha256": "7e750280e89e9166bfbfac554fdd41b5a6d46fb404578e3c766656820b9e3fa9"
+          },
+          {
+            "path": "test/resume.mjs",
+            "bytes": 5800,
+            "sha256": "c7ba385faa2cd90003a1e038743b9f08f587862960651bd973bb3b0fee177c87"
+          },
+          {
+            "path": "test/sidebar.mjs",
+            "bytes": 9470,
+            "sha256": "76a020d5c2e3f82daa1040434d870d6e54e7e2c4024be3a376d4ca6173b9d31a"
+          },
+          {
+            "path": "test/smoke.mjs",
+            "bytes": 10916,
+            "sha256": "e5f461d420f5a1161c86b2db43cc737e045dcbc54e006348405f85d5fdabc211"
+          },
+          {
+            "path": "test/splice.mjs",
+            "bytes": 4742,
+            "sha256": "f59ced4b65da76cc1e4fc83ab896d13b9b8c3567ca0b6267271d79ef3c82a50d"
+          },
+          {
+            "path": "test/sync.mjs",
+            "bytes": 36800,
+            "sha256": "71f734703461a560545689e0dbbf6c989cfb2f86f5a38c174932ec395afa81a7"
+          },
+          {
+            "path": "test/synced-corruption.mjs",
+            "bytes": 3852,
+            "sha256": "107777ee3399718c2be8469d24230a14dd627e13041df3125db4b8ef25a938ec"
+          }
+        ],
+        "publishedComparison": [
+          {
+            "path": "cordis.patch.yml",
+            "status": "same",
+            "leftSha256": "ed3aa8d4a6156c54f95e30e42b05935c0bd7e3d8ca5d66aa95f701a4b0d9e081",
+            "rightSha256": "ed3aa8d4a6156c54f95e30e42b05935c0bd7e3d8ca5d66aa95f701a4b0d9e081"
+          },
+          {
+            "path": "lib/client.js",
+            "status": "changed",
+            "leftSha256": "a452f5126798223b4eaadf250306e28daf8d8bec34e43574d935990ade5ce100",
+            "rightSha256": "77caa8ce80769718bfbb5d67617b8f4dd624a5f91cee6f147aa6a3a3da446f0c"
+          },
+          {
+            "path": "lib/index.js",
+            "status": "changed",
+            "leftSha256": "b71c0eaea1b5252d620ac57fc2fe14d2e6be8e48d6860e8082f04d0bb10e9cd5",
+            "rightSha256": "370fb2ad068e7b6c685c49dbd931ab8f5245190cb23e33e38336264198aa891a"
+          },
+          {
+            "path": "lib/outbox.js",
+            "status": "right-only",
+            "leftSha256": null,
+            "rightSha256": "57d8bc5800021c3e0eb6799918913beb4578747342a825bc43776c5274dac76a"
+          },
+          {
+            "path": "lib/reconnect.js",
+            "status": "right-only",
+            "leftSha256": null,
+            "rightSha256": "392d29cb0e8d5195773a8ae69f21301f50890c646e7157b56f64f311ccb80306"
+          },
+          {
+            "path": "lib/session-index.js",
+            "status": "right-only",
+            "leftSha256": null,
+            "rightSha256": "66d9bda96d3bca2bcff046d6023f6a0841238c476ac51950becf39be6b163f20"
+          },
+          {
+            "path": "package.json",
+            "status": "changed",
+            "leftSha256": "59aec41684e967755d6c16d6d1c6714df680af5efe6f0303035e6d486dddbafe",
+            "rightSha256": "76adb14ea3376052e26f9261815f65d8c921ff6607fddc4a165bdf9def9ddcb5"
+          }
+        ]
+      },
+      "legacyPath": "remote-plugin/mobile"
+    },
+    {
+      "id": "desktop",
+      "name": "dsh-jiuling-remote-desktop",
+      "source": "dsh-remote-desktop",
+      "legacy": {
+        "version": "1.0.48",
+        "status": "legacy-reference-only",
+        "files": [
+          {
+            "path": "lib/client.js",
+            "bytes": 27340,
+            "sha256": "19870fe1179f972bfdebe8ad65542c7a86c6f43725ed201aaef81e71fff9e98f"
+          },
+          {
+            "path": "lib/index.js",
+            "bytes": 180868,
+            "sha256": "e50482a09bab815b65b0705a41d859f42f595c6e33bfd02445a2a4a774cc1e35"
+          },
+          {
+            "path": "lib/pair.js",
+            "bytes": 36362,
+            "sha256": "889881d58c9ba9752b0061053953b3e411c5f3f5446a0adbe2aedaa4f10a0074"
+          },
+          {
+            "path": "lib/qr.js",
+            "bytes": 21574,
+            "sha256": "aa9c78b311ed555017ffd992734dd6884de4599a42392d79a0d4db7ed02f4fb0"
+          },
+          {
+            "path": "package.json",
+            "bytes": 833,
+            "sha256": "f66cf12cfc4ec833269cd3a554c4d66675b2c2c6b3e8b198fcd0e381863fafcf"
+          }
+        ],
+        "publishedComparison": [
+          {
+            "path": "cordis.patch.yml",
+            "status": "right-only",
+            "leftSha256": null,
+            "rightSha256": "cf58e369e7b7da7bfa048e7758856aa6e10433ab342ff8c24877f07dccb0b164"
+          },
+          {
+            "path": "lib/client.js",
+            "status": "changed",
+            "leftSha256": "19870fe1179f972bfdebe8ad65542c7a86c6f43725ed201aaef81e71fff9e98f",
+            "rightSha256": "73e6e2db47e0a2c7ea0101d49337814a932e1756af99edee45457872c673a6f4"
+          },
+          {
+            "path": "lib/index.js",
+            "status": "changed",
+            "leftSha256": "e50482a09bab815b65b0705a41d859f42f595c6e33bfd02445a2a4a774cc1e35",
+            "rightSha256": "4bcacd10f6201244f60ce555eeee14a1fe0275a8a9605518633a46c310855783"
+          },
+          {
+            "path": "lib/pair.js",
+            "status": "changed",
+            "leftSha256": "889881d58c9ba9752b0061053953b3e411c5f3f5446a0adbe2aedaa4f10a0074",
+            "rightSha256": "031002f2665e9742b4339b43af591257bafbb2e54a6c60312a265ce5158a6fa0"
+          },
+          {
+            "path": "lib/qr.js",
+            "status": "same",
+            "leftSha256": "aa9c78b311ed555017ffd992734dd6884de4599a42392d79a0d4db7ed02f4fb0",
+            "rightSha256": "aa9c78b311ed555017ffd992734dd6884de4599a42392d79a0d4db7ed02f4fb0"
+          },
+          {
+            "path": "package.json",
+            "status": "changed",
+            "leftSha256": "f66cf12cfc4ec833269cd3a554c4d66675b2c2c6b3e8b198fcd0e381863fafcf",
+            "rightSha256": "dc329834bc86900377a522a5109e735bc8138ed0226200884a5bfddec0e4e6fe"
+          }
+        ],
+        "repositoryUnique": [
+          {
+            "path": "lib/client.js",
+            "status": "diverged",
+            "sha256": "19870fe1179f972bfdebe8ad65542c7a86c6f43725ed201aaef81e71fff9e98f",
+            "distinctLines": 2,
+            "distinctLinesSha256": "9c3956a9c9eeded9de96dc00cf7f76a84f846cd2dc58f8cc94a537dd977aa244"
+          },
+          {
+            "path": "lib/index.js",
+            "status": "diverged",
+            "sha256": "e50482a09bab815b65b0705a41d859f42f595c6e33bfd02445a2a4a774cc1e35",
+            "distinctLines": 3691,
+            "distinctLinesSha256": "5f919858c9eca561e0ef936d34492fe8d31a0e24cf89b3fc3214e5e1f8bf32bd"
+          },
+          {
+            "path": "lib/pair.js",
+            "status": "diverged",
+            "sha256": "889881d58c9ba9752b0061053953b3e411c5f3f5446a0adbe2aedaa4f10a0074",
+            "distinctLines": 2,
+            "distinctLinesSha256": "60e7964108fdaab55330c51c5b51cad00b6f7d082c8ad6648784499dda9c660d"
+          },
+          {
+            "path": "package.json",
+            "status": "diverged",
+            "sha256": "f66cf12cfc4ec833269cd3a554c4d66675b2c2c6b3e8b198fcd0e381863fafcf",
+            "distinctLines": 1,
+            "distinctLinesSha256": "b69d5144e74dfab216a3d2ded20a199fc5e9daa469d20a764c0dcc71fb30dd4d"
+          }
+        ]
+      },
+      "published": {
+        "version": "1.0.56",
+        "gitHead": "75ed7b9ea9f369d01e7aaa9d98bf94c24c89a0a7",
+        "metadataUrl": "https://registry.npmjs.org/dsh-jiuling-remote-desktop/1.0.56",
+        "latestUrl": "https://registry.npmjs.org/dsh-jiuling-remote-desktop/latest",
+        "tarball": "https://registry.npmjs.org/dsh-jiuling-remote-desktop/-/dsh-jiuling-remote-desktop-1.0.56.tgz",
+        "integrity": "sha512-+vcx5siBOKjMR43ZkYBXzp0DuwMz+5gC8XV54N1vJdX3sVZvjDfY4889xL3Se2p0u9fBr6Nsn4XFRzDo6sbPYQ==",
+        "shasum": "45a92262d82ba664650715b2b9c7561915e673c4",
+        "archiveSha256": "64a3add83e3976f73e4e72e1a896905bfe120c79faf0c09651a189d1d8126384",
+        "archiveBytes": 108440,
+        "files": [
+          {
+            "path": "cordis.patch.yml",
+            "bytes": 566,
+            "sha256": "cf58e369e7b7da7bfa048e7758856aa6e10433ab342ff8c24877f07dccb0b164"
+          },
+          {
+            "path": "lib/client.js",
+            "bytes": 27382,
+            "sha256": "73e6e2db47e0a2c7ea0101d49337814a932e1756af99edee45457872c673a6f4"
+          },
+          {
+            "path": "lib/index.js",
+            "bytes": 201713,
+            "sha256": "4bcacd10f6201244f60ce555eeee14a1fe0275a8a9605518633a46c310855783"
+          },
+          {
+            "path": "lib/pair.js",
+            "bytes": 41700,
+            "sha256": "031002f2665e9742b4339b43af591257bafbb2e54a6c60312a265ce5158a6fa0"
+          },
+          {
+            "path": "lib/qr.js",
+            "bytes": 21574,
+            "sha256": "aa9c78b311ed555017ffd992734dd6884de4599a42392d79a0d4db7ed02f4fb0"
+          },
+          {
+            "path": "package.json",
+            "bytes": 954,
+            "sha256": "dc329834bc86900377a522a5109e735bc8138ed0226200884a5bfddec0e4e6fe"
+          }
+        ]
+      },
+      "gitHead": {
+        "url": "https://api.github.com/repos/pht88888888/dsh-jiuling-remote-plugins/commits/75ed7b9ea9f369d01e7aaa9d98bf94c24c89a0a7",
+        "httpStatus": 422,
+        "message": "No commit found for SHA: 75ed7b9ea9f369d01e7aaa9d98bf94c24c89a0a7",
+        "accessible": false,
+        "revision": null
+      },
+      "repository": {
+        "version": "1.0.56",
+        "files": [
+          {
+            "path": "cordis.patch.yml",
+            "bytes": 566,
+            "sha256": "cf58e369e7b7da7bfa048e7758856aa6e10433ab342ff8c24877f07dccb0b164"
+          },
+          {
+            "path": "lib/client.js",
+            "bytes": 27382,
+            "sha256": "73e6e2db47e0a2c7ea0101d49337814a932e1756af99edee45457872c673a6f4"
+          },
+          {
+            "path": "lib/index.js",
+            "bytes": 197437,
+            "sha256": "bccf011f74130ca583da7216d4de8ada852b630fcb2f964b89a373cf712fa06b"
+          },
+          {
+            "path": "lib/pair.js",
+            "bytes": 41700,
+            "sha256": "031002f2665e9742b4339b43af591257bafbb2e54a6c60312a265ce5158a6fa0"
+          },
+          {
+            "path": "lib/qr.js",
+            "bytes": 21574,
+            "sha256": "aa9c78b311ed555017ffd992734dd6884de4599a42392d79a0d4db7ed02f4fb0"
+          },
+          {
+            "path": "package.json",
+            "bytes": 894,
+            "sha256": "4a69126fa97ebb26fd2a6523dfac6747ca82eb47f5844b331f9395de2776cce9"
+          },
+          {
+            "path": "test/ask-registry.mjs",
+            "bytes": 2959,
+            "sha256": "434a9555cbe55416f1779cb46a0edd453b002dbe083de8e9637e4c4d08ba0ae2"
+          }
+        ],
+        "publishedComparison": [
+          {
+            "path": "cordis.patch.yml",
+            "status": "same",
+            "leftSha256": "cf58e369e7b7da7bfa048e7758856aa6e10433ab342ff8c24877f07dccb0b164",
+            "rightSha256": "cf58e369e7b7da7bfa048e7758856aa6e10433ab342ff8c24877f07dccb0b164"
+          },
+          {
+            "path": "lib/client.js",
+            "status": "same",
+            "leftSha256": "73e6e2db47e0a2c7ea0101d49337814a932e1756af99edee45457872c673a6f4",
+            "rightSha256": "73e6e2db47e0a2c7ea0101d49337814a932e1756af99edee45457872c673a6f4"
+          },
+          {
+            "path": "lib/index.js",
+            "status": "changed",
+            "leftSha256": "4bcacd10f6201244f60ce555eeee14a1fe0275a8a9605518633a46c310855783",
+            "rightSha256": "bccf011f74130ca583da7216d4de8ada852b630fcb2f964b89a373cf712fa06b"
+          },
+          {
+            "path": "lib/pair.js",
+            "status": "same",
+            "leftSha256": "031002f2665e9742b4339b43af591257bafbb2e54a6c60312a265ce5158a6fa0",
+            "rightSha256": "031002f2665e9742b4339b43af591257bafbb2e54a6c60312a265ce5158a6fa0"
+          },
+          {
+            "path": "lib/qr.js",
+            "status": "same",
+            "leftSha256": "aa9c78b311ed555017ffd992734dd6884de4599a42392d79a0d4db7ed02f4fb0",
+            "rightSha256": "aa9c78b311ed555017ffd992734dd6884de4599a42392d79a0d4db7ed02f4fb0"
+          },
+          {
+            "path": "package.json",
+            "status": "changed",
+            "leftSha256": "dc329834bc86900377a522a5109e735bc8138ed0226200884a5bfddec0e4e6fe",
+            "rightSha256": "4a69126fa97ebb26fd2a6523dfac6747ca82eb47f5844b331f9395de2776cce9"
+          }
+        ]
+      },
+      "legacyPath": "remote-plugin/desktop"
+    }
+  ],
+  "ancillary": {
+    "status": "preserve-unmigrated-pairing-and-tests",
+    "files": [
+      {
+        "path": "remote-plugin/_test/bridge-gate.mjs",
+        "bytes": 9141,
+        "sha256": "f06a3e75d94a84a64db8dbcdb92dcfc8cd581a3db16b66aeca1fee5db759cb9b"
+      },
+      {
+        "path": "remote-plugin/_test/compare-logs.mjs",
+        "bytes": 3381,
+        "sha256": "1dcff3fe254ea0577259497083ce5d93880a54e97105de8bc755271d8baa4bea"
+      },
+      {
+        "path": "remote-plugin/_test/desktop-pair-gate.mjs",
+        "bytes": 12200,
+        "sha256": "0f83e18a9c03a04e1ebd3fa8c9d0848c7a0da4e05282535447392f66097be932"
+      },
+      {
+        "path": "remote-plugin/_test/dir-cache.mjs",
+        "bytes": 38689,
+        "sha256": "f68ef258f912daaa6d84e8da319ba10c2e0ee36e58f339b6fb2dfc0233311e46"
+      },
+      {
+        "path": "remote-plugin/_test/fetch-fallback.mjs",
+        "bytes": 7984,
+        "sha256": "42f108768e90e4602b142996279ef3746be3bcdaf15ef7c9dcd259f67baba177"
+      },
+      {
+        "path": "remote-plugin/_test/file-tree.mjs",
+        "bytes": 13954,
+        "sha256": "78b369af3770f7066dca60db8efcb77621b75d593c292f7b6de55ded9be95220"
+      },
+      {
+        "path": "remote-plugin/_test/host-route.mjs",
+        "bytes": 7790,
+        "sha256": "144c58ad3b2dcf25ebdf6524ead75478d3bc6216d4067e2542569766846371a8"
+      },
+      {
+        "path": "remote-plugin/_test/load-client.mjs",
+        "bytes": 3479,
+        "sha256": "c1ae4b42f85b45178dca4ee0af051efc5ae36a9f38fa72ea2006dcd74503a3a9"
+      },
+      {
+        "path": "remote-plugin/_test/make-code.mjs",
+        "bytes": 1250,
+        "sha256": "72d3488b3ab4a0d4de7548bbdcfa49804fee2a10157849a0c6915f1d838d8b0f"
+      },
+      {
+        "path": "remote-plugin/_test/make-tunnel.mjs",
+        "bytes": 1274,
+        "sha256": "2865e06b2be4935561bddae3392fd8db8c2eeda38ed226f567261dec1656c4f5"
+      },
+      {
+        "path": "remote-plugin/_test/market-gate.mjs",
+        "bytes": 9594,
+        "sha256": "ad21805301b745b5bc9169ead1a95d291c8c7007d05dca4fd74dc0050e492c84"
+      },
+      {
+        "path": "remote-plugin/_test/no-shared-credentials.mjs",
+        "bytes": 10549,
+        "sha256": "db4e0f18c20c71c0754ea93d3aa01dd03e053a33e2d0aed055951aa7607a19cc"
+      },
+      {
+        "path": "remote-plugin/_test/pair-e2e.mjs",
+        "bytes": 16510,
+        "sha256": "6c6caa19091ae2d1fa4dc996793fd9b7fda2dde80d646343a312b989fed08dd1"
+      },
+      {
+        "path": "remote-plugin/_test/preset-revert.mjs",
+        "bytes": 13169,
+        "sha256": "8c04ce31b2f816844a341a451455e22d5429e0b4b14a6899296dee1f8770f8ea"
+      },
+      {
+        "path": "remote-plugin/_test/read-session.mjs",
+        "bytes": 3704,
+        "sha256": "e560d6f479c50387f6ec7e8edeb9b4c6e8762a73424af7c54d8c04ee38290bff"
+      },
+      {
+        "path": "remote-plugin/_test/recent-workspace.mjs",
+        "bytes": 40096,
+        "sha256": "446b58aa6983ebcbfa5042c413b44f2e3bfa40613cbf0d5c4d2e1cd70bc415e9"
+      },
+      {
+        "path": "remote-plugin/_test/records-crypto.py",
+        "bytes": 9109,
+        "sha256": "26b2e746c6f437efaa3fa4dbcb877e3f724a8c14432b122d2cb942ba5376cd46"
+      },
+      {
+        "path": "remote-plugin/_test/relay-auth.mjs",
+        "bytes": 15911,
+        "sha256": "1f34c7066abdb6ee817a38ceeea897acc5e6890fbf99918a870c1f3e7bc1f1ca"
+      },
+      {
+        "path": "remote-plugin/_test/relay-port-busy.mjs",
+        "bytes": 6325,
+        "sha256": "79a476c991e5308886464725a9f0df4a606fc212322a3ec7e6819f5c72ae1e55"
+      },
+      {
+        "path": "remote-plugin/_test/render-client.mjs",
+        "bytes": 3796,
+        "sha256": "8a88aa9ff0624550dc120de5aa2b19a0296474413b2f1ddc3eb891f91c9919c6"
+      },
+      {
+        "path": "remote-plugin/_test/render-dom.mjs",
+        "bytes": 15095,
+        "sha256": "ad4dc1da08489446426d15af8ff3ac0ef9f10462d4352acd5542814282e49ac7"
+      },
+      {
+        "path": "remote-plugin/_test/shot-unpair-entry.png",
+        "bytes": 146950,
+        "sha256": "62ac622f34a82a5119baba78ffa735a01a5f8e52bfaf04345ce7bbe2c105f380"
+      },
+      {
+        "path": "remote-plugin/_test/title-guard.mjs",
+        "bytes": 10364,
+        "sha256": "4cd2c5e2679317def9deaaef6f59b08cce308b51d793f9de0a14cd2a1b195a4f"
+      },
+      {
+        "path": "remote-plugin/_test/tunnel-swap.mjs",
+        "bytes": 8040,
+        "sha256": "e359263051e55a08a3dfe825784f613a4a1e748c8628cecfafd79c21ed94ce5e"
+      },
+      {
+        "path": "remote-plugin/_test/unpair-recover.mjs",
+        "bytes": 10598,
+        "sha256": "086a10327b50692bf6a791203c4d906637bca0b405201576f590f045ae397945"
+      },
+      {
+        "path": "remote-plugin/_test/xff-assert.py",
+        "bytes": 8293,
+        "sha256": "5e7271501b6baf7b89a8bdeadc54f55fb5490de41725040ecb3956747bf72958"
+      },
+      {
+        "path": "remote-plugin/pair-server/admin_page.html",
+        "bytes": 21470,
+        "sha256": "d6a667658990100de37ed9a44d133e73d441165e49ece5bf72f91a778900c41d"
+      },
+      {
+        "path": "remote-plugin/pair-server/pair_admin.py",
+        "bytes": 9791,
+        "sha256": "f9616ee6c74ed4f9804b93652d3a579c8649c952dad855dc65507d80c73e36a2"
+      },
+      {
+        "path": "remote-plugin/pair-server/pair_server.py",
+        "bytes": 98328,
+        "sha256": "5adb2814e73044a6ae941c76791dfb674e56f3d05e165cf3584a7e518a7e47ee"
+      }
+    ]
+  },
+  "references": [
+    {
+      "path": "README.en.md",
+      "line": 173,
+      "kind": "documentation",
+      "textSha256": "514fdfaff6c0ef8a1563734e35113fa3cd8558a372a0ed45c657cc3d2ad42b4e"
+    },
+    {
+      "path": "README.md",
+      "line": 159,
+      "kind": "documentation",
+      "textSha256": "86a8cbf18e8181c5cc91622d62e2d0fccbfdea91b41cb2869710326ec8d4fff4"
+    },
+    {
+      "path": "docs/agents/plugin-updates.md",
+      "line": 61,
+      "kind": "documentation",
+      "textSha256": "73b45fca26ca574ca3015afe4c9eae77e88857a7ff419d5f5bfa58786fafec44"
+    },
+    {
+      "path": "remote-plugin/_test/records-crypto.py",
+      "line": 7,
+      "kind": "legacy-internal",
+      "textSha256": "2d151d5d1b2e6fe9bc6a85c1d47cf4d359a4323120ecd4a0d2819d95eb2384da"
+    },
+    {
+      "path": "remote-plugin/_test/records-crypto.py",
+      "line": 46,
+      "kind": "legacy-internal",
+      "textSha256": "cd19fd07cc0cb76df1b760562b00936619d08ea56909a5fdb71d464635b72a03"
+    },
+    {
+      "path": "remote-plugin/_test/xff-assert.py",
+      "line": 24,
+      "kind": "legacy-internal",
+      "textSha256": "2d151d5d1b2e6fe9bc6a85c1d47cf4d359a4323120ecd4a0d2819d95eb2384da"
+    },
+    {
+      "path": "remote-plugin/_test/xff-assert.py",
+      "line": 122,
+      "kind": "legacy-internal",
+      "textSha256": "cd19fd07cc0cb76df1b760562b00936619d08ea56909a5fdb71d464635b72a03"
+    },
+    {
+      "path": "remote-plugin/_test/xff-assert.py",
+      "line": 141,
+      "kind": "legacy-internal",
+      "textSha256": "7a4205ce62bcfe5d568cd8015736d36e001884c387d2cc0d050502e8723a01ee"
+    }
+  ],
+  "auditSha256": "0046daf94df690894ea8ff61ca6890fa24deffbae08d1a1191643734a93df193"
+}

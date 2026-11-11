@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
 import com.dsh.android.bubble.BubbleCommandBridge
 import com.dsh.android.core.DshApplication
 import com.dsh.android.engine.EngineManager
+import com.dsh.android.bridge.transport.AtomicMailboxFiles
 
 /**
  * 救援命令**信箱** —— 让救援会话里的 AI 能真正验证「改完能不能起来」。
@@ -411,14 +412,7 @@ object RescueCommandBridge {
             if (extra != null) put("data", extra)
         }
         try {
-            val target = File(dir, RESULT_FILE)
-            // 原子发布：AI 可能正好读到这里，半个 JSON 会让它那一轮白等。
-            val tmp = File(dir, "$RESULT_FILE.tmp")
-            tmp.writeText(out.toString())
-            if (!tmp.renameTo(target)) {
-                target.writeText(out.toString())
-                tmp.delete()
-            }
+            AtomicMailboxFiles.publishText(File(dir, RESULT_FILE), out.toString())
         } catch (t: Throwable) {
             Log.w(TAG, "写入救援命令回执失败: ${t.message}")
         }

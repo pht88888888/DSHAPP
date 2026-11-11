@@ -25,7 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const PLUGIN = path.resolve('mobile-ui-plugin/dsh-android-uiagent/lib/index.js');
+const PLUGIN = path.resolve('plugins/android/components/dsh-android-uiagent/lib/index.js');
 
 // ────────────────────────────────────────────────────────────────────
 // 断言
@@ -633,7 +633,7 @@ section('⑩ map / where / goto：插件侧的组合动作');
 	// 内建屏幕表就是它们的数据源，直接从生成物里读 —— 「插件里的表和生成物一致」
 	// 本身就是一条要验的事（有人手改过 screens.js 的话，这里会露出来）。
 	const screensMod = await import(pathToFileURL(
-		path.resolve('mobile-ui-plugin/dsh-android-uiagent/lib/screens.js')).href);
+		path.resolve('plugins/android/components/dsh-android-uiagent/lib/screens.js')).href);
 	const atlas = screensMod.ATLAS;
 
 	ok(atlas.screens.length === 17, `内建表有 17 屏（实际 ${atlas.screens.length}）`);

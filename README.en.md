@@ -92,10 +92,9 @@ produce a working APK.**
 | `ripgrep-android-arm64.zip` | 2.0 MB | Official linux-arm64 static rg |
 | 24 others | < 1 MB | Self-built native bindings / bundled plugin zips |
 
-**Each asset's origin, build recipe, and verification method** are documented in
-[docs/agents/regen-assets.md](docs/agents/regen-assets.md).
-`keyinject.bin` (the built-in API key pool) is **optional** — the app runs fine without
-it, it just has no built-in API account.
+**Asset origins, rebuild scope and missing inputs** are recorded in
+[asset rebuilding](docs/agents/regen-assets.md) and [native provenance](docs/architecture/native-provenance.md).
+`keyinject` has been retired in favor of the gateway path; only legacy library cleanup remains.
 
 ## Two hard constraints
 
@@ -104,7 +103,8 @@ Read before changing anything.
 
 ### ① The package name must be exactly 15 characters
 
-`applicationId` = `com.dsh.android` (15 characters).
+The final APK applicationIds are `com.dsh.android` and `com.dsh.webview`, both 15 characters.
+This restriction applies to runtime application identity, not library namespaces or Kotlin packages.
 
 Termux's official binaries have `/data/data/com.termux/files` (27 bytes) baked into
 their ELF `.dynstr`, and `TermuxBootstrap.patchElfInPlace()` can only do an
@@ -153,27 +153,38 @@ native addons and platform checks assume one of `linux`/`darwin`/`win32`. Anywhe
 official code only recognizes linux but is otherwise libc-agnostic needs an Android
 counterpart.
 
-Worse, there are **three capabilities Android actively withholds**, which can only be
-worked around at the libc boundary via `LD_PRELOAD`:
+Android also restricts link and sandbox capabilities, requiring adaptation at the libc boundary:
 
 | Layer | Solves | Docs |
 |---|---|---|
 | `liblinkcompat.so` | SELinux denies `link()` (`EACCES`/`EINVAL`) | [link-compat.md](docs/agents/link-compat.md) |
 | `boo-sandbox-run` + `libboosandbox.so` | No bwrap/Landlock on Android, yet `bash` requires a sandbox | [sandbox.md](docs/agents/sandbox.md) |
-| `libkeyinject.so` | Built-in API key pool; keys swapped at the TLS layer, never on disk or in JS | [key-pool.md](docs/agents/key-pool.md) |
 
 ## Project layout
 
 ```
-app/src/main/java/com/dsh/android/     native host (Kotlin)
-app/src/main/jni/                      native layer (C, LD_PRELOAD)
-app/src/main/assets/                   build assets (⚠️ not in repo, see above)
-app/src/system/ · app/src/gecko/       per-flavor sources for the two web engines
-mobile-ui-plugin/                      bundled plugin sources (TypeScript/JS)
-remote-plugin/                         pairing server + end-to-end tests
-tools/                                 build and verification scripts
-docs/agents/                           developer docs (35 articles, look up as needed)
+app/                                  application assembly, Activity/Service, backup and diagnostics
+core/contracts/ · core/logging/        narrow contracts, shared models and logging
+runtime/termux/ · runtime/engine/      Termux/Node, engine installation and lifecycle
+platform/privilege/                   Root / Shizuku / ADB
+web/contract/ · web/host/              contracts and system/gecko implementations
+feature/                              domain features; registration follows settings
+native/                               canonical linkcompat/sandbox sources and recipes
+plugins/android/bundle/                one top-level Android bundle
+plugins/android/components/            14 internal components
+plugins/standalone/                    multimodal, memory and preset plugins
+catalogs/                             component catalog and provenance/asset locks
+tooling/plugins/                      shared plugin build implementation
+tools/                                gates, release CLI and compatibility entries
+remote-plugin/                        reference-only copies, retained pairing service and tests
+docs/architecture/ · docs/runbooks/    conventions, ADRs, status and operating guides
 ```
+
+[Gradle settings](settings.gradle.kts) define the modules actually registered. Physical moves may preserve Kotlin packages, Manifest class names and bridge contracts for compatibility. The app owns assembly, Windows and Services; logging stays independent of cross-domain diagnostics assembled in the app.
+
+Read the [conventions](docs/architecture/conventions.md), [ADRs](docs/architecture/adr/README.md) and [implementation status](docs/architecture/execution-status.md). Some external runtime assets still lack complete provenance and rebuild recipes. Configuration or partial compilation success does not establish both-flavor, device or release acceptance.
+
+Production remote-plugin development belongs in the [independent repository](https://github.com/pht88888888/dsh-jiuling-remote-plugins). This checkout's old copies are reference-only; retain the unique pairing server and historical tests. See the [provenance audit](docs/architecture/remote-plugin-provenance.md) for differences between the published npm packages and same-version source. The [release runbook](docs/runbooks/release.md) separates local checks from explicitly requested remote actions; builds do not install or upload by default.
 
 ## Documentation
 
