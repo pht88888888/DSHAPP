@@ -17,7 +17,7 @@ require.resolve(`${platformPkg}/bin/${binaryName}`);                // ← 抛�
 `SearchError SEARCH_FAILED`。
 
 **做法**：取官方 `@vscode/ripgrep-linux-arm64` 1.18.0 的 `bin/rg`，打成
-`assets/ripgrep-android-arm64.zip`，`EngineManager.ensureRipgrep()` 解到
+`assets/ripgrep-android-arm64.zip`，`EngineRuntimeDependencies.ensureRipgrep()` 解到
 `engine/node_modules/@vscode/ripgrep-android-arm64/`（条目是 `bin/rg` + `package.json`，
 **没有顶层目录**）。它能在 Android 上跑是因为**完全静态** —— `readelf -d` 无任何
 `NEEDED`，不依赖 glibc。设备实测 `ripgrep 15.0.0`，`+pcre2`，`simd(compile):+NEON`。

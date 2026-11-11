@@ -369,7 +369,7 @@ if (existsSync(checker) && changed.length > 0) {
  *    而「语法本来就 OK、但用了新 API」的文件不在里面，它们照样会被加载。
  */
 const auditor = join(ROOT, 'tools', 'audit-runtime-apis.mjs');
-const polyfill = join(ROOT, 'app', 'src', 'main', 'assets', 'webview-polyfill.js');
+const polyfill = join(ROOT, 'runtime', 'webview', 'webview-polyfill.js');
 if (existsSync(auditor)) {
   log(`运行时 API 审计（对照 ${polyfill.split(sep).pop()}）…`);
   const r = spawnSync(process.execPath, [

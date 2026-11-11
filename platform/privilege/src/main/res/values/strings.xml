@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="pairing_channel_name">无线调试配对</string>
+    <string name="pairing_channel_desc">用配对码把本应用的密钥授权给系统 adbd，之后就能免电脑使用特权身份</string>
+    <string name="pairing_title">配对无线调试</string>
+    <string name="pairing_failed_title">配对失败</string>
+    <string name="pairing_waiting_open">请打开「开发者选项 → 无线调试 → 使用配对码配对设备」，并让该界面保持显示。打开后这里会自动出现配对码输入框，不用回来重按。</string>
+    <string name="pairing_waiting">在下面回复系统显示的 6 位配对码</string>
+    <string name="pairing_input_label">配对码</string>
+    <string name="pairing_reply">输入配对码</string>
+    <string name="pairing_working">正在配对…</string>
+    <string name="pairing_ok">配对成功，特权身份已可用</string>
+    <string name="pairing_empty_code">没有收到配对码，请重新输入</string>
+    <string name="pairing_stop">取消</string>
+    <string name="pairing_timeout">配对超过 %1$d 秒仍未完成，已放弃等待。请确认「使用配对码配对设备」界面还开着、配对码没过期，然后再发一次。</string>
+    <string name="pairing_failed_generic">配对过程中出错了，没有拿到结果。请重新打开系统里的「使用配对码配对设备」界面，再发一次配对码。</string>
+    <string name="pairing_stale_cleared">上一次配对没有正常结束（多半是配对过程中应用被系统结束），已清理残留状态。请重发一次配对码。</string>
+</resources>

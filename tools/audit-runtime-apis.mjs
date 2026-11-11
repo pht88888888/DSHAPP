@@ -28,7 +28,7 @@
  *
  * 用法：
  *   node tools/audit-runtime-apis.mjs <产物根目录> [更多根目录…]
- *   node tools/audit-runtime-apis.mjs --polyfill app/src/main/assets/webview-polyfill.js <根目录>
+ *   node tools/audit-runtime-apis.mjs --polyfill runtime/webview/webview-polyfill.js <根目录>
  *
  * 退出码：0 = 无缺口；1 = 有缺口（输出清单）。
  */
@@ -358,7 +358,7 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--target') { targetArg = argv[++i]; continue; }
   roots.push(argv[i]);
 }
-if (!polyfillPath) polyfillPath = 'app/src/main/assets/webview-polyfill.js';
+if (!polyfillPath) polyfillPath = 'runtime/webview/webview-polyfill.js';
 if (roots.length === 0) {
   console.error('用法: node tools/audit-runtime-apis.mjs [--polyfill <path>] [--target chrome74] <产物根目录> [更多…]');
   process.exit(2);

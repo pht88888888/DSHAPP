@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "maxNewFileLines": 1000,
+  "baselines": [
+    {
+      "path": "app/src/main/java/com/dsh/android/diagnostics/DiagnosticBundle.kt",
+      "maxLines": 1203,
+      "owner": ":app",
+      "reason": "既有跨领域诊断包组装，集中管理环境快照、日志与崩溃材料、诊断结论、压缩和截断说明；已归属应用装配层，历史体积按迁移终态锁定。"
+    },
+    {
+      "path": "app/src/main/java/com/dsh/android/ui/MainActivity.kt",
+      "maxLines": 4055,
+      "owner": ":app",
+      "reason": "既有 Activity/Window 宿主编排，持有页面、系统授权、Intent 与下载事务的生命周期装配；独立控制器已抽出，保留真实宿主状态所有权，按迁移终态锁定。"
+    },
+    {
+      "path": "core/logging/src/main/java/com/dsh/android/log/LogStore.kt",
+      "maxLines": 1212,
+      "owner": ":core:logging",
+      "reason": "既有三路日志存储底座，共有写入锁、异步队列、限流、轮转及崩溃路径收尾；不依赖应用或引擎快照，历史实现按迁移终态锁定。"
+    },
+    {
+      "path": "core/logging/src/main/java/com/dsh/android/log/RescueBoot.kt",
+      "maxLines": 1046,
+      "owner": ":core:logging",
+      "reason": "既有启动失败和救援层级记录，负责持久化证据及报告，不执行引擎降级动作；保留原记录格式与解析语义，历史体积按迁移终态锁定。"
+    },
+    {
+      "path": "feature/browser/src/main/java/com/dsh/android/browser/AiBrowserView.kt",
+      "maxLines": 2227,
+      "owner": ":feature:browser",
+      "reason": "既有内置浏览器视图宿主，管理浏览会话、页面交互及相关视图回调，按该视图自己的生命周期创建和释放；历史编排按迁移终态锁定。"
+    },
+    {
+      "path": "feature/browser/src/main/java/com/dsh/android/browser/AnnotateView.kt",
+      "maxLines": 1059,
+      "owner": ":feature:browser",
+      "reason": "既有截图标注画布，统一持有截图位图、手势与绘制状态、文字编辑和导出坐标；保留画布状态所有权，历史体积按迁移终态锁定。"
+    },
+    {
+      "path": "feature/bubble/src/main/java/com/dsh/android/bubble/FloatingBubble.kt",
+      "maxLines": 4452,
+      "owner": ":feature:bubble",
+      "reason": "既有悬浮 Window 宿主，集中拥有窗口、触摸、内容视图和动画资源的装配与释放；几何和邮箱状态等职责已抽离，保留真实窗口编排，按迁移终态锁定。"
+    },
+    {
+      "path": "runtime/engine/src/main/java/com/dsh/android/engine/EngineManager.kt",
+      "maxLines": 3450,
+      "owner": ":runtime:engine",
+      "reason": "既有引擎运行装配，协调资产安装、启动快照、进程及健康救援决定；引导和探测等独立 owner 已拆出，不依赖应用具体宿主，剩余编排按迁移终态锁定。"
+    },
+    {
+      "path": "web/host/src/gecko/java/com/dsh/android/web/GeckoWebHost.kt",
+      "maxLines": 1401,
+      "owner": ":web:host",
+      "reason": "既有 GeckoSession/WebExtension 宿主，统一管理扩展端口、原生消息、权限下载回调及桥脚本文本；包含最终生命周期门控修复，历史体积按迁移终态锁定。"
+    }
+  ]
+}

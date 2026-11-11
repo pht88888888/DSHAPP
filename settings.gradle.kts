@@ -1,4 +1,11 @@
 pluginManagement {
+    resolutionStrategy {
+        eachPlugin {
+            if (requested.id.id in setOf("com.android.application", "com.android.library") && requested.version != null) {
+                useModule("com.android.tools.build:gradle:${requested.version}")
+            }
+        }
+    }
     repositories {
         google()
         mavenCentral()
@@ -22,4 +29,8 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "DSH"
-include(":app")
+include(
+    ":app", ":core:contracts", ":core:logging",
+    ":runtime:termux", ":runtime:engine", ":platform:privilege",
+    ":web:contract", ":web:host", ":feature:browser", ":feature:bubble", ":bridge:transport",
+)

@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-const PROBE = path.resolve('app/src/main/assets/ui-probe.js');
+const PROBE = path.resolve('runtime/scripts/ui-probe.js');
 const CHROME = process.argv[2]
 	|| 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const PORT = 9333;

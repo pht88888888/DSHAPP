@@ -1,7 +1,15 @@
-# ⑫.6 / ⑫.7 日志与诊断
+# 日志与诊断
 
 > 本文是 [AGENTS.md](../../AGENTS.md) 的分册之一，
 索引见 [docs/agents/README.md](README.md)。
+
+## 当前模块边界
+
+[core/logging](../../core/logging/src/main/java/com/dsh/android/log/DshLog.kt)拥有日志门面、缓冲、轮转、脱敏、基础事件与崩溃记录，不主动引用 EngineManager、Activity、Service 或 app BuildConfig。运行身份与版本由 app 初始化时注入；物理模块迁移保留 `com.dsh.android.log` 的 Kotlin package，既有调用方式兼容。
+
+跨领域采集在 app 组装：[DiagnosticBundle](../../app/src/main/java/com/dsh/android/diagnostics/DiagnosticBundle.kt)、[EnvironmentSnapshot](../../app/src/main/java/com/dsh/android/diagnostics/EnvironmentSnapshot.kt)与[LogUploader](../../app/src/main/java/com/dsh/android/diagnostics/LogUploader.kt)汇集领域快照、打包和上传。它们仍可保留历史 Kotlin package；诊断不再成为日志底座反向依赖所有模块的理由。通知、WakeLock 与 Window 各由 Service/Activity owner 管理。
+
+以下保留日志策略、故障证据和历史排障记录；旧行号、调用数与当时方法名只描述对应历史版本，不作为当前源码导航或验收结果。当前结构和实际完成情况见[实施状态](../architecture/execution-status.md)，测试输入见[分层测试手册](../runbooks/testing.md)。
 
 ### ⑫.6 日志与诊断 —— 拿到日志就能定位问题
 
@@ -66,10 +74,7 @@ Kotlin 调用点传可空值（实测 `GeckoWebHost.kt:516` 的 `onError` 回调
 | 引擎退出 | `<时间>-engine-exit.txt` | `Process.waitFor` 返回，带退出码与是否预期 |
 | 主线程卡死 | `<时间>-main-thread-stall.txt` | 自建看门狗（5 s ping，15 s 无响应）；**含主线程栈快照** |
 
-⚠️ **`ApplicationExitInfo` 用不了** —— 它需要 API 30，而本 App 因硬约束②停在
-`targetSdk 28`。所以「上次怎么退出的」只能**自己记**：`BootState` 在启动时写
-`boot-state.json` 标记「正在运行」，正常退出时改成「干净退出」。下次启动读到
-「不干净」就说明上次没走正常路径。
+⚠️ **历史兼容说明**：`ApplicationExitInfo` 自 API 30 引入，minSdk 26 的设备不能统一依赖此 API；targetSdk 28 本身不等于设备上不存在 API 30。当前退出判断仍按本项目 `BootState` 的持久标记与真实现场工作：启动写 `boot-state.json` 为“正在运行”，正常退出改为“干净退出”。下次读到“不干净”只证明上次没走正常路径，不凭它推断具体死因。
 
 #### ⚠️ 诚实分级是硬要求：**「非正常结束」不等于「崩溃」**
 
@@ -190,10 +195,7 @@ manifest.json      最后写 —— 它记录前面实际写进去什么
 
 #### `logs` 工具 —— 让模型自己查（⑫.3 的同一套做法）
 
-与 `bubble` / `statusbar` / `ui` 工具同构：`mobile-ui-plugin/dsh-android-logs/` 打包成
-`assets/logs-tool.zip` → `$DSH_HOME/logs-tool/dsh-android-logs/`，
-`EngineManager.ensureLogsTool()` 解包、`writeLogsToolPatch()` 生成 overlay，
-命令走 `LogCommandBridge` 的文件信箱（`logs-cmd.json` / `logs-result.json`，200 ms 轮询）。
+当前日志工具源码位于 `plugins/android/components/dsh-android-logs`，作为 Android 聚合 bundle 的内部组件随统一产物交付，不新增独立用户顶层包。安装与配置由 `runtime/engine` 的出厂插件组件和 overlay writer 负责，app 装配日志命令桥；命令继续使用 `LogCommandBridge` 的领域文件信箱（`logs-cmd.json` / `logs-result.json`）。历史单组件 zip/目录只属于兼容迁移路径，规范入口见[插件更新](plugin-updates.md)。
 
 | action | 做什么 |
 |---|---|
@@ -223,7 +225,7 @@ manifest.json      最后写 —— 它记录前面实际写进去什么
 
 **① 两个 flavor 各有一份手工白名单，往 `PageBridge` 加方法必须三处同改。**
 
-`SystemPageBridge`（`app/src/system/.../SystemWebHost.kt`，`addJavascriptInterface`
+`SystemPageBridge`（[SystemWebHost](../../web/host/src/system/java/com/dsh/android/web/SystemWebHost.kt)，`addJavascriptInterface`
 要每个方法带 `@android.webkit.JavascriptInterface`）与 gecko 的
 `dispatchInvoke` 的 `when(call)` + `content.js` 的 `BRIDGE_INSTALLER_SOURCE`
 **都是白名单**。`SystemPageBridge` 的类注释写着「恰好是页面侧用的那 16 个，不多不少」——

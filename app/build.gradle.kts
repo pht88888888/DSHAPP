@@ -1,4 +1,5 @@
 import java.util.Properties
+import groovy.json.JsonSlurper
 
 plugins {
     id("com.android.application")
@@ -14,12 +15,7 @@ val keystoreProps = Properties().apply {
 }
 
 android {
-    // ⚠️ 必须是恰好 15 字符，且与 TermuxBootstrap.ELF_ROOT_REPLACEMENT 完全一致。
-    // 原因：Termux 官方二进制把 "/data/data/com.termux/files"（27 字节）烤进 ELF 的
-    // .dynstr，而 patchElfInPlace() 只能做等长原地覆盖，替换串形如
-    // "/data/data/<包名>/" = 12 + N 字节，等于 27 ⇒ N = 15。
-    // 改错不会编译报错，只会在真机上以「dpkg Permission denied」的形式炸掉。
-    // 改完请跑 termux-kit 的 tools/verify-kit.ps1 校验。
+    // App Kotlin/R namespace 保持兼容；15 字符限制只针对最终 applicationId。
     namespace = "com.dsh.android"
     compileSdk = 35
 
@@ -32,601 +28,9 @@ android {
         // 全部包（node / bash / dpkg / python）都装在 filesDir 下的 $PREFIX 里，
         // 一升到 29 就会全线 Permission denied。Termux 官方 App 同样停在 28。
         targetSdk = 28
-        // 62：桌宠状态点隐藏（改由头顶气泡表达）+ 兜底错误码显示真因
-        // + 输入框点击定位光标 + 思考正文行高重叠 + 导出补上附件目录。
-        // ⚠️ 63（本次）**正式发行版**：0.4.1-debug → 0.4.1。
-        //   去掉 `-debug` 后缀意味着这一版会被当成正式发布对待（进夸克「当前最新版」），
-        //   与 33 那批「调试包显式带 -debug、不进夸克」的约定相反 —— 这是有意为之：
-        //   用户要求发一个正式发行版。
-        //   versionCode 从 62 → 63 而不是回到 0.4.0 的 31：
-        //   versionCode 必须单调递增，否则已装 62 的设备**装不上**这个包
-        //   （INSTALL_FAILED_VERSION_DOWNGRADE），而卸载重装会清掉整个
-        //   Termux 环境与 $DSH_HOME。版本名是给人看的，versionCode 是给系统看的。
-        // ⚠️ 64（本次）**修「非图片文件上传失败」**（versionName 仍为 0.4.1，靠
-        //   versionCode 区分 —— 既有惯例，见上）。
-        //   症状：个别用户（服务器诊断包实证 nubia NX809J / Android 16 /
-        //   WebView 143）在 composer 左下角「+」→「文件」选任意非图片文件，
-        //   都只回一句「上传失败，点击重试」，重试也永远失败。
-        //   而**发图片正常** —— 两者是两条不同的路：图片走主线程 fetch +
-        //   base64 JSON（`ctx.remote.fileUploads.upload`），非图片走
-        //   `/api/session/uploadFileBinary` 二进制通道。
-        //   真因是那个内核上 XHR 通道不可用（选完文件 130ms 就 onerror，
-        //   不是超时、不是服务端拒绝），而旧代码**没有任何降级**。
-        //   两处改动见 `webview-polyfill.js` 的 `uploadWorkerOnMainThread`
-        //   与 `MainActivity.surfaceWebErrorReason`。
-        //   v64：加 fetch 兜底 + 把真因弹到界面上。**实测仍失败**，但拿到了
-        //        决定性证据：`status=0` + `Failed to fetch`，且 `body.size`
-        //        正确（1336030）⇒ 请求根本没发出去，服务端自始至终没收到。
-        //        curl 直打同一个路由返回 200 ⇒ 服务端完全正常，问题在浏览器端。
-        //   v65：改成**先把 Blob 读成字节再发**。size 对却发不出去，说明
-        //        Blob 元数据可读、内容取不出来（WebView 的惰性 Blob 在个别
-        //        ROM 上取不到 content:// 的内容）。预读成功就用真实字节发，
-        //        预读失败就明确报「文件内容读取失败（不是网络问题）」——
-        //        两种结果都能从客户截图直接判断，不再靠猜。
-        //        见 `webview-polyfill.js` 的 `preloadBytes`。
-        //   v66：预读确实成功了（v65 客户截图文案是「上传通道不可用」，
-        //        不是「文件内容读取失败」）⇒ 字节在手里**仍然发不出去**。
-        //        结论：该内核处理大 body POST 的能力缺陷，JS 层绕不过。
-        //        改成最后兜底走**原生 HttpURLConnection**（不经内核网络栈），
-        //        与「下载会话导出」同一套，后者在同设备长期可用。
-        //        见 `NativeUploader` 与 polyfill 的 `viaNative`。
-        // ⚠️ 67（本次）**修「配置里混进中文 ⇒ 整轮运行失败」**。
-        //   症状（真机截图 2026-10-25 22:45，模型 agnes-3.0-flash，4 轮 4 步）：
-        //   ```
-        //   本轮运行失败
-        //   Cannot convert argument to a ByteString because the character at
-        //   index 21 has a value of 27185 which is greater than 255.
-        //   ```
-        //   这是 undici 的 `Headers` 构造器抛的：header 值必须是 ByteString
-        //   （每字符 ≤ 0xFF），而某个值里混进了 27185 = U+6A31「樱」。
-        //   报错只说「第几个字符」、**不说哪个 header**，用户完全无法自查，
-        //   而且消息直接发不出去。
-        //   全链路只有两处把 header 交给 undici（引擎自己的 `new Headers`、
-        //   各家 SDK 内部的 `fetch`），两者最终落在同一个全局对象上。
-        //   改动：新增 `assets/dsh-fetch-guard.mjs`，由
-        //   `NODE_OPTIONS=--import` 预加载进引擎进程，在 `Headers` 构造 /
-        //   `set` / `append` 与 `fetch` 入口把非法字符**剔除后继续**
-        //   （不是拦截——中文出现在 header 里一律是误粘贴，删掉就能发出去），
-        //   并把「哪个 header、第几位、原值、净化后」写进 engine.log。
-        //   合法输入走原生快速路径，零开销、零改写。
-        //   见 `EngineManager.ensureFetchGuard` 与 `nodeOptions`。
-        //   v68：补上一个**漏网入口** —— `new Request(url, { headers })` 在
-        //        **构造时**就把 headers 交给 undici 校验，抛错发生在 `fetch`
-        //        之前，只包 `Headers` + `fetch` 根本拦不住它（实测确认：垫片
-        //        装好后 `new Request` 仍抛与用户截图一模一样的错）。
-        //        SDK 里 `new Request(...)` → `fetch(request)` 是常见写法。
-        //        现在三个入口（Headers / Request / fetch）全部覆盖。
-        //   v69：给垫片自身加**故障隔离**。它由 `--import` 预加载，而 Node 对
-        //        预加载模块求值失败是**致命的**（进程直接退出，引擎主逻辑一行
-        //        都不执行）⇒ 垫片自己出 bug 会让用户看到「App 打不开」，
-        //        比它要修的「发不出消息」严重得多。
-        //        现在 install() 整体包 try/catch，失败只写日志并放行；
-        //        catch 块里的日志写本身也再包一层（stderr 已关 / EPIPE 时
-        //        write 会抛，实测会让进程二次退出）。
-        //   v70：补上「发图报 session/agent-busy」的**真正根因**。
-        //        App 侧原有的 `patchAttachmentDurability` 只给 `open()` 兜了
-        //        EACCES/EPERM，但真正的故障点是 `handle.sync()` 抛 **EINVAL**：
-        //        `ensureDurableHome` 把持久化边界算成 `/`，逐级上溯对只读分区
-        //        做目录 fsync，Android 的 `/` 是 erofs 只读挂载 ⇒ 内核返回
-        //        EINVAL ⇒ 原版 `sync()` 只有 try/finally 没有 catch ⇒ 直接穿透
-        //        ⇒ 附件落盘失败 ⇒ 被兜底成 `session/agent-busy`。
-        //        迷惑点：**纯文字完全正常**，因为只有图片才走附件落盘。
-        //        现在 sync() 也加 EINVAL 兜底（其他错误照抛）。
-        //   v71（本次）：内置插件开关 + 前台唤醒 + WebView 垫片补缺。
-        //        ① **内置插件开关**（用户反馈：「bubble 和 ui 的描述极其巨大，
-        //           光一个 bubble 就占用几千 token，浪费免费 API 额度、挤占上下文」）。
-        //           实测属实：8 个内置插件共 71 条工具描述、8819 字符 ≈ 3000+ token，
-        //           每次请求都带上，bubble-tool 独占 3248 字符（29 个工具）。
-        //           新增 `isBuiltinPluginEnabled`，已接入 7 个插件，默认全开。
-        //        ② **悬浮窗收不到回复**（用户反馈：「悬浮窗没法对话，必须点开前台」）。
-        //           根因不是网络：切后台后系统冻结 JS 定时器，SSE 重连的 setTimeout
-        //           永不到期 ⇒ 后台期间电脑推来的事件全丢 ⇒ 切回来还要等满 15 秒退避。
-        //           新增 `notifyForeground()`，onStart 时 POST 插件的
-        //           `/api/dsh-remote/wake`，立刻唤醒退避中的流并补连。
-        //        ③ **WebView 垫片补缺**：`tools/audit-runtime-apis.mjs` 对 394 个
-        //           真实产物扫出缺口 `FinalizationRegistry`（Chrome 84，undici 6 处）。
-        //           补近似垫片后审计缺口归零（36 个受跟踪 API 全覆盖）。
-        //   v72（本次）：代码审查发现的健壮性缺陷（不改功能，只堵风险）。
-        //        ① 悬浮球 4 处 `!!` 改显式判空 —— findViewById 返回可空类型，
-        //           布局一改名就在调用处抛 NPE，而此时球还没 addView，
-        //           用户看到「开了开关但球不出现」，日志只有一行无意义的
-        //           KotlinNullPointerException。改成缺哪个就少装哪个手势。
-        //        ② 插件开关 API 改用 applicationContext —— 公开 API 可能从
-        //           Activity 调用，避免把 Activity 钉在单例里。
-        //        配套的插件侧修复（wake 端点限定 POST、补连上限、remotePaths
-        //        不覆盖、路径校验、空壳判据、listWorkspaces 上限与排序）
-        //        已随 dsh-jiuling-remote-mobile@1.2.22 / desktop@1.0.45 发布。
-        //   v73（本次）：修「电脑已经回了，手机还卡在深度思考」。
-        //        用户邮件反馈原文：「加载出来我问了一句在吗电脑那边回答出来了，
-        //        这边还是一直卡在深度思考出不来」。
-        //        发得出去、电脑也回了 ⇒ 网络是通的，卡的是「状态没收回」。
-        //        根因：运行态只能靠 `turn/end` 事件翻布尔值，而那条事件在隧道
-        //        抖动时可能丢；原来的兜底只在**建流那一刻**校正一次，流建好之后
-        //        再没有人纠正 ⇒ 前端永远转圈、「停止生成」永远亮着。
-        //        修法在插件侧（已随 mobile@1.2.23 发布）：加独立的静默看门狗，
-        //        运行态停在 true 且 90 秒无任何数据时主动问一次电脑真实状态。
-        //        ⚠️ 看门狗用 setInterval 而非在事件循环里判断 —— 真要防的场景
-        //        就是「流连着但一个字节都不来」，那时事件循环根本不会转。
-        //   v74（本次）：三条用户反馈一起修。
-        //     ① 模型列表不同步（629090160@qq.com）：电脑端自定义模型手机端看不到，
-        //        且一直挂「正在刷新模型列表…」。根因是 `callRemote` **从来没有超时**，
-        //        隧道半死时 fetch 无限等 ⇒ 前端加载态永不结束、电脑模型进不了菜单。
-        //        修：15 秒超时 + 失败 30 秒冷却（插件侧 mobile 1.2.25）。
-        //     ② vivo 主线程卡死（3421115993@qq.com）：诊断包里主线程 18917ms 无响应，
-        //        栈顶是 vivo ROM 的 isWideColorGamutSupport（performTraversals 内同步
-        //        Binder）。App 侧无 API 可阻止，只能减少无谓重绘 —— 悬浮球 moveTo
-        //        加了同坐标去重（撞边时原本会白跑一次 traversal）。
-        //        ⚠️ 只降概率，不根治；根治要等 vivo 修 ROM。
-        //     ③ 内置浏览器 UA 切换（3695158411@qq.com）：工具栏加「手机/桌面」按钮，
-        //        桌面版用真实 Windows Chrome UA，偏好持久化，切换后自动重载。
-        //   v75（本次）：三条反馈修完并真机验证后的发版。
-        //     ① 内置浏览器工具栏重构（用户原话「控件太多，你可以使用那种弹出的
-        //        形式，没必要全部挤在一起」）。真机实测：控件 10→6 个，
-        //        地址栏 95px(≈32dp, 只显示 "h...")→527px(≈176dp, 显示完整 URL)。
-        //        低频动作（刷新/首页/UA切换/标注/收起）收进「⋮」菜单。
-        //        UA 切换本身已在 v74 加好，v74 里被 360dp 窄屏压成灰线的问题
-        //        在本版一并解决。
-        //     ② 模型列表不同步（629090160@qq.com）：插件 mobile 1.2.25 修
-        //        callRemote 无超时 + 失败冷却。
-        //     ③ vivo 主线程卡死（3421115993@qq.com）：悬浮球同坐标去重，
-        //        只降概率不根治（ROM 的锅）。
-        //     ④ 插件 mobile 1.2.26 修「启动 3 秒后必崩」（paired 跨作用域
-        //        ReferenceError）—— 这是所有装了插件的机器都会中的。
-        //   75 → 76（2026-10-28）：华为/荣耀「系统给了悬浮窗权限，App 仍判定未开启」
-        //     （pht88888888@qq.com + 2872327540@qq.com 两条反馈同一根因）。
-        //     根因是 Settings.canDrawOverlays() 在 EMUI/MagicOS 上会谎报 false，
-        //     而它被当作 show() / onAppBackground() / reconcileVisibility()
-        //     三处的前置拦截 ⇒ addView 根本不执行，用户既看不到球、设置页又显示
-        //     未开启。改为以 addView 的实测结果为准（probeResult），系统接口
-        //     只在「还没试过」时有发言权。
-        //   76 → 77（2026-10-28）：AI 调浏览器工具时侧栏不再自动弹出霸屏
-        //     （用户原话「每次 AI 在调用浏览器工具的时候，侧边栏都会自动弹出
-        //     霸占屏幕，导致用户没有了自己的空间」）。根因是 BrowserBridge 的
-        //     provider 走 openAiBrowser()，它会 requestBrowserPane() +
-        //     notifyBrowserPane(true)；截图路径还会 onRequestEmbed 再顶一次。
-        //     改为 openAiBrowserQuietly()（不 reveal、不抢 z 序），截图改用
-        //     面板等效宽度自己摆，不再依赖面板挂载。
-        //   77 → 78（2026-10-28）：v77 首版真机发现「缩成右侧小窗」还是影响用户
-        //     —— 切回来看见右半屏是网页。改为 **INVISIBLE + 保持 MATCH_PARENT
-        //     尺寸**：用户屏幕上什么都看不到，WebView 仍有真实宽高所以 JS/截图
-        //     正常。另加 onToolDone ⇒ 1.2s 后自动 closeAiBrowser(closeTab=false)，
-        //     连调时取消上一次挂起，避免闪。
-        //   78 → 79（2026-10-28）：v78 真机发现两个问题，一并修
-        //     ① 静默模式下 AI 截图截到的是对话界面 —— PixelCopy 抓的是窗口
-        //        合成后的像素，而 INVISIBLE 的 WebView 不参与合成。改为
-        //        「不可见时走 fallbackDraw（wv.draw 直接画 View 内容）」。
-        //     ② 静默后用户失去所有反馈 —— WebView 内的胶囊跟着不可见。
-        //        新增宿主级胶囊（挂在根布局顶部居中），由 onToolActivity 驱动。
-        //   79 → 80（2026-10-28）：按用户实测反馈重做三处
-        //     ① 撤掉 draw() 截图（重踩「AI 截的图和肉眼不一致」老坑，按钮被压扁）
-        //        → 改为首次调用直接全屏可见（截图天然正确），之后才静默；
-        //        静默期截图临时可见一帧再 PixelCopy，截完立刻恢复。
-        //     ② UA 默认改成桌面版（用户要求「APP 默认就是使用电脑的 UA」）。
-        //     ③ 桌面 UA 时页面区缩成居中横屏「电脑窗口」（不铺满），四周加
-        //        深色桌垫 + 光晕 + 提示文字做背景装饰。
-        //   80 → 81（2026-10-28）：用户纠正「只要浏览器出现，就必须在内嵌标签页里」
-        //     ① 删掉「首次全屏」路径 —— 上一版按「第一次覆盖全屏、后续静默」做，
-        //        用户实测「还是全屏」。现在统一走 requestBrowserPane() 切内嵌面板，
-        //        绝不 bringToFront/铺满。
-        //     ② 删掉整套静默机制（INVISIBLE 后台跑、面板等效宽度截图、自动收起）。
-        //        浏览器始终可见且内嵌，PixelCopy 截图天然正确。
-        //     ③ 桌面模式布局不再因 embedded 跳过 —— 原来整个跳过导致面板里也是
-        //        竖屏全屏；改为外层铺满面板、内层页面区缩成居中横屏窗口，
-        //        尺寸按实际容器算，且在 onLayout 尺寸变化时重算。
-        //     ④ 状态胶囊只在面板未展开时显示（面板开时浏览器自带胶囊，避免重复）。
-        //   81 → 82（2026-10-28）：桌面模式布局重做
-        //     81 用 pageHost.rotation = 90f 硬转实现"横屏"，用户截图里网页文字
-        //     全是侧着的 —— 方向从根上错了。竖屏手机上取一块 1080×675 的区域
-        //     本身就是横的，不需要旋转。真正要做的是让页面按桌面视口渲染：
-        //     useWideViewPort + loadWithOverviewMode（页面按 ~980px 布局再整体
-        //     缩放），这才是"请求桌面版网站"的标准做法。同时把 reload 与几何
-        //     调整分离（reloadForNewUa），否则键盘弹出/拖动面板会重载页面。
-        //   82 → 83（2026-10-28）：键盘弹出时整块上抬，不压缩画面
-        //     adjustResize 下键盘一来 height 变小，直接按它算会把「小电脑」
-        //     越压越扁。改为记住见过的最大内容高度 maxContentHeight 当基准
-        //     （宽度变化时重置，避免面板拖窄后溢出），键盘弹出只平移 topMargin
-        //     把画面抬到可见区中央，尺寸完全不变。
-        //   83 → 84（2026-10-28）：桌面模式分辨率重做
-        //     83 用 useWideViewPort + loadWithOverviewMode，真机只露出页面左上角
-        //     一小条（用户与电脑截图对比，明显不对）。根因：WebView 的 CSS 视口
-        //     = 布局宽 ÷ density ≈ 338px，而现代站点自带 width=device-width，
-        //     把 useWideViewPort 的宽度也压回 338px。
-        //     改为「大画布 + 缩放」：布局宽设为 1280 CSS px × density，
-        //     使 CSS 视口真正等于 1280；再用 scaleX/scaleY 等比缩回可见大小
-        //     （布局尺寸不能缩，一缩视口又回去了）。同时关掉 clipChildren，
-        //     否则超大画布会被父容器裁掉两侧。
-        //   84 → 85（2026-10-28）：修桌面模式的两个观感问题
-        //     ① 底部一大片留白 —— 画布高度原来硬凑 16:10（CSS 800px），页面铺不满
-        //        就露出 WebView 浅色主题的纯白底。改为从「屏幕目标高度 ÷ scale」
-        //        反推逻辑高度，缩放后正好填满；并把画布底色从纯白改成桌垫深色。
-        //     ② 输入时视窗白色一闪一闪 —— applyDesktopLayout 由 onLayout 在尺寸
-        //        变化时反复调用，每次都写 pageHost.layoutParams、每次都
-        //        setLayerType，导致合成层反复丢弃重建，重建那一帧是空白。
-        //        改为：层类型只在构造期设一次；layoutParams 加 deskGeomW/H
-        //        快照去重，几何没变就不写。
-        //   85 → 86（2026-10-28）：撤回「大画布 + scaleX」方案（它从根上不对）
-        //     v85 满屏白屏的根因：layoutH = targetH / scale 在 scale≈0.26 时
-        //     算出 8000+ px，WebView 撑不住。而且该方案让 pageHost 宽达 3840px，
-        //     截图（PixelCopy rect 超窗口 / draw() 要 36MB 位图）、触摸坐标、
-        //     渲染成本全都有问题，靠补丁救不回来。
-        //     现在：页面区就是屏幕大小（16:10 居中，但绝不放大），改用
-        //     onPageFinished 注入 <meta viewport width=1280> 覆盖站点自带的
-        //     width=device-width（这才是 v83 里 useWideViewPort 失效的真正原因），
-        //     由内核整体缩放。不产生超大位图，截图/触摸/渲染全部正常。
-        //   86 → 87（2026-10-29）：修「AI 每次调浏览器工具都强制打开侧边栏」。
-        //     电脑 UA 已验证正常（用户确认），但那个旧 bug 回归了。
-        //     根因有两处，都是 v86 为满足「浏览器只出现在内嵌标签页」时加过头的：
-        //     ① openAiBrowserQuietly() 里调了 requestBrowserPane() + notifyBrowserPane(true)
-        //        ⇒ 派发 dsh:browser-reveal ⇒ 前端 sidebarRight.openTab(...) 把侧栏弹出来
-        //        ⇒ AI 每调一次 browser 工具就抢一次屏幕；
-        //     ② onCreatePopup 的静默分支里仍有 b.visibility = VISIBLE
-        //        ⇒ 视图是 MATCH_PARENT 铺满根布局的，可见却没被 applyEmbedRect
-        //        摆进面板时 = 一张全屏网页盖在对话上（window.open 的站点如豆包
-        //        一打开就开登录框，于是又"弹"一次）。
-        //     现在：AI 用它时视图保持 GONE（WebView 在 GONE 下照常加载/执行 JS），
-        //     不 reveal、不 notify；只有用户点侧栏 tab / 点链接（openAiBrowser）
-        //     才展开并内嵌。截图走 AiBrowserView.silentForTool：
-        //     AI 调用时立刻按当前视口截（不等面板、不请求展开），
-        //     用户点截图按钮时保持原行为（先展开再截，所见即所得）。
-        //
-        // ⚠️ 92（本次）—— **发行版 0.4.2** 的定版。
-        //
-        //    改动只有一处，但它是三个用户反复报障的根因：冷启动 12 秒看门狗
-        //    到点后直接走 `isError = true`，而错误态会同时染红 + 给点击出口
-        //    + **把「进入安全模式」按钮摆出来**。
-        //
-        //    真机取证（8 个用户 / 6 家厂商 / 内核 114~154）早已证明：每一条
-        //    「界面就绪回调超时」之后 0.4~9.3 秒内 `onUiReady` 都会到 ——
-        //    也就是说绝大多数情况**什么都没坏**，只是解析 5.5MB 前端比 12 秒慢。
-        //
-        //    而那个安全模式按钮的代价是「推开插件配置 + 重解包 15 秒」，于是
-        //    一次正常的慢启动被诱导成真事故。用户原话：「冷启动时间太短。
-        //    每次都拉横幅，每次都要修」（20261029-072906）—— 「每次都要修」
-        //    正是这么做出来的。
-        //
-        //    现在分两级：12 秒只给中性提示（不染红、无出口、不露安全模式按钮）
-        //    并再等 15 秒；合计 27 秒仍未就绪才判定真失败（沿用原行为）。
-        //    保留第二级是必须的：只去掉红字而不给出路，前端真挂死时用户会
-        //    永远看着一句「还在解析」而没有任何出口，那比误报更糟。
-        //
-        // ⚠️ 93（本次）—— 0.4.3。修的是 92 那个兜底**告警之后仍然无解**的一幕。
-        //
-        //    真机现场（20261031-053321，vivo V2231A / gecko 92）：
-        //
-        //        05:29:46  engine.ready ms=8537 port=3080   ← 引擎完全正常
-        //        05:29:58  界面就绪回调超时（内核140，页面错误: 无）
-        //        05:30:13  界面就绪回调超时                ← 27 秒仍未就绪
-        //
-        //    用户原话：「加载时间过长，每次删后台重进要等非常之久，每次都会
-        //    出现这个界面」。也就是说 92 让**告警变准确了**（27 秒才红），
-        //    但界面依旧卡住 —— 因为 `onUiReady` 根本没上报，而没人能救。
-        //
-        //    三处根因都在 APK 内置的 mobile-ui 插件里（client.js），
-        //    已随 `MOBILE_UI_VERSION` 1.0.0-109 → 110 一并解包：
-        //      ① 守候排在 apply() 末尾，前面 30+ 初始化无 try/catch；
-        //      ② 桥晚到时直接 return，此后永不再看；
-        //      ③ ready() 要求 readyState==="complete"，卡在 interactive 就永不满足。
-        //
-        //    95：反馈第 5 批 —— 真因是 `webview-compat.zip` 里的
-        //    `mobileui/lib/client.js` **降级快照没跟着 `mobile-ui.zip` 重打**：
-        //    新插件解包后又被 10-29 的旧快照整份覆盖（日志里
-        //    `已安装移动端 UI 插件 1.0.0-110` 照打、页面装配的却仍是
-        //    `build=2026-10-29-a`），而旧版里那个裸 `diag` 引用会抛
-        //    ReferenceError 炸掉整条 client bundle ⇒ API/导出/agent 一起失效。
-        //    资产已重跑（chrome74-v40）；另修：贴边态旋转后不重贴边
-        //    （横屏屏宽变大后 x 不越界，贴边条停在屏幕中间）。
-        //
-        //    96：残留的引擎锁让引擎「每次都在打印 URL 之前退出」——
-        //    用户截图里的 `connection (required)` 激活失败，真因是
-        //    `atomic-write: timed out waiting for the writer lock at
-        //    …/.credentials.yaml.lock`：那把锁由 `dsh-atomic-write` 的
-        //    `withFileLock()` 创建，只有「锁里记录的 PID 已不存在」才自愈，
-        //    **PID 被复用就永远等下去**，连安全模式重试也撞同一把锁。
-        //    现在启动引擎前清掉 `$DSH_HOME/.dsh` 顶层的 `*.lock`
-        //    （此刻引擎确认没在跑，这个目录只属于本 App，残骸必然是死的）。
-        //    另：导出时单个文件打不开不再让整包备份作废（跳过并写清单）。
-        //
-        //    97：三处「界面被误判成坏掉」，都来自反馈：
-        //    ① 首帧兜底 1.5 s → 4 s（`20261102-111013-2fd557` 实测重载后
-        //       1.503 s 仍无首帧，而引擎健康、内存充足）；
-        //    ② 重载 2 次 → 3 次、判失败窗口 8 s → 16 s 且每次 +6 s
-        //       （同一反馈：两次 8 秒窗口没等到就降级进救援模式）；
-        //    ③ 救援横幅/详情按**真实原因**说话 —— `dbee25` 的截图里原因是
-        //       「界面重载 2 次仍无首帧（前端起不来）」，横幅却写「引擎没能
-        //       正常启动」，把人引去查引擎；详情还印「（没有记录到启动失败
-        //       详情）」，与上面那行原因自相矛盾。
-        //    另：返回键加「再按一次才退」（`badea0`：vivo 上手势返回与界面
-        //    返回键「不小概率直接退出 App」—— 页面没消费时 moveTaskToBack，
-        //    在激进清理的后台上与"被杀"没区别）。
-        //
-        //    98：两处「坏了但不吭声」，都来自反馈：
-        //    ① typert gateway 的服务在**运行中**挂掉时，App 完全不知道 ——
-        //       判据原来只在 start() 成功分支里跑一次、只看启动那段输出。
-        //       反馈 `f50bba`/`f9cf27` 的新建会话报
-        //       `Active Service "sessionController" is unavailable`，
-        //       用户只能对着红色提示一直点。现在读 stdout 时实时认这句话
-        //       （判据 `RescueBoot.looksLikeGatewayDown`，必须带 typert 专属措辞，
-        //       避免把别的服务挂了误判成 gateway），命中即降级到救援模式。
-        //    ② 发图白名单补丁的锚点只有「行尾精确匹配」一种，引擎一升级就
-        //       静默跳过（反馈 `76ef28`「照片发不出去，改格式也不行」）。
-        //       现在精确匹配失败后退一步找「同一行有 return + image/png +
-        //       image/gif」，都不中才记 `image.patch-skipped` 事件。
-        //
-        //    99：GeckoView 版的「原生桥永远连不上」（反馈 `20261103-214225-d7b5ed`）。
-        //
-        //    用户日志从启动到最后一直是「GeckoView 桥等待 content script 连接…」，
-        //    注入=false，整块原生能力（气泡/root/无线调试）静默失效。
-        //
-        //    根因是**时序**：`content_scripts` 只在**新文档创建**时注入，而
-        //    `installBridgeExtension()` 的 `ensureBuiltIn` 是异步的。引擎一 ready
-        //    宿主就 `loadUri`，那一刻扩展还没注册完 —— 文档已经创建过了，
-        //    content script 永远不会补注入。
-        //
-        //    现在加一道闸门（`GeckoWebHost.bridgeGateOpen`）：扩展就绪前到的 URL
-        //    先扣住，就绪后（**成功或失败都算**，失败时页面必须能开，只是没桥）
-        //    再加载。安装流程本身也包了 try/catch，异常路径同样放行闸门 ——
-        //    否则「没桥」会被放大成「白屏」。
-        //
-        //    100：首次安装时引擎等 Termux 引导跑完再启动（反馈 `20261106-215120-1a090a`）。
-        //
-        //    真机（HUAWEI PSN-AL00 / Android 16 / 首次安装）日志：
-        //        21:48:07  [TERMUX] install start arch=aarch64
-        //        21:48:17  启动引擎: …/termux/usr/bin/node …
-        //        21:48:17  CANNOT LINK EXECUTABLE "…/node": library "libz.so.1" not found
-        //
-        //    `bootstrapTermux()` 是 `applicationScope.launch` 异步跑的，而引擎
-        //    启动不等它。node 的 NEEDED 要 `libz.so.1`，APK 里只有
-        //    `lib/libz.so.1.3.2`，那条软链由解压流程最后统一建 —— 解压没跑完时
-        //    `targetPath.exists()` 为 false，软链被跳过，而 `installNodeRuntime()`
-        //    仍然返回 true（它校验 node 用的是自带 LD_LIBRARY_PATH），于是引擎
-        //    带着一个链接不上的 node 起了。
-        //
-        //    现在 `start()` 里先 `if (!bootstrap.isReady) bootstrap.install()`；
-        //    该调用幂等且持 prefix 文件锁，不会重复解压。
-        //
-        //    101：加「导出全部数据 / 导入数据」（反馈 `20261106-224409-706325`）。
-        //
-        //    用户换包名、卸载重装、换机都撞同一件事：会话与配置全在 App 私有目录，
-        //    外面进不去。他试过用 tar 手动搬 —— 搬过去是空的（缺的不只是文件，
-        //    是文件之间的对应关系）。
-        //
-        //    日志页多了两个按钮：
-        //    · 导出：把 `$DSH_HOME` 里的会话与配置压成 zip 放进公共目录
-        //      （跳过 node_modules / .cache / logs，那些能重装）；
-        //    · 导入：选一个 zip → 解到 `home-import/` 并写 PENDING →
-        //      **下次启动、引擎起来之前**才替换（引擎正在跑时替换会撞句柄），
-        //      替换前把现有 `home/` 整份改名成 `home.bak-时间戳`，不删。
-        //
-        //    102：诊断包上传换到 feedback.jiuling.cloud（老的 39.98.163.161:56789 已连不上）。
-        //
-        //    103：v102 之后的例行整包（本轮无功能改动，内容与 v102 一致）。
-        //
-        //    104：内置引擎 0.2.1-rc.2 → 0.2.2-rc.1（官方 latest）。
-        //         同步：engine.bin、webview-compat.zip（前端产物换新，compat v40 → v41）、
-        //         preset-razor.zip（引擎把 `list_agents` 合并进主入口，删掉独立的
-        //         `/list-agents` 子路径条目 —— 不删则预设加载即失败）。
-        versionCode = 114
-        // 后缀语义：`credperm` = 凭据文件权限修复（0.2.9 首发）；
-        // `tooliso` = 工具插件注册失败的隔离（可选工具注册失败不再拖垮引擎启动）；
-        // `rescue` = 坏插件不再让 App 打不开（四级降级阶梯 + AI 自助修复通道）。
-        // ⚠️ versionCode 20 与 19 都是 versionName `0.2.9-rescue`（同一个包名的两版），
-        //    靠 versionCode 区分。19 的缺陷是「开全面屏后顶栏整行下移」——
-        //    原生把状态栏高度按物理像素直推给页面（108 而非 36），让位量放大 3 倍。
-        //
-        // ⚠️ 21（本次）修的是一条**此前完全没有判据**的故障：引擎**起来了**
-        //    （打印了 URL、界面正常加载），但 typert gateway 因其某个 contributor
-        //    注册失败而整体下线 —— `session/control` / `session/modelCatalog` /
-        //    `directoryPicker/list` 全部报 `its strict definition was withdrawn
-        //    and SRC fallback is forbidden`。用户看到的是「选不了工作区、发不出
-        //    消息、插件面板打不开」，而界面上**没有任何按钮**：救援阶梯的四道门
-        //    全都要求「启动失败」，这一次启动是成功的。
-        //    现在由 `RescueBoot.parseGatewayFailure` 认引擎自己那句话，命中即
-        //    自动降级到救援模式并重启（零操作）。versionName 不变，靠 versionCode
-        //    区分（20 已作为 `0.2.9-immersive` 发出，**不能**倒退或重发同号）。
-        //
-        // ⚠️ 22（本次）是 21 之后的一整夜修复。21 已于 10-14 23:45 作为
-        //    `DSH0.2.9-bubble.apk` 发出（提交 `555bc39`，23:36 设的 vc21），
-        //    而其后 6 次提交（`e671f58` 跨进程补传互斥、`fa8b6a5` ELF 用运行时
-        //    真实包名、`097211f` 救援日志落盘 + rescue/ 进诊断包、`05ec03e`
-        //    L1 隔离过期快照、`3cea637` boot-tier 文案）**全部落在 vc21 上**。
-        //    不 bump 就会有两个内容不同的 APK 都自称 `0.2.9-rescue (21)` ——
-        //    正是本项目缺陷族「结论与它描述的对象不是同一个」在发布版上的翻版：
-        //    诊断包里的 `0.2.9-rescue (21)` 再也无法指向唯一一份代码。
-        //    versionName 仍不变，靠 versionCode 区分（既有惯例，见上）。
-        //
-        // ⚠️ 23（本次）补的是**第五种故障形态**，也是此前唯一「用户完全没救」
-        //    的一种：引擎**完全健康**（`dsh-gateway-ui: 已激活`、供应商注册成功），
-        //    但某个插件的 **client 半**有语法错误 —— 而前端把所有插件的 client 半
-        //    **合并成一批**下发（`/plugins/??a/client.js,b/client.js,…`），
-        //    一个段坏就让**整批**解析失败 ⇒ 界面变成 `Failed to load plugins`
-        //    整页错误。真机现场（OPPO PHY110）：用户写插件写到一半退出 App。
-        //
-        //    此前四道门（L1 隔离 / L2 救援 / L3 安全模式 / 21 的 gateway 判据）
-        //    **一道都进不去**：它们的判据全部读引擎 stdout，而引擎这次没说错话；
-        //    唯一能自救的信箱 `rescue-cmd.json` 又只有 AI 能写，而 AI 要进对话
-        //    才能写 —— 死锁。当时只能靠电脑上的 adb 改 `profiles/web/package.json`
-        //    再重启，普通用户只能卸载重装（清掉全部会话与凭据）。
-        //
-        //    现在把那个动作做成了 App 内的按钮：日志界面（**唯一在界面打不开时
-        //    仍然可达的原生界面**，入口是启动层上任何状态都显示的「查看日志」）
-        //    新增「插件」动作 —— 列出第三方 bundle，可摘掉/装回，然后重启。
-        //    官方 bundle（「@deepseek-ai/」开头）不列出、也拒绝摘除。
-        //    versionName 仍不变，靠 versionCode 区分（既有惯例，见上）。
-        //
-        // ⚠️ 24（本次）**换 versionName：0.2.9-rescue → 0.3.0**。这是自 0.2.6
-        //    引入 flavor 之后第一次改前两位版本号，所以特别记一下判据：
-        //    之前十几版都靠 versionCode 区分同名的 `0.2.9-xxx`，是因为那些版本
-        //    彼此只差缺陷修复、对外还是「同一版」。而 0.3.0 有**新产品能力**：
-        //      ① 特殊权限新增 **Shizuku 通道** —— 不需要 adbd 在 5555、不需要
-        //         adbkey 被设备信任、重启后依然有效。对「Android 10 且只有有线
-        //         adb、不支持无线调试」那批用户，此前是**结构性死锁**
-        //         （`persist.adb.tcp.port` 写不进去 ⇒ 每次重启都要插电脑重跑
-        //         `adb tcpip 5555`），现在有解了；
-        //      ② 特殊权限界面重做成 ADB / Shizuku / root 三个标签页
-        //         （原来三条路径 + root 卡全部平铺，一屏滑不到底、也不知道该点哪张）。
-        //    对外可见的能力变化 ⇒ 该换 minor 号，不该再往 `0.2.9-*` 上叠。
-        //    ⚠️ versionCode 必须**继续递增**（23 → 24），不能因为是新名字就重置：
-        //    同一 applicationId 的包靠 versionCode 比大小判升级，重置成 1 会让
-        //    老用户的 `0.2.9-rescue (23)` 变成「比新版还新」，装不上更新。
-        // ⚠️ 25（本次）**versionName 不变（0.3.0），靠 versionCode 区分**。
-        //    内容是缺陷修复，没有对外可见的新能力，所以按惯例不换名：
-        //      ① **白屏真根因（431）**：引擎每次启动都用「?token= → 303 + Set-Cookie」
-        //         换一个**新名字**的鉴权 cookie（`dsh-auth-<随机后缀>`，30 天有效），
-        //         永不覆盖也永不回收。累积到一定数量后请求头超过服务器上限，引擎
-        //         对首页回 **431 且响应体为空** ⇒ 永久白屏，且没有任何 JS 报错可查
-        //         （`#root` 与 `document.scripts` 全空、console 一条不输出）。
-        //         两个 flavor 都中招（gecko 存在 cookies.sqlite，system 存在 WebView
-        //         的 cookie jar），所以两边都在建宿主时清一次。
-        //      ② **GeckoView 不跟随那个 303**：`onLoadRequest` 只调一次、0.35s 后
-        //         `onPageStop success=true`，页面停在 303 的空响应上（同一 URL 在
-        //         系统浏览器里正常渲染）。修法是在页面世界 `fetch` 完成 token→cookie
-        //         交换后 `location.replace('./')`。
-        //      ③ **救援判据漏报**：坏 client bundle 让**整批** `/plugins/??` 失败时，
-        //         console 只有 `[web] error: {}`（Error 序列化成空对象）与
-        //         `首帧正文="HARNESS Loading plugins…"`，原两个判据都不匹配 ⇒
-        //         永不降级 ⇒ 用户点「进入安全模式」也没用。补第三类判据。
-        //      ④ 「进入安全模式」现在会真的把第三方包**挪出** node_modules
-        //         （此前只改 manifest，手装的包仍留在原地，坏 client bundle 照旧被
-        //         合并进前端）。
-        // ⚠️ 26（本次）**versionName 仍然不变（0.3.0），靠 versionCode 区分**。
-        //      ① **「快准狠模式」改成可开关的插件**：从 `--patch` overlay 挪到 profile
-        //         bundle（与 dsh-core-memory 同一套），出现在「插件 → 已安装插件」里，
-        //         默认开启、用户可自行关掉，关掉后**重启不复活**。
-        //      ② **修 `{{cwd}}` 崩溃**：0.2.1 不再注册这个模板变量，而创造模式注入的
-        //         persona 正文里还留着「你的工作目录是 {{cwd}}。」⇒ 该预设一选中就
-        //         整轮失败（`unknown prompt variable "{{cwd}}" ... registered
-        //         variables: provider, model`）。上一轮只删了锚点没删正文。
-        //      ③ 内置预设源码换成 npm 上已发布的 dsh-preset-razor@1.0.3。
-        // ⚠️ 27（本次）**换 versionName：0.3.0 → 0.3.1**。
-        //      ① **修余额功能整条链路**：`getBalance` 的参数结构原来自己编的
-        //         （`clientVersion/locale/utcOffsetSec`），网关直接拒
-        //         `wire field "client" failed boundary validation`，余额永远拉不到。
-        //         改成官方的 `{version, locale, timezoneOffsetSeconds}`。
-        //      ② **球不在时缓存余额快照**：原来球隐藏期间拿到的余额被直接丢弃，
-        //         而余额恰好是在 App 前台（球隐藏）时刷新的 ⇒ 回桌面永远没徽标。
-        //      ③ **点球刷新的限流跟随配置**：页面里写死 20 秒，设置里是 10 秒，
-        //         导致连点毫无反应。
-        //      ④ **球的默认底色改成全透明**：原来是纯白，头像外面那圈永远是
-        //         一块白底，与设置页显示的「透明」不一致。
-        //      ⑤ 余额徽标底色默认也改成透明（原来是主题白底黑字）。
-        //      ⑥ 设置页「显示内容」改成可视化编辑器：成品预览 + 可删胶囊 +
-        //         已用词置灰 + 恢复默认，不再把 `{balance}` 这种占位符摊给用户。
-        //      ⑦ 晃动手感重做成**惯性撞边**：手机快速移动时，球被对应那侧的
-        //         边框撞飞（原来只是"晃过阈值给一次速度"）。
-        //      ⑧ 删掉顶栏与小分节里重复的「拖拽抛掷 / 晃动甩飞 / 键盘顶飞」开关 ——
-        //         上面那份只存盘不推活球，表现是"开关状态不马上刷新"。
-        //      ⑨ 面板底色「自动」= 透明（同时抑制描边、给文字加阴影）。
-        // 0.3.2（versionCode 28）：移动端 UI 对比度全线达标。
-        //      用 WCAG 对比度公式把整个界面扫了一遍（不再靠肉眼判断 —— 之前
-        //      被截图误导过 6 次），揪出 4 处不达标的（AA 正文要求 4.5:1）：
-        //        · 底栏推理等级「默认」亮 2.18 / 暗 2.42
-        //        · 输入框占位符        亮 2.13 / 暗 3.76
-        //        · 抽屉分组标题+展开按钮 3.55
-        //        · 设置页 8 个说明副标题 3.71
-        //      核心教训：同一颜色不可能亮暗两边都达标（亮底要深色、暗底要浅色），
-        //      必须写两套；且占位符这类"故意淡"的文字不能拉满对比，会失去语义。
-        // 0.3.3（versionCode 29）：悬浮球键盘避让（无障碍）。
-        //      ① 合并 PR #3：新增 `BubbleA11yService`（无障碍哨兵），用
-        //         `getWindows()` 读 `TYPE_INPUT_METHOD` 窗口的真实 bounds ——
-        //         这是普通应用唯一能拿到「全局键盘可见性 + 键盘顶在哪」的路。
-        //         `WindowInsets.Type.ime()` 只属于自己获得焦点的那扇窗，悬浮窗拿不到。
-        //      ② 键盘弹起时按 v=sqrt(2*g*rise) 给球向上初速弹射，落回键盘上方；
-        //         键盘收起时贴键盘顶的球交给重力落下。
-        //      ③ **两套检测严格互斥**（`KeyboardAvoid.Source`）：A11Y（事件驱动
-        //         + ≤120ms）优先，SHELL（`dumpsys input_method` 轮询，2s 起）兜底，
-        //         都没有则 NONE —— 此时设置页开关置灰、原生拒绝打开。
-        //         不做并行：同一个事实两个来源会互相打架（无障碍说收起了、ADB 那条
-        //         晚 2 秒还认为弹着，球的落点在两个结论之间来回跳）。
-        //      ④ `BubbleAppearance` 的能力闸门改用 `KeyboardAvoid.isAvailable()`：
-        //         原来只判 `ShellPrivilege`，会把「开了无障碍（更快那条）但没
-        //         Shizuku」的用户误判成不可用、强制置灰。
-        //      ⑤ 修 0.3.3 自身的回归：`keyboardAvoid*` 三个方法只加进了 `PageBridge`
-        //         接口与 `MainActivity`，**两个 flavor 的 JS 桥白名单都漏了** ⇒
-        //         页面侧 `window.DSHAndroid.keyboardAvoidState` 是 undefined ⇒
-        //         走进 noBridge 分支把开关置灰，而原生日志一切正常（静默失败）。
-        //         两份白名单都是手工维护的，加 `PageBridge` 方法必须同步加进去。
-        //      ⚠️ 版本戳同步 bump：`MOBILE_UI_VERSION` 1.0.0-99 → -100，
-        //         `build-webview-compat.ps1 -CompatVersion` 33 → 34。
-        //         两个都是**字符串相等**判据，不 bump 会命中「戳一致 ⇒ 整棵树跳过」，
-        //         设备上静默跑回旧 UI（本项目已踩过 20 次以上）。
-        //
-        // ⚠️ 30（本次）**换 versionName：0.3.3 → 0.3.4**。
-        //   0.3.4 的主题是**用户数据可自救**：引擎挂掉时也能把会话/配置/工作区
-        //   导出来，然后卸载重装再导回去 —— 在此之前唯一的出路是卸载，而卸载
-        //   会清空整个私有目录，用户因此宁可忍着也不用重装。
-        //     ① 启动层加「导出数据」「导入数据」两个按钮，**任何状态都显示**
-        //        （与「查看日志」同一套兜底理由，但更要紧：设置页在 Web GUI 里，
-        //        而 Web GUI 恰恰可能就是打不开的那一环）。
-        //        纯 Kotlin 实现，不依赖引擎 —— 引擎完全起不来时也能用。
-        //     ② 导出范围只含**用户独有、重建不出来**的部分（sessions / profiles /
-        //        storages / skills / deskpet / workspace / .credentials.yaml），
-        //        不含 engine/ 与 usr/（300+ MB，能从 APK 重新解包），
-        //        于是包体积从 300+ MB 降到几 MB。
-        //     ③ 导入先 `inspect()` 解析包内实际内容再让用户勾选，不假定七项都在；
-        //        落地前把现有数据改名备份（`backup-before-import-<时间戳>/`），
-        //        与安全模式同一套「改名不删」语义。
-        //     ④ **跨 flavor 互通**：两个包名不同（com.dsh.android / com.dsh.webview），
-        //        备份包内部用相对路径所以天然通用，但用户层配置里的
-        //        `file:///data/user/0/<包名>/...` 绝对路径要在导入时改写，
-        //        否则插件指向另一个 App 的私有目录、必然加载失败。
-        //     ⑤ 修初版一个真机 bug：导入的文件选择用了 `AlertDialog.setItems()`，
-        //        深色主题下白底白字、整行看不见，用户以为点不动。改成自绘卡片。
-        //
-        // ⚠️ 31（本次）**换 versionName：0.3.4 → 0.4.0**。
-        //   0.4.0 的主题是**AI 拥有一台属于自己的手机浏览器**。
-        //     ① 新增 `AiBrowserView`：一个**独立于官方界面**的原生 WebView。
-        //        引擎自带的侧栏浏览器是 iframe，而 GitHub（`X-Frame-Options: deny`）、
-        //        Google（CSP）拒绝被嵌入 ⇒ 那个方案连登录页都加载不出来，
-        //        而「让 AI 登录网站」恰恰是需求核心。原生 WebView 没有这个限制，
-        //        渲染在本地、零延迟、Cookie 天然持久，且**不消耗任何服务器资源**
-        //        （每个用户跑在自己手机上）。
-        //     ② 带完整浏览器壳：前进/后退/刷新/首页/地址栏/加载进度/多标签（上限 6）/
-        //        文件下载（落 App 专属外部 Download 目录，不需要存储权限）/
-        //        文件上传（走宿主已有的系统选择器）/ 视口截图落盘。
-        //     ③ **控制权一次只有一方**：AI 操作时吃掉所有触摸（否则用户随手一点
-        //        就会让 AI 正在填的表单失焦），顶部状态 chip 显示「AI 操作中」，
-        //        用户点一下即可接管 —— 共享同一个浏览器，冲突靠锁而不是靠谦让。
-        //     ④ 新增 `browser` 工具（`mobile-ui-plugin/dsh-android-browser` →
-        //        `assets/browser-tool.zip` → `$DSH_HOME/browser-tool/`），经
-        //        `BrowserBridge` 的文件信箱把「开网页/读页面/点按钮/填表单/截图」
-        //        接到模型的工具列表里。读页面回的是**可交互元素清单**（带稳定
-        //        编号），因为让模型猜 CSS 选择器在真实站点上十次有八次落空。
-        //     ⑤ 模型第一次调用 `browser` 时浏览器**按需创建并自动显示**，
-        //        不需要用户先手动打开。
-        //     ⑥ 用户入口：右边缘常驻「浏览」把手（启动层收起后出现），
-        //        打开浏览器时自动隐藏；返回键优先归浏览器（后退 → 关标签 → 收起）。
-        //     ⑦ 修一个初版的静默 bug：工具栏按钮用 `ImageButton` 装 `TextView`
-        //        子视图，而 `ImageButton` 继承 `ImageView`、**不是 `ViewGroup`** ——
-        //        Kotlin 的隐式接收者解析把它变成了外层 `FrameLayout.addView`，
-        //        文字被加到根布局左上角（被页面盖住），按钮本身是空的 ⇒ 工具栏
-        //        什么都不显示。改为纯 `TextView` 按钮。
-        //     ⑧ 同批修掉 `type` 动作 JS 里把 `var` 写成 `val` 的致命笔误
-        //        （会让所有输入操作抛 `SyntaxError`），已用 node --check 逐段验证
-        //        拼接后的五段 JS。
-        // ⚠️ 32（本次）**换 versionName：0.4.0 → 0.4.1**。
-        //   0.4.0 的 AI 浏览器入口是**右边缘贴边把手**，不是用户要的位置 ——
-        //   他明确要求「从应用右侧边栏进入」。0.4.1 把它做到官方右侧边栏里。
-        //     ① 新增**客户端插件** `dsh-android-browser-pane`（独立包，8 KB）：
-        //        经 `sidebarRightTabs.register` 注册一种 tab + 经
-        //        `slots.register("sidebar.right.pane.tab")` 提供正文。
-        //        两个接缝缺一不可：少了前者侧栏列表里没有这一项，少了后者
-        //        tab 能开出来但一片空白。
-        //     ② 点开即调原生 `openAiBrowser()`（`PageBridge` 新增方法），
-        //        **两份 flavor 白名单都已同步**（SystemWebHost 的
-        //        `@JavascriptInterface` 与 GeckoWebHost 的 `dispatchInvoke`）——
-        //        0.3.3 的 keyboardAvoid 就是漏了这份白名单，症状是「点了没反应」。
-        //     ③ **为什么不并进 `dsh-android-mobile`**：那个包的 `lib/client.js`
-        //        在 dev / main 两条分支上差 17 万字节，而 `assets/mobile-ui.zip`
-        //        是**跨工作树共享的符号链接资产** —— 重打它会把另一条分支的
-        //        移动端修复整个回退掉。独立成包互不干扰。
-        //     ④ 右边缘把手**暂时保留**：侧栏入口尚无真机验证，留一条退路；
-        //        确认侧栏可用后可以删（见 `ensureBrowserHandle` 的注释）。
-        // ⚠️ 33 —— **调试版，不是发行版**。versionName 显式带 `-debug`，
-        //   避免再被当成正式发布：0.4.0/0.4.1 那两个包曾被误传到夸克「当前最新版」，
-        //   已全部撤回（见 git 记录）。今后调试包不改前两位版本号、不进夸克。
-        //   本次改动：删掉 0.4.0 的右边缘「浏览」把手（它挡住了右侧栏内容），
-        //   入口只剩官方右侧边栏那一项。
-        versionName = "0.4.4"
+        // 版本身份保持既有发行值；历史记录见 docs/history/gradle-version-notes.md。
+        versionCode = 115
+        versionName = "0.5.0"
 
         // 只支持 arm64-v8a：内置的引擎资产与 Termux bootstrap 都是 arm64 架构
         ndk {
@@ -652,8 +56,7 @@ android {
     // ⚠️ **两个 flavor 的 applicationId 必须都恰好 15 字符**，原因见 defaultConfig
     //   里那条注释（Termux ELF 的等长原地重写）。`com.dsh.android` 与
     //   `com.dsh.webview` 都是 15 字符，对应 `/data/data/<包名>/` = 27 字节。
-    //   `TermuxBootstrap.ELF_ROOT_REPLACEMENT` 已改为从 `BuildConfig.APPLICATION_ID`
-    //   派生，改这里不需要再同步改 Kotlin 常量。
+    //   TermuxBootstrap 从真实安装身份读取替换路径，App 提供后备 applicationId。
     flavorDimensions += "webengine"
     productFlavors {
         create("system") {
@@ -671,21 +74,8 @@ android {
         }
     }
 
-    /**
-     * 内核实现放在 flavor 源集里，不是 `main`。
-     *
-     * ⚠️ 这是**必须**的：`GeckoWebHost` 依赖 `org.mozilla.geckoview.*`，而那个
-     *   依赖只挂在 `geckoImplementation` 上。放进 `main` 会让 system flavor 也去
-     *   编译它 ⇒ `Unresolved reference: geckoview`，两个包一起构建失败。
-     *
-     * 布局（AGP 按约定自动收集 `src/<flavor>/java` 与 `src/<flavor>/assets`，
-     * 不需要显式声明 sourceSets）：
-     *
-     *   main/java/.../web/   → WebHost.kt、PageBridge.kt（纯接口，无内核依赖）
-     *   system/java/.../web/ → SystemWebHost.kt、WebHostFactory.kt
-     *   gecko/java/.../web/  → GeckoWebHost.kt、WebHostFactory.kt
-     *   gecko/assets/        → dsh-bridge 扩展（只有 gecko 需要）
-     */
+    // :web:host 使用同一 webengine 维度，按 flavor 提供内核实现与 Gecko 扩展资产。
+    // 共享 WebHost/PageBridge 契约由 :web:contract 提供。
 
     signingConfigs {
         // ⚠️ 这把钥匙是发行版的终身身份，与 debug 签名**互相独立**。
@@ -744,35 +134,73 @@ android {
         jvmTarget = "17"
     }
 
+    sourceSets.named("main") {
+        // 源码目录与共享符号链接只读；仅打包本轮锁定输入和生成插件。
+        assets.setSrcDirs(listOf(layout.buildDirectory.dir("generated/android-assets")))
+    }
+
     buildFeatures {
         viewBinding = true
-        // TermuxBootstrap.ELF_ROOT_REPLACEMENT 从 BuildConfig.APPLICATION_ID 派生 ——
-        // 两个 flavor 的包名不同（com.dsh.android / com.dsh.webview），而 ELF 里的
-        // 替换串必须**恰好 27 字节**且与真实包名一致，写死一个就会让另一个 flavor
-        // 静默跳过路径重写（症状是 dpkg/node 全线 Permission denied）。
-        // AGP 8.0 起 buildConfig 默认为 false，必须显式打开。
+        // App 提供运行身份与内核能力；library 不读取 App 的 BuildConfig。
         buildConfig = true
     }
 }
 
-// 统一生成出厂组件；脚本先在 build/ 构建并校验，再同步 zip+manifest，保留共享资产符号链接。
+// 插件产物只写 build/，不会回写源码资产或跨工作树符号链接。
+val pluginComponentsDir = layout.buildDirectory.dir("generated/plugin-components")
+val pluginCatalog = JsonSlurper().parse(rootProject.file("catalogs/plugin-components.json")) as Map<*, *>
+val pluginComponents = pluginCatalog["components"] as List<Map<String, Any>>
+val pluginAssetNames = pluginComponents.flatMap { listOf(it["asset"].toString(), "${it["id"]}.manifest.json") }
+val generatedPluginNames = pluginComponents.filter { it["bundledIn"] == null }
+    .flatMap { listOf(it["asset"].toString(), "${it["id"]}.manifest.json") }
 val buildBuiltinPluginAssets by tasks.registering(Exec::class) {
     group = "build"
-    description = "Build and verify builtin plugin assets before Android packaging"
+    description = "Build and verify builtin plugin assets without changing source assets"
     workingDir(rootProject.projectDir)
+    inputs.files(rootProject.file("catalogs/plugin-components.json"), rootProject.file("tools/build-plugin-components.mjs"))
+    inputs.files(rootProject.fileTree("tooling/plugins") { include("**/*.mjs") })
+    inputs.files(pluginComponents.map { component ->
+        rootProject.fileTree(component["source"].toString()) { exclude("**/node_modules/**") }
+    })
+    outputs.dir(pluginComponentsDir)
     commandLine(
         providers.environmentVariable("DSH_NODE_BINARY").getOrElse("node"),
         rootProject.file("tools/build-plugin-components.mjs").absolutePath,
-        "build", "--out-dir", layout.buildDirectory.dir("generated/plugin-components").get().asFile.absolutePath,
-        "--install-assets"
+        "build", "--out-dir", pluginComponentsDir.get().asFile.absolutePath
     )
+}
+val verifyRuntimeAssets by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Require and verify locked runtime inputs before packaging"
+    workingDir(rootProject.projectDir)
+    commandLine(providers.environmentVariable("DSH_NODE_BINARY").getOrElse("node"), "tools/check-runtime-assets.mjs")
+}
+val stageAndroidAssets by tasks.registering(Sync::class) {
+    dependsOn(buildBuiltinPluginAssets, verifyRuntimeAssets)
+    from("src/main/assets") { exclude(pluginAssetNames) }
+    from(rootProject.file("runtime/scripts")) { include("*.mjs", "ui-probe.js") }
+    from(rootProject.file("runtime/webview")) { include("webview-polyfill.js") }
+    from(rootProject.file("contracts/bridge/protocol.json")) { rename { "bridge-protocol.json" } }
+    from(pluginComponentsDir) { include(generatedPluginNames) }
+    into(layout.buildDirectory.dir("generated/android-assets"))
 }
 
 tasks.named("preBuild") {
-    dependsOn(buildBuiltinPluginAssets)
+    dependsOn(stageAndroidAssets)
 }
 
 dependencies {
+    implementation(project(":core:contracts"))
+    implementation(project(":core:logging"))
+    implementation(project(":runtime:termux"))
+    implementation(project(":runtime:engine"))
+    implementation(project(":platform:privilege"))
+    implementation(project(":web:contract"))
+    implementation(project(":web:host"))
+    implementation(project(":feature:browser"))
+    implementation(project(":feature:bubble"))
+    testImplementation("junit:junit:4.13.2")
+    implementation(project(":bridge:transport"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
@@ -780,41 +208,9 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    // ── Shizuku：uid 2000 特权通道的第二条来源 ──────────────────────────
-    //
-    // 原有的 uid 2000 通道**全部**要求「设备上的 adbd 能被我们连上」：
-    // legacy 5555（PC 跑过 `adb tcpip` 且 adbkey 被信任）或 Android 11+ 的无线调试。
-    // 这对两类用户根本不成立：Android 10 及以下（没有无线调试，且每次重启都要
-    // PC 再来一次），以及做不成 `adb tcpip` 的设备。而 Shizuku 只要用户装过、
-    // 启动过，我们就能以 uid 2000 执行 —— 不需要 5555、不需要 adbkey。
-    //
-    // 三个坐标缺一不可，各自的用途不同：
-    //   api      → `rikka.shizuku.Shizuku`（binder 状态、权限、getUid）
-    //   aidl     → `moe.shizuku.server.IShizukuService` / `IRemoteProcess`
-    //              （真正执行命令的接口；`Shizuku.newProcess` 是 private，
-    //                必须经这个接口自己调，见 ShizukuChannel.kt）
-    //   provider → `rikka.shizuku.ShizukuProvider`，清单里声明它才能收到 binder
-    //
-    // ⚠️ 版本锁在 **13.1.5**：`newProcess` 在 Shizuku API **14 计划被移除**
-    //   （见其源码该方法的注释），升上去这条通道会直接编译不过。
-    //   要升就必须同时改 ShizukuChannel 的执行方式，不是改个版本号的事。
+    // Activity 直接消费权限 API；AIDL 与 Provider 由 :platform:privilege 持有。
     implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:aidl:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
 
-    // 内置内核版：GeckoView（Mozilla 自维护的 Gecko 引擎，随 APK 分发、不依赖
-    // 设备上的系统 WebView）。只有 gecko flavor 才需要它。
-    //
-    // ⚠️ 必须用 `-arm64-v8a` 那个变体而不是 `geckoview`：前者只含 arm64 的
-    //   libxul.so（86 MB），后者是全 ABI 的 omni 包（230 MB），而本工程
-    //   `abiFilters` 只有 arm64-v8a —— 引 omni 会把用不到的几个 ABI 一起打进 APK。
-    // ⚠️ 仓库在 settings.gradle.kts 里单独声明（google()/mavenCentral() 都没有）。
-    // ⚠️ 版本选择不是「越新越好」，是**被本工程的构建工具链锁死的**：
-    //   157（当前 release）硬依赖 `androidx.core:core:1.19.0`（要求 AGP 9.1.0+）
-    //   与 `androidx.media3:*:1.11.0`（要求 compileSdk 36）；146 依赖 core 1.17.0
-    //   （要求 AGP 8.9.1+）。本工程是 AGP 8.8.2 + compileSdk 35，三者都装不下：
-    //     Dependency 'androidx.core:core:1.17.0' requires Android Gradle plugin 8.9.1 or higher
-    //   140 依赖 core 1.16.0（minAGP 8.6.0 / minCompileSdk 35，均满足），是能在
-    //   当前工具链下直接构建的最高版本。要再往上就得先升 AGP，那是另一件事。
-    "geckoImplementation"("org.mozilla.geckoview:geckoview-arm64-v8a:140.0.20250707120347")
+    // GeckoView 依赖仅由 :web:host 的 gecko 变体引入。
+
 }

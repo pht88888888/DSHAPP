@@ -4,7 +4,9 @@
 
 ## 组件来源与产物
 
-`tools/plugin-components.json` 是 APK 插件资产的唯一组件清单，记录源码、zip、入口和客户端文件。`tools/build-plugin-components.mjs` 对客户端统一编译到 Chrome 73，生成固定顺序、时间与权限的 zip，以及包含包版本、源码摘要、工具版本、逐文件摘要的 manifest。
+[catalogs/plugin-components.json](../../catalogs/plugin-components.json) 是 APK 插件资产的唯一组件清单，记录源码、zip、入口和客户端文件。规范实现 [tooling/plugins/build.mjs](../../tooling/plugins/build.mjs) 对客户端统一编译到 Chrome 73，生成固定顺序、时间与权限的 zip，以及包含包版本、源码摘要、工具版本、逐文件摘要的 manifest。[旧 tools 入口](../../tools/build-plugin-components.mjs)仅薄转调，不维护第二份清单。
+
+Android 聚合包源码位于 `plugins/android/bundle`，14 个组件位于 `plugins/android/components/<package>`，多模态、核心记忆与预设等独立包位于 `plugins/standalone/<package>`。按 catalog 的 source/entry 定位源码，不再从旧平铺目录生成产物。
 
 ```bash
 node tools/build-plugin-components.mjs build --out-dir app/build/generated/plugin-components
@@ -35,15 +37,19 @@ pnpm 11 默认的 minimum release age 不会把精确版本静默换成旧版；
 
 `application=applied` 仅证明 Host 已应用。页面插件需观测目标模块修订变化、同步结束且对应 fiber 激活；失败与 release change 分别提示加载失败或刷新。没有这些证据时保持“尚未确认同步”。
 
-## 移动能力拆分
+## Android 包与内部组件
+
+用户只看到一个 `dsh-android-bundle` 插件包，详情页通过官方 bundle patch 展示 14 个 Android 组件。核心记忆与预设保持独立。内部源码仍按职责拆分；不能把代码模块拆分等同于增加顶层插件条目。
 
 基础 `dsh-android-mobile` 负责布局和已有 UI 适配，不依赖账户余额。设置、宿主连接和余额分别由 `dsh-android-mobile-settings`、`dsh-android-host-bridge` 与 `dsh-android-balance` 负责；各自释放计时器、监听器、观察器和迟到请求。
+
+聚合包携带原名组件依赖，保持官方客户端扫描和模块标识正常工作；不修改引擎的客户端包名解析规则。统一构建器生成聚合包，发布时使用构建输出的 `npm/dsh-android-bundle` 完整目录。旧出厂组件链接首次迁移到聚合包，保留组件配置、禁用与卸载状态；用户选择的市场版本继续优先。
 
 引擎兼容资产只拥有官方 dist 与 engine 客户端文件；不能再包含覆盖 Android 插件的 mobileui 树。compat manifest 记录引擎、polyfill、目标和工具摘要及逐文件摘要。Windows 入口转调同一个 Node 构建器。
 
 ## 验证入口
 
-市场行为：在 `market-plugin/dsh-android-market` 运行 `npm test`。移动插件、桥协议、出厂登记与更新适配、远程同步分别执行各目录的行为测试。最终运行项目的两种 flavor 构建与 `bash tools/check-architecture.sh`，并核对 APK 内 zip、manifest 与生成产物一致。视觉与交互变化由用户验收。
+市场行为：在 `plugins/android/components/dsh-android-market` 使用其锁定依赖并运行 `npm test`。移动插件、桥协议、出厂登记与更新适配分别执行所属目录的行为测试。结构和协议检查执行 `bash tools/check-architecture.sh` 与模块守卫；真实引擎、双 flavor、APK 内容和设备验证按[分层测试手册](../runbooks/testing.md)显式输入，不以 fixture 或局部编译代替。视觉与交互变化由用户验收。
 
 引擎源码补丁由 `EngineFilePatches.kt` 的 11 类注册项维护，管理器只负责顺序和日志；`node tools/verify-engine-anchors.mjs` 在真实引擎归档副本上运行同一 Kotlin 注册表，再验证内置更新事务。图片 MIME 补丁必须在兼容资产安装后应用，避免兼容客户端覆盖补丁。
 
@@ -51,7 +57,9 @@ pnpm 11 默认的 minimum release age 不会把精确版本静默换成旧版；
 
 ```bash
 DSH_ENGINE_PACKAGE=<engine>/node_modules/@deepseek-ai/dsh/package.json \
-  node --test app/src/main/java/com/dsh/android/engine/BuiltinPluginBootstrap.test.mjs
+  node --test runtime/engine/src/main/java/com/dsh/android/engine/BuiltinPluginBootstrap.test.mjs
 ```
 
-远程插件不属于 APK 出厂组件清单；在 `remote-plugin/mobile` 执行 `npm ci`、`npm test` 和 `npm pack --ignore-scripts`，确认发布包包含 `lib/session-index.js`、`lib/outbox.js` 与 `lib/reconnect.js`。这些模块分别拥有会话映射、发送确认和重连状态。
+远程插件不属于 APK 出厂组件清单。正式开发、测试与发包进入[独立仓库](https://github.com/pht88888888/dsh-jiuling-remote-plugins)对应的 `dsh-remote-mobile`、`dsh-remote-desktop`；先核对真实 npm 发布 tarball，再评估候选源码，流程与未解决差异见[来源审计](../architecture/remote-plugin-provenance.md)。
+
+本仓 `remote-plugin/mobile`、`remote-plugin/desktop` 为 reference-only 历史副本，不是安装、测试、打包或发布入口。保留旧差异证据及独有 `pair-server` 和历史集成测试，不能随目录退役一并删除。审计时 npm 精确版本为 mobile 1.2.105、desktop 1.0.56；独立 master 虽然版本号相同，仍有 8 项发布运行文件差异，两个 npm gitHead 在独立仓库不可解析。最新版本必须重新查询，不用旧副本或同版本源码覆盖真实发布基线。

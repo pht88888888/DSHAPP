@@ -57,7 +57,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROBE = join(__dirname, '..', 'app', 'src', 'main', 'assets', 'ui-probe.js');
+const PROBE = join(__dirname, '..', 'runtime', 'scripts', 'ui-probe.js');
 
 const CHROME_CANDIDATES = [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',

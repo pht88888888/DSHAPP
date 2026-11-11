@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="bubble_avatar_desc">DSH 助手头像</string>
+    <string name="bubble_a11y_label">DSH 键盘哨兵</string>
+    <string name="bubble_a11y_desc">让后台运行的悬浮球知道输入法是否弹出、弹多高，从而自动避让键盘。只读取窗口位置与尺寸，不读取任何窗口内容、不记录按键或输入的文字。</string>
+</resources>

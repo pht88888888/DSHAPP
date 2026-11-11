@@ -19,6 +19,13 @@
         判定逻辑收敛在 WebCapability 枚举上，加能力就改那一处。
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!--
+        华为/荣耀 WebView（hwbr_engine_media）的 WebRTC 采集在缺少此权限时直接放弃音频输入：
+        "Requires MODIFY_AUDIO_SETTINGS and RECORD_AUDIO. No audio device will be available for recording"。
+        该权限为 normal 级，安装即生效，不需要运行时申请；缺少时 getUserMedia({audio:true})
+        在真机上返回 NotReadableError（实测 CDY-TN90 / Android 10）。
+    -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
@@ -121,49 +128,7 @@
             </intent-filter>
         </activity>
 
-        <!--
-            Shizuku 特权通道（uid 2000 的第二条来源）。
 
-            ## 为什么需要它
-
-            原有的 uid 2000 通道**全部**要求「设备上的 adbd 能被我们连上」：
-            legacy 5555（要 PC 先跑 `adb tcpip 5555`）或 Android 11+ 的无线调试。
-            而 Android 10 及以下**没有**无线调试，`persist.adb.tcp.port` 又写不进去，
-            于是每次重启都得 PC 再来一次 —— 更糟的是 App 自己**造不出** 5555：
-            发 `adb tcpip` 本身就需要一条活的 adb 连接，形成循环依赖。
-
-            Shizuku 绕开了全部这些前提：它由 root 或 adb 起一个常驻 `app_process`
-            （uid 2000），经 binder 提供服务。**不需要 adbd 监听 5555**，
-            也**不需要**校验我们那把 adbkey。所以「Shizuku 能用、我们的特权通道
-            用不了」在用户那边是常态。
-
-            ## 这个 provider 是干什么的
-
-            Shizuku 服务端在**应用进程启动时**把它的 binder 送到这个 provider，
-            `ShizukuProvider` 收到后存进 `rikka.shizuku.Shizuku`。
-            没有它，`Shizuku.pingBinder()` 永远为 false。
-
-            ⚠️ 三个属性的取值**不能改**（RikkaApps 的文档逐条给过理由）：
-            - `android:exported="true"`：Shizuku 服务端以 adb/root 身份运行，
-                 **是外部进程**，不导出它根本送不进来；
-            - `android:multiprocess="false"`：Shizuku 只在应用进程**启动那一次**
-                 送来 binder，多进程会让别的进程也去要，而它不会给；
-            - `android:permission="…INTERACT_ACROSS_USERS_FULL"`：**这是保护** ——
-                 该权限只有 `com.android.shell` 之类的系统身份持有，普通应用拿不到，
-                 于是别的应用无法借这个 provider 蹭到我们的 binder。
-                 ⚠️ 别因为「看着像要申请一个危险权限」就删掉它，它是**接收方**的守卫。
-
-            ⚠️ `authorities` 用 `${applicationId}` 占位：本工程有两个 flavor
-               （`com.dsh.android` / `com.dsh.webview`），两包可同装一台机器 ——
-               写死会让第二个包装不上（authorities 冲突）。
-        -->
-        <provider
-            android:name="rikka.shizuku.ShizukuProvider"
-            android:authorities="${applicationId}.shizuku"
-            android:exported="true"
-            android:multiprocess="false"
-            android:enabled="true"
-            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <service
             android:name="com.dsh.android.engine.EngineService"
@@ -174,40 +139,7 @@
                 android:value="Local AI agent engine keeps a long-running conversation session" />
         </service>
 
-        <!--
-            键盘哨兵（无障碍服务）：让它看到输入法窗口的位置与高度。
 
-            ## 为什么必须是无障碍
-
-            普通应用拿不到「全局键盘可见性」——`WindowInsets.Type.ime()` 只属于
-            自己获得焦点的那扇窗，而悬浮球在后台、没有焦点。`dumpsys input_method`
-            能读，但那要 uid 2000 在线且每次起进程轮询。无障碍的
-            `getWindows()` 是唯一零特权、事件驱动的一条。
-
-            ## 三个属性的理由
-
-            - `android:exported="true"`：**系统**（不是我们的进程）要能 bind 它，
-              不导出则服务永远不会被拉起；
-            - `android:permission="…BIND_ACCESSIBILITY_SERVICE"`：这是**保护**，
-              只有系统持有该权限，别的应用无法 bind 进来借我们的窗口列表；
-            - `android:label`：无障碍设置列表里显示的就是它，用户在那一屏决定
-              要不要授权，所以必须是看得懂的中文名（见 strings.xml）。
-
-            ⚠️ 服务没有在代码里 startService —— 启用后由系统按需拉起，这是
-              无障碍服务的设计，别改成手动启动。
-        -->
-        <service
-            android:name="com.dsh.android.bubble.BubbleA11yService"
-            android:exported="true"
-            android:label="@string/bubble_a11y_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/bubble_accessibility_service" />
-        </service>
 
         <!--
             运行日志界面（入口②）。
@@ -231,24 +163,7 @@
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize" />
 
-        <!--
-            接收通知栏「直接回复」里输入的无线调试配对码，以及通知上的「取消」动作。
 
-            ⚠️ 必须静态声明（不能动态注册）：通知可能在 App 进程已被系统回收时
-            仍留在通知栏，那时动态注册的接收器已经不存在了，用户回复的配对码
-            会石沉大海。
-
-            ⚠️ 「取消」这个 action 尤其依赖静态声明：常驻通知划不掉，用户唯一能
-            中止配对监听的方式就是点它，进程被回收后它必须还能工作。
-        -->
-        <receiver
-            android:name="com.dsh.android.privilege.AdbPairingReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.dsh.android.action.PAIRING_REPLY" />
-                <action android:name="com.dsh.android.action.PAIRING_CANCEL" />
-            </intent-filter>
-        </receiver>
 
     </application>
 </manifest>

@@ -6,8 +6,11 @@ import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { resolveKotlinTestRuntime, requireKotlinTestInput, resolveProjectKotlinSource } from '../../../tools/kotlin-test-runtime.mjs';
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
+const engineArchive = requireKotlinTestInput('DSH_ENGINE_ARCHIVE');
+const runtime = resolveKotlinTestRuntime();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'builtin-update-test-'));
 const engine = path.join(tmp, 'engine');
 const lib = path.join(engine, 'node_modules/@deepseek-ai/dsh-plugin-manager/lib');
@@ -34,16 +37,12 @@ with tarfile.open(sys.argv[1]) as t:
   if m.isfile() and (m.name.startswith('node_modules/semver/') or m.name in ['node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js','node_modules/@deepseek-ai/dsh-plugin-manager/lib/typert.host.js']):
    p=out/m.name
    p.parent.mkdir(parents=True,exist_ok=True)
-   p.write_bytes(t.extractfile(m).read())`, path.join(root, 'app/src/main/assets/engine.bin'), engine]);
+   p.write_bytes(t.extractfile(m).read())`, engineArchive, engine]);
   const official = fs.readFileSync(path.join(lib, 'index.js'), 'utf8');
   const host = fs.readFileSync(path.join(lib, 'typert.host.js'), 'utf8');
   assert.match(host, /'updatable': z.boolean\(\)/);
   assert.match(host, /'restore': z\.object\(/);
-  const gradleRoots = [process.env.KOTLIN_COMPILER_LIB, '/root/gradle-home/wrapper/dists/gradle-8.13-bin/5xuhj0ry160q40clulazy9h7d/gradle-8.13/lib', '/root/.sdkman/candidates/gradle/9.3.0/lib'].filter(Boolean);
-  const compilerLib = gradleRoots.find(dir => fs.existsSync(dir) && fs.readdirSync(dir).some(file => /^kotlin-compiler-embeddable-.*\.jar$/.test(file)));
-  assert.ok(compilerLib, 'Set KOTLIN_COMPILER_LIB to the existing Gradle lib directory');
-  const jars = fs.readdirSync(compilerLib).filter(file => file.endsWith('.jar')).map(file => path.join(compilerLib, file));
-  const stdlib = jars.find(file => /\/kotlin-stdlib-[\d.]+\.jar$/.test(file));
+  const { stdlib } = runtime;
   const harness = path.join(tmp, 'Harness.kt');
   fs.writeFileSync(harness, `package com.dsh.android.engine
 import java.io.File
@@ -53,8 +52,8 @@ fun main(args: Array<String>) {
  println(BuiltinPluginUpdatePatch.apply(File(args[0]), File(args[1]), packages) { println(it) })
 }`);
   const classes = path.join(tmp, 'classes');
-  run('java', ['-cp', jars.join(path.delimiter), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect', '-classpath', stdlib, '-d', classes, path.join(root, 'app/src/main/java/com/dsh/android/engine/BuiltinPluginUpdatePatch.kt'), harness]);
-  const apply = (targetHome = home, expanded = false) => run('java', ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.HarnessKt', engine, targetHome, ...(expanded ? ['expanded'] : [])]);
+  run(runtime.java, ['-cp', runtime.classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect', '-classpath', stdlib, '-d', classes, resolveProjectKotlinSource(root, 'engine/BuiltinPluginUpdatePatch.kt'), harness]);
+  const apply = (targetHome = home, expanded = false) => run(runtime.java, ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.HarnessKt', engine, targetHome, ...(expanded ? ['expanded'] : [])]);
   await test('真实 Kotlin 补丁编译、官方锚点匹配及幂等', () => {
     assert.match(apply(), /true/);
     assert.match(apply(), /false/);
@@ -63,7 +62,7 @@ fun main(args: Array<String>) {
   await test('锚点漂移失败且不写入半成品', () => {
     const drift = official.replace('function updateRefusal(bundle, name) {', 'function changedUpdateRefusal(bundle, name) {');
     fs.writeFileSync(path.join(lib, 'index.js'), drift);
-    const result = spawnSync('java', ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.HarnessKt', engine, home], { encoding: 'utf8' });
+    const result = spawnSync(runtime.java, ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.HarnessKt', engine, home], { encoding: 'utf8' });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /expected one official anchor/);
     assert.equal(fs.readFileSync(path.join(lib, 'index.js'), 'utf8'), drift);
@@ -82,7 +81,7 @@ fun main(args: Array<String>) {
     assert.match(apply(relocated, true), /false/);
     const damaged = moved.replace('function dshAndroidBuiltinLink(bundle, profile)', 'function changedBuiltinLink(bundle, profile)');
     fs.writeFileSync(path.join(lib, 'index.js'), damaged);
-    const result = spawnSync('java', ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.HarnessKt', engine, home], { encoding: 'utf8' });
+    const result = spawnSync(runtime.java, ['-cp', [classes, stdlib].join(path.delimiter), 'com.dsh.android.engine.HarnessKt', engine, home], { encoding: 'utf8' });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /expected one official anchor/);
     assert.equal(fs.readFileSync(path.join(lib, 'index.js'), 'utf8'), damaged);
@@ -327,7 +326,7 @@ fun main(args: Array<String>) {
       }
     }
   });
-  console.log(`通过 ${tests} 个测试，跳过 0；运行 engine.bin 提取的官方 PluginManager 函数。`);
+  console.log(`通过 ${tests} 个测试，跳过 0；运行显式 DSH_ENGINE_ARCHIVE 提取的官方 PluginManager 函数。`);
 } finally {
   assert.ok(tmp.startsWith(path.join(os.tmpdir(), 'builtin-update-test-')));
   fs.rmSync(tmp, { recursive: true, force: true });

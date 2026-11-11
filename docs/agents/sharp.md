@@ -26,7 +26,7 @@ sharp = require("@img/sharp-wasm32/sharp.node");
 所以**只需要装 `@img/sharp-wasm32`，sharp 本身一行都不用改**。
 
 **做法**：`assets/sharp-wasm32.zip`（含 `@img/sharp-wasm32` + `@emnapi/runtime`，
-条目为相对路径、无顶层目录），`EngineManager.ensureSharp()` 解到
+条目为相对路径、无顶层目录），`EngineRuntimeDependencies.ensureSharp()` 解到
 `engine/node_modules/`。幂等判据是
 `@img/sharp-wasm32/lib/sharp-wasm32-0.35.5.node.wasm` 存在且非空。无需版本戳。
 

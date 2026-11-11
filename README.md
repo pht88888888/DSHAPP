@@ -55,8 +55,15 @@ APK
 
 ### 从源码构建
 
+```bash
+bash gradlew :app:assembleSystemDebug --console=plain
+bash gradlew :app:assembleGeckoDebug --console=plain
+```
+
+PowerShell：
+
 ```powershell
-$env:JAVA_HOME = "<你的 JDK 17 路径>"   # 必须显式设置
+$env:JAVA_HOME = "<你的 JDK 17 路径>"
 
 .\gradlew.bat :app:assembleSystemDebug --console=plain
 # → app\build\outputs\apk\system\debug\app-system-debug.apk
@@ -84,9 +91,9 @@ $env:JAVA_HOME = "<你的 JDK 17 路径>"   # 必须显式设置
 | `ripgrep-android-arm64.zip` | 2.0 MB | 官方 linux-arm64 静态 rg |
 | 其余 26 个 | < 1 MB | 自编译 native 绑定 / 内置插件 zip |
 
-**每个资产的来源、生成方式与校验方法**见
-[docs/agents/regen-assets.md](docs/agents/regen-assets.md)。
-其中 `keyinject.bin`（内置号池）是**可选的** —— 没有它 App 照常运行，只是不内置 API 账号。
+**资产来源、可重建范围与现存输入缺口**见
+[资产重建说明](docs/agents/regen-assets.md)及[原生来源记录](docs/architecture/native-provenance.md)。
+`keyinject` 已由 gateway 路径替代并退休；当前仅清理历史库，不再作为 active APK 资产。
 
 ## 两条硬约束
 
@@ -94,7 +101,8 @@ $env:JAVA_HOME = "<你的 JDK 17 路径>"   # 必须显式设置
 
 ### ① 包名必须恰好 15 字符
 
-`applicationId` = `com.dsh.android`（15 字符）。
+`applicationId` 分别为 `com.dsh.android`、`com.dsh.webview`，均 15 字符。
+此长度约束只适用于最终 APK 的运行身份；library namespace 与 Kotlin package 可独立命名。
 
 Termux 官方二进制把 `/data/data/com.termux/files`（27 字节）烤进 ELF 的 `.dynstr`，
 而 `TermuxBootstrap.patchElfInPlace()` 只能做**等长原地覆盖**。替换串
@@ -140,26 +148,38 @@ Android 的 `process.platform` 是 `'android'` 而非 `'linux'`，而 DSH 官方
 与平台判断都是按 `linux`/`darwin`/`win32` 三选一写的。凡是「官方只认 linux、但代码
 本身与 libc 无关」的地方，都要为 android 补一份。
 
-更麻烦的是**三处 Android 主动不给的能力**，只能靠 `LD_PRELOAD` 在 libc 边界绕开：
+Android 还限制了 link 与沙箱等能力，需要在 libc 边界使用适配层：
 
 | 层 | 解决什么 | 文档 |
 |---|---|---|
 | `liblinkcompat.so` | SELinux 不给 `link()` 权限（`EACCES`/`EINVAL`） | [link-compat.md](docs/agents/link-compat.md) |
 | `boo-sandbox-run` + `libboosandbox.so` | Android 没有 bwrap/Landlock，但 `bash` 工具要求沙箱 | [sandbox.md](docs/agents/sandbox.md) |
-| `libkeyinject.so` | 内置 API 号池，密钥在 TLS 层替换，不落盘不进 JS | [key-pool.md](docs/agents/key-pool.md) |
 
 ## 目录结构
 
 ```
-app/src/main/java/com/dsh/android/     原生宿主（Kotlin）
-app/src/main/jni/                      native 层（C，LD_PRELOAD）
-app/src/main/assets/                   构建资产（⚠️ 不在仓库，见上）
-app/src/system/ · app/src/gecko/       两个 Web 内核的 flavor 源集
-mobile-ui-plugin/                      内置插件源码（TypeScript/JS）
-remote-plugin/                         配对服务端 + 端到端测试
-tools/                                 构建与校验脚本
-docs/agents/                           开发文档（36 篇，按需检索）
+app/                                  应用装配、Activity/Service、备份与跨领域诊断
+core/contracts/ · core/logging/        窄接口、共享模型与日志底座
+runtime/termux/ · runtime/engine/      Termux/Node 与引擎生命周期、安装和恢复
+platform/privilege/                   Root / Shizuku / ADB
+web/contract/ · web/host/              双内核契约与 system/gecko 实现
+feature/                              按领域的功能模块（以 settings 注册为准）
+native/                               linkcompat、sandbox 规范源码与固定配方入口
+plugins/android/bundle/                一个 Android 顶层包
+plugins/android/components/            14 个内部组件
+plugins/standalone/                    多模态、核心记忆和预设等独立插件
+catalogs/                             插件清单、运行资产与来源锁
+tooling/plugins/                      统一插件构建实现
+tools/                                校验、分层门禁与发布 CLI；保留旧入口兼容
+remote-plugin/                        reference-only 旧副本、保留的配对服务与历史测试
+docs/architecture/ · docs/runbooks/    工程规范、ADR、状态与操作手册
 ```
+
+实际编译模块以 [settings.gradle.kts](settings.gradle.kts) 为准；物理迁移保留必要的旧 Kotlin package、Manifest 类名与桥协议。app 拥有装配、Window 与 Service，日志底座不反向采集所有领域；诊断由 app 组装。
+
+工程规则见[规范](docs/architecture/conventions.md)与[ADR](docs/architecture/adr/README.md)，当前迁移与验证情况见[实施状态](docs/architecture/execution-status.md)。大型外部资产仍有来源与配方缺口；配置或局部编译成功不代表双 flavor、设备或正式发布已全部验收。
+
+远程插件正式开发入口是[独立仓库](https://github.com/pht88888888/dsh-jiuling-remote-plugins)。本仓旧副本仅供参考，独有 pair-server 与历史测试保留；生产基线与 npm 同版本源码差异见[来源审计](docs/architecture/remote-plugin-provenance.md)。发行使用[分步发布手册](docs/runbooks/release.md)，默认检查不安装设备或上传网盘。
 
 ## 文档
 

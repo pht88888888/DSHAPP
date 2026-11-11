@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROBE_SRC = readFileSync(join(HERE, '..', 'app', 'src', 'main', 'assets', 'ui-probe.js'), 'utf8');
+const PROBE_SRC = readFileSync(join(HERE, '..', 'runtime', 'scripts', 'ui-probe.js'), 'utf8');
 /** 从探针源码里读版本号，别写死 —— 探针升版时这里自动跟上。 */
 const PROBE_VERSION = Number((PROBE_SRC.match(/var\s+VERSION\s*=\s*(\d+)/) || [])[1] ?? 0);
 
