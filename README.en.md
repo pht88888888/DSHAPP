@@ -1,238 +1,242 @@
+<div align="center">
+
 # DSH for Android
 
-**Run a full AI coding agent on your Android phone.**
+**A full AI coding agent, in your pocket.**
+
+Real Node, real engine, real terminal — not a chat wrapper, not a stripped-down UI.
+
+[![License](https://img.shields.io/badge/license-MIT-2f81f7)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Android%2010%2B%20%C2%B7%20arm64--v8a-2da44e)](#known-limits)
+[![targetSdk](https://img.shields.io/badge/targetSdk-28-9a6700)](#hard-constraints)
+[![minSdk](https://img.shields.io/badge/minSdk-26-8b949e)](#known-limits)
+[![Web](https://img.shields.io/badge/WebView-dual%20engine-8250df)](#dual-web-engines)
 
 [中文](README.md) · [Docs](docs/README.md) · [Contributing](.github/CONTRIBUTING.md)
 
+<img src="docs/images/readme/home.png" width="270" alt="Home screen">
+<img src="docs/images/readme/chat.png" width="270" alt="Conversation with tool execution">
+
+<sub>Real device: official frontend with narrow-screen adaptation; `bash` and the terminal tool really run on the phone.</sub>
+
+</div>
+
 ---
 
-## What is this
+## What it is
 
-DSH for Android brings the [DSH](https://github.com/deepseek-ai) (DeepSeek Harness)
-desktop engine to your phone as-is: a bundled Termux environment runs Node, Node runs
-the DSH engine, and a WebView loads DSH's own web GUI.
+DSH for Android brings the desktop [DSH](https://github.com/deepseek-ai) (DeepSeek Harness) to phones
+as-is: the APK ships a Termux environment, runs Node inside it, runs the DSH engine on that Node, and
+loads the engine's own web GUI in a WebView.
 
-**It does not draw its own chat UI.** The interface is the official frontend, with
-mobile adaptation handled by a bundled plugin. What you get is not a stripped-down
-"mobile edition" — it is **the same frontend as desktop**, small enough to fit in a pocket.
+**It does not draw its own chat UI.** The interface is the official frontend; a bundled plugin adapts it
+to narrow screens. You get **the same frontend as on desktop**, just in your pocket.
 
-```
-APK
- ├─ Termux bootstrap        bash / dpkg / apt + 64 shared libraries
- ├─ Node runtime            Termux official arm64 node 26.4.0
- ├─ DSH engine              node_modules, unpacked into private storage
- ├─ Native addons           self-built require-builtin / flock / node-pty
- ├─ Web engine (gecko)      GeckoView, independent of system WebView
- └─ Bundled plugins         mobile adaptation / floating bubble / UI probe / logs …
-```
+| Layer | What is inside |
+|---|---|
+| Runtime | Termux bootstrap (bash / dpkg / apt + 64 `.so` files), official Termux arm64 node 26.4.0 |
+| Engine | DSH engine `node_modules`, unpacked into the app's private directory |
+| Native | Self-built `require-builtin`, `flock`, `node-pty`, plus link and sandbox shims |
+| Frontend | Official web GUI (`system` flavor uses the device WebView, `gecko` bundles GeckoView) |
+| Plugins | Mobile adaptation, floating bubble, UI debugging, logs, memory, and more |
 
-## Features
+## Highlights
 
-- **Full agent capability** — `bash`, file read/write, `grep`/`glob`, and a terminal PTY
-  all work. Not just a read-only chat box.
-- **Two web engines** — `system` uses the device WebView (smaller); `gecko` bundles
-  GeckoView (twice the size, but works on old devices or where system WebView is
-  stripped). **Both can be installed on the same device.**
-- **Mobile UI adaptation** — official frontend plus a narrow-screen plugin, not a rewrite.
-- **Floating bubble** — summon the agent anytime; custom appearance, frame animation,
-  video layers.
-- **UI probe tool** — lets the model see the screen and tap buttons, enabling end-to-end
-  self-testing.
-- **Rescue mode** — when a plugin breaks the app so it won't open, a four-tier
-  degradation ladder plus in-app plugin removal.
-- **Logging & diagnostics** — three-tier storage, crash-site snapshots, one-tap
-  diagnostic export.
+- **Real agent capabilities** — `bash`, file read/write, `grep`/`glob` and a terminal PTY all work; the model edits your project for real.
+- **Dual web engines** — the `system` build is small; the `gecko` build bundles GeckoView for older devices or cropped system WebViews. Different `applicationId`s, so **both can be installed side by side** with separate data.
+- **Floating bubble** — summon the app any time, with custom appearance, frame animation and video layers.
+- **UI debugging tools** — the model can look at the screen and tap buttons, enabling end-to-end self-testing.
+- **Rescue mode** — if a broken plugin makes the app unusable, a four-step degradation ladder plus in-app plugin removal keeps you from losing your entry point.
+- **Logs and diagnostics** — three storage layers, crash-scene snapshots, one-tap diagnostic export.
 
-## Quick start
-
-### Install
+## Install
 
 Download an APK from [Releases](../../releases) and sideload it.
 
-| Package | applicationId | For |
+| Package | applicationId | Use when |
 |---|---|---|
-| `DSH<version>.apk` | `com.dsh.android` | Most devices, smaller |
-| `DSH<version>-gecko.apk` | `com.dsh.webview` | Old devices / system WebView unavailable |
+| `DSH<version>.apk` | `com.dsh.android` | Most devices; smaller |
+| `DSH<version>-gecko.apk` | `com.dsh.webview` | Older devices, or the system WebView is unavailable |
 
-The two packages have **different applicationIds and can coexist**, each with its own
-independent data directory.
+> **arm64-v8a only, `targetSdk = 28`, sideload only.** Both are platform constraints rather than
+> oversights — see [hard constraints](#hard-constraints).
 
-> ⚠️ **arm64-v8a only, and targetSdk = 28.** These are hard constraints, not oversights —
-> see [Two hard constraints](#two-hard-constraints).
+## Build from source
 
-### Build from source
+```bash
+bash gradlew :app:assembleSystemDebug --console=plain
+bash gradlew :app:assembleGeckoDebug --console=plain
+```
+
+PowerShell:
 
 ```powershell
-$env:JAVA_HOME = "<path to your JDK 17>"   # must be set explicitly
+$env:JAVA_HOME = "<your JDK 17 path>"
 
-.\gradlew.bat :app:assembleSystemDebug --console=plain
-# → app\build\outputs\apk\system\debug\app-system-debug.apk
-
-.\gradlew.bat :app:assembleGeckoDebug --console=plain
-# → app\build\outputs\apk\gecko\debug\app-gecko-debug.apk
+.\gradlew.bat :app:assembleSystemDebug --console=plain   # -> app\build\outputs\apk\system\debug\
+.\gradlew.bat :app:assembleGeckoDebug --console=plain    # -> app\build\outputs\apk\gecko\debug\
 ```
 
 **Toolchain**: JDK 17 · AGP 8.8.2 · Kotlin 2.0.21 · Gradle 8.13 · compileSdk 35 · minSdk 26
 
-### ⚠️ Build assets are not included
+<details>
+<summary><b>⚠️ Build assets must be prepared locally (about 135 MB, not in this repo)</b></summary>
 
-Roughly **135 MB** of build assets under `app/src/main/assets/` are **not in this
-repository** (excluded by `.gitignore` to keep it lean). **Without them you cannot
-produce a working APK.**
+Large files under `app/src/main/assets/` are excluded by `.gitignore`. **Without them you cannot build a
+usable APK.**
 
 | Asset | Size | Source |
 |---|---|---|
-| `engine.bin` | 55 MB | DSH engine `node_modules`, packed |
-| `node-runtime.bin` | 30 MB | Termux official arm64 node |
+| `engine.bin` | 55 MB | Packed DSH engine `node_modules` |
+| `node-runtime.bin` | 30 MB | Official Termux arm64 node |
 | `bootstrap-aarch64.zip` | 23 MB | Termux bootstrap |
-| `webview-compat.zip` | 9.3 MB | Frontend bundle compiled down to chrome73 |
-| `pnpm-android-arm64.zip` | 5.6 MB | pnpm 11.28.3, pure-JS build |
-| `adb-wireless-arm64.zip` | 5.3 MB | Termux official adb |
+| `webview-compat.zip` | 9.3 MB | Frontend bundle rebuilt for chrome73 |
+| `pnpm-android-arm64.zip` | 5.6 MB | pnpm 11.28.3, pure JS |
+| `adb-wireless-arm64.zip` | 5.3 MB | Official Termux adb |
 | `sharp-wasm32.zip` | 3.5 MB | sharp wasm32 variant |
 | `ripgrep-android-arm64.zip` | 2.0 MB | Official linux-arm64 static rg |
-| 24 others | < 1 MB | Self-built native bindings / bundled plugin zips |
+| 26 others | < 1 MB | Self-built native bindings and bundled plugin zips |
 
-**Asset origins, rebuild scope and missing inputs** are recorded in
-[asset rebuilding](docs/agents/regen-assets.md) and [native provenance](docs/architecture/native-provenance.md).
-`keyinject` has been retired in favor of the gateway path; only legacy library cleanup remains.
+Sources, rebuildable scope and remaining input gaps are documented in
+[assets](docs/agents/regen-assets.md) and [native provenance](docs/architecture/native-provenance.md).
 
-## Two hard constraints
+</details>
 
-These are **platform facts**, not design choices that can be "optimized away."
-Read before changing anything.
+## Hard constraints
 
-### ① The package name must be exactly 15 characters
+> ⚠️ Two platform facts. Read before changing anything — getting them wrong still compiles, but breaks on device.
 
-The final APK applicationIds are `com.dsh.android` and `com.dsh.webview`, both 15 characters.
-This restriction applies to runtime application identity, not library namespaces or Kotlin packages.
+<details open>
+<summary><b>1. The applicationId must be exactly 15 characters</b></summary>
 
-Termux's official binaries have `/data/data/com.termux/files` (27 bytes) baked into
-their ELF `.dynstr`, and `TermuxBootstrap.patchElfInPlace()` can only do an
-**in-place overwrite of equal length**. The replacement string
-`/data/data/<package>/` is 12 + N bytes = 27 ⇒ **N = 15**.
+`com.dsh.android` and `com.dsh.webview` are both 15 characters. The constraint applies to the final APK
+identity only; library namespaces and Kotlin packages are free to differ.
 
-If the length differs, that function **silently returns 0** without throwing; the
-symptom is a runtime `CANNOT LINK EXECUTABLE` or `dpkg: Permission denied`.
+Official Termux binaries bake `/data/data/com.termux/files` (27 bytes) into the ELF `.dynstr`, and
+`TermuxBootstrap.patchElfInPlace()` can only overwrite **in place with equal length**: the replacement
+`/data/data/<package>/` is 12 + N bytes = 27, so **N = 15**.
 
-### ② targetSdk must be ≤ 28
+On a length mismatch that function silently `return 0`s instead of throwing; the symptom shows up at
+runtime as `CANNOT LINK EXECUTABLE` or `dpkg: Permission denied`.
 
-**Do not raise it to 29+.** Starting with Android 10 (API 29), apps with
-targetSdk ≥ 29 are not allowed to `execve()` files inside their own private
-directory (W^X / the SELinux `untrusted_app` domain forbids `app_data_file`
-`execute_no_trans`).
+</details>
 
-But node / bash / dpkg all live in `$PREFIX` under `filesDir` — raising it causes
-blanket `Permission denied`. Termux's own app also stays at 28.
+<details open>
+<summary><b>2. targetSdk must stay ≤ 28</b></summary>
 
-**The cost**: sideload only, cannot ship on Google Play.
+From Android 10 (API 29) on, apps with targetSdk ≥ 29 may not `execve()` files inside their own private
+directory (W^X / SELinux `untrusted_app` forbids `execute_no_trans` on `app_data_file`). node, bash and
+dpkg all live under `$PREFIX` inside `filesDir`, so bumping the target breaks all of them at once. The
+official Termux app also stays on 28. **Cost**: sideload only, no Google Play.
+
+</details>
 
 ## Architecture
 
 ```
 MainActivity (WebView / GeckoView)
-      │  loads http://127.0.0.1:<port>
-      ▼
-  DSH Web GUI  ←── official frontend + mobile adaptation plugin
-      │
-      ▼  HTTP
+      |  loads http://127.0.0.1:<port>
+      v
+  DSH web GUI  <-- official frontend + mobile adaptation plugin
+      |  HTTP
+      v
   DSH engine (Node)
-      │
-      ├─ tool: bash       → via the boo-sandbox-run sandbox
-      ├─ tool: read/write → link translated by liblinkcompat.so
-      ├─ tool: grep/glob  → static ripgrep
-      └─ tool: ui/bubble  → native bridge (file mailbox)
-      │
-      ▼
-  $PREFIX (Termux environment, under filesDir)
+      |-- tool: bash      -> through the boo-sandbox-run sandbox
+      |-- tool: read/write -> link translated by liblinkcompat.so
+      |-- tool: grep/glob -> static ripgrep
+      `-- tool: ui/bubble -> native bridge (file mailbox)
+      v
+  $PREFIX (Termux environment, inside filesDir)
 ```
 
-### Why so many native layers
+On Android `process.platform` is `'android'`, not `'linux'`, while upstream native plugins branch on
+`linux`/`darwin`/`win32`. Wherever the code only needs a linux branch but is not libc-specific, an android
+branch is added. link and sandboxing are additionally restricted by the kernel, which is why libc-boundary
+shims exist:
 
-On Android, `process.platform` is `'android'`, not `'linux'`, while DSH's official
-native addons and platform checks assume one of `linux`/`darwin`/`win32`. Anywhere the
-official code only recognizes linux but is otherwise libc-agnostic needs an Android
-counterpart.
-
-Android also restricts link and sandbox capabilities, requiring adaptation at the libc boundary:
-
-| Layer | Solves | Docs |
+| Layer | Problem it solves | Docs |
 |---|---|---|
-| `liblinkcompat.so` | SELinux denies `link()` (`EACCES`/`EINVAL`) | [link-compat.md](docs/agents/link-compat.md) |
-| `boo-sandbox-run` + `libboosandbox.so` | No bwrap/Landlock on Android, yet `bash` requires a sandbox | [sandbox.md](docs/agents/sandbox.md) |
+| `liblinkcompat.so` | SELinux denies `link()` (`EACCES`/`EINVAL`) | [link-compat](docs/agents/link-compat.md) |
+| `boo-sandbox-run` + `libboosandbox.so` | Android has no bwrap/Landlock, but the `bash` tool requires a sandbox | [sandbox](docs/agents/sandbox.md) |
 
-## Project layout
+## Dual web engines
+
+| | `system` (`com.dsh.android`) | `gecko` (`com.dsh.webview`) |
+|---|---|---|
+| Engine | Device WebView | Bundled GeckoView |
+| Size | ~150 MB | ~233 MB |
+| Best for | Modern devices with a healthy WebView | Older devices, cropped or outdated WebViews |
+| Data | Isolated | Isolated (can coexist with the system build) |
+
+## Repository layout
+
+<details>
+<summary>Expand the module map</summary>
 
 ```
-app/                                  application assembly, Activity/Service, backup and diagnostics
-core/contracts/ · core/logging/        narrow contracts, shared models and logging
-runtime/termux/ · runtime/engine/      Termux/Node, engine installation and lifecycle
+app/                                  App wiring, Activity/Service, backup and cross-cutting diagnostics
+core/contracts/ · core/logging/        Narrow interfaces, shared models, logging base
+runtime/termux/ · runtime/engine/     Termux/Node, engine lifecycle, install and recovery
 platform/privilege/                   Root / Shizuku / ADB
-web/contract/ · web/host/              contracts and system/gecko implementations
-feature/                              domain features; registration follows settings
-native/                               canonical linkcompat/sandbox sources and recipes
-plugins/android/bundle/                one top-level Android bundle
-plugins/android/components/            14 internal components
-plugins/standalone/                    multimodal, memory and preset plugins
-catalogs/                             component catalog and provenance/asset locks
-tooling/plugins/                      shared plugin build implementation
-tools/                                gates, release CLI and compatibility entries
-remote-plugin/                        reference-only copies, retained pairing service and tests
-docs/architecture/ · docs/runbooks/    conventions, ADRs, status and operating guides
+web/contract/ · web/host/             Dual-engine contracts and system/gecko implementations
+feature/                              Feature modules by domain (see settings registration)
+native/                               linkcompat and sandbox sources with fixed recipes
+plugins/android/bundle/               One Android top-level bundle
+plugins/android/components/           14 internal components
+plugins/standalone/                   Multimodal, memory and preset plugins
+catalogs/                             Plugin inventory, runtime assets, provenance locks
+tooling/plugins/                      Shared plugin build implementation
+tools/                                Checks, layered gates, release CLI
+remote-plugin/                        Reference-only historical copy and tests
+docs/architecture/ · docs/runbooks/    Conventions, ADRs, status and runbooks
 ```
 
-[Gradle settings](settings.gradle.kts) define the modules actually registered. Physical moves may preserve Kotlin packages, Manifest class names and bridge contracts for compatibility. The app owns assembly, Windows and Services; logging stays independent of cross-domain diagnostics assembled in the app.
+</details>
 
-Read the [conventions](docs/architecture/conventions.md), [ADRs](docs/architecture/adr/README.md) and [implementation status](docs/architecture/execution-status.md). Some external runtime assets still lack complete provenance and rebuild recipes. Configuration or partial compilation success does not establish both-flavor, device or release acceptance.
-
-Production remote-plugin development belongs in the [independent repository](https://github.com/pht88888888/dsh-jiuling-remote-plugins). This checkout's old copies are reference-only; retain the unique pairing server and historical tests. See the [provenance audit](docs/architecture/remote-plugin-provenance.md) for differences between the published npm packages and same-version source. The [release runbook](docs/runbooks/release.md) separates local checks from explicitly requested remote actions; builds do not install or upload by default.
+The actual Gradle modules are defined by [settings.gradle.kts](settings.gradle.kts). `app` owns wiring,
+windows and services; the logging base never reaches back into domains. Conventions live in
+[docs](docs/architecture/conventions.md) and [ADRs](docs/architecture/adr/README.md); migration and
+verification status in [execution status](docs/architecture/execution-status.md). Remote plugin
+development happens in a [separate repository](https://github.com/pht88888888/dsh-jiuling-remote-plugins);
+the copy here is reference-only (see [provenance audit](docs/architecture/remote-plugin-provenance.md)).
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md) for architecture, runbooks and
-historical records. Use the [developer guide index](docs/agents/README.md) for specific platform topics.
+Start from the [documentation index](docs/README.md); platform topics are indexed in
+[development docs](docs/agents/README.md).
 
-| If you're changing | Read first |
+| If you are changing | Read first |
 |---|---|
-| anything native or subprocess-related | [platform-android.md](docs/agents/platform-android.md) |
-| `bash` tool reports "no sandbox backend" | [sandbox.md](docs/agents/sandbox.md) |
-| `write` tool reports `EACCES/EINVAL: link` | [link-compat.md](docs/agents/link-compat.md) |
-| any `.zip` / `.bin` asset | [asset-stamps.md](docs/agents/asset-stamps.md) |
-| release builds / signing / publishing | [build-and-ship.md](docs/agents/build-and-ship.md) |
-| a plugin broke the app so it won't open | [rescue-mode.md](docs/agents/rescue-mode.md) |
+| anything native or subprocess related | [platform-android](docs/agents/platform-android.md) |
+| `bash` tool says "no sandbox backend" | [sandbox](docs/agents/sandbox.md) |
+| `write` tool reports `EACCES/EINVAL: link` | [link-compat](docs/agents/link-compat.md) |
+| any `.zip` / `.bin` asset | [asset-stamps](docs/agents/asset-stamps.md) |
+| release builds / signing / publishing | [build-and-ship](docs/agents/build-and-ship.md) |
+| a broken plugin that prevents startup | [rescue-mode](docs/agents/rescue-mode.md) |
 
-> The developer docs are written in Chinese; the code and this README are the
-> English-language entry points.
+## Known limits
 
-## Known limitations
-
-- **The sandbox does not isolate the PID namespace** — `--unshare-pid` needs
-  CAP_SYS_ADMIN, which ordinary apps cannot get. Writes are restricted by an adaptation
-  layer, not kernel isolation; see the [sandbox guide](docs/agents/sandbox.md).
+- **The sandbox does not isolate a PID namespace** — `--unshare-pid` needs CAP_SYS_ADMIN, which a normal app cannot get. File writes are constrained by the shim, which is not kernel-level isolation (see [sandbox](docs/agents/sandbox.md)).
 - **arm64-v8a only** — no arm32 or x86 builds.
-- **Sideload only** — targetSdk 28, cannot ship on Google Play (see constraint ②).
-- **Large APKs** — the system build is ~137 MB, the gecko build ~216 MB (engine and
-  web engine ship inside the package).
-- **Slow first launch** — the Termux environment and engine must be unpacked;
-  roughly 10–60 seconds depending on the device.
+- **Sideload only** — targetSdk 28 rules out Google Play.
+- **Large packages** — the engine and web engine ship inside the APK, see the table above.
+- **Slow first launch** — the Termux environment and engine are unpacked on first run; roughly 10–60 s depending on the device.
 
-Full list: [boundaries.md](docs/agents/boundaries.md).
+The full list is in [boundaries.md](docs/agents/boundaries.md).
 
 ## Contributing
 
-Issues and PRs are welcome. Before you start, read [CONTRIBUTING.md](.github/CONTRIBUTING.md) —
-this project has two **"wrong but compiles, then explodes on a real device"** hard
-constraints, plus silent-failure traps such as "changing an asset requires bumping its
-version stamp."
+Issues and pull requests are welcome. Before you start, read [CONTRIBUTING.md](.github/CONTRIBUTING.md):
+this project has several traps that **compile fine but break on device** (package name length, targetSdk,
+asset version stamps).
 
-## Acknowledgements
+## Credits
 
-This project stands on the shoulders of:
-
-- [DSH / DeepSeek Harness](https://github.com/deepseek-ai) — engine and web frontend
-- [Termux](https://github.com/termux) — bootstrap, node, and adb runtimes
-- [Mozilla GeckoView](https://wiki.mozilla.org/Mobile/GeckoView) — bundled web engine
-- [ripgrep](https://github.com/BurntSushi/ripgrep) · [sharp](https://github.com/lovell/sharp)
-  · [pnpm](https://github.com/pnpm/pnpm) · [Shizuku](https://github.com/RikkaApps/Shizuku)
+Built on the shoulders of [DSH / DeepSeek Harness](https://github.com/deepseek-ai) (engine and frontend),
+[Termux](https://github.com/termux) (bootstrap / node / adb),
+[GeckoView](https://wiki.mozilla.org/Mobile/GeckoView) (bundled engine),
+[ripgrep](https://github.com/BurntSushi/ripgrep), [sharp](https://github.com/lovell/sharp),
+[pnpm](https://github.com/pnpm/pnpm) and [Shizuku](https://github.com/RikkaApps/Shizuku).
 
 ## License
 
