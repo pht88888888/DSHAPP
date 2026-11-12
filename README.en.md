@@ -164,7 +164,7 @@ shims exist:
 | | `system` (`com.dsh.android`) | `gecko` (`com.dsh.webview`) |
 |---|---|---|
 | Engine | Device WebView | Bundled GeckoView |
-| Size | ~150 MB | ~233 MB |
+| Size | ~114 MB | ~193 MB |
 | Best for | Modern devices with a healthy WebView | Older devices, cropped or outdated WebViews |
 | Data | Isolated | Isolated (can coexist with the system build) |
 

@@ -6,8 +6,8 @@
       "id": "termux-bootstrap",
       "path": "app/src/main/assets/bootstrap-aarch64.zip",
       "apkEntry": "assets/bootstrap-aarch64.zip",
-      "bytes": 24230081,
-      "sha256": "b3739c14a2eb7421243b908e2fe2b9e54cbdf8477d210d09e8ac4452d864cad9",
+      "bytes": 21458696,
+      "sha256": "023c9d42b5490edbb1229878ccf25272dc384f134e6c9574a48f0c109a1f6bb6",
       "source": {
         "location": "https://github.com/termux/termux-packages",
         "version": null,
@@ -42,8 +42,8 @@
       "id": "engine",
       "path": "app/src/main/assets/engine.bin",
       "apkEntry": "assets/engine.bin",
-      "bytes": 63261179,
-      "sha256": "0e19012c61669e150cc33143a9b028394183d3d54a548d554da2758a5b16e432",
+      "bytes": 34528781,
+      "sha256": "faf3aee2188ceefb9dd945314a9b08c6bbc8ce9354474062f8af404a3915a801",
       "source": {
         "location": "https://registry.npmjs.org/@deepseek-ai/dsh",
         "version": "0.2.2-rc.1",

@@ -139,7 +139,7 @@
     {
       "id": "termux-bootstrap",
       "runtimeAssetId": "termux-bootstrap",
-      "observedArtifactSha256": "b3739c14a2eb7421243b908e2fe2b9e54cbdf8477d210d09e8ac4452d864cad9",
+      "observedArtifactSha256": "023c9d42b5490edbb1229878ccf25272dc384f134e6c9574a48f0c109a1f6bb6",
       "upstream": {
         "location": "https://github.com/termux/termux-packages",
         "version": null,
@@ -147,6 +147,7 @@
       },
       "recipeStatus": "incomplete",
       "gaps": [
+        "本地制品由 tools/trim-runtime-assets.mjs 裁剪派生（只删 Android 运行时不读取的文件），不等于上游原样；上游完整性仍需单独恢复。",
         "Original source/build staging recipe is not checked into this repository.",
         "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
         "Complete transitive license inventory must be recovered before asserting source reproducibility."
@@ -171,7 +172,7 @@
     {
       "id": "engine",
       "runtimeAssetId": "engine",
-      "observedArtifactSha256": "0e19012c61669e150cc33143a9b028394183d3d54a548d554da2758a5b16e432",
+      "observedArtifactSha256": "faf3aee2188ceefb9dd945314a9b08c6bbc8ce9354474062f8af404a3915a801",
       "upstream": {
         "location": "https://registry.npmjs.org/@deepseek-ai/dsh",
         "version": "0.2.2-rc.1",
@@ -179,6 +180,7 @@
       },
       "recipeStatus": "incomplete",
       "gaps": [
+        "本地制品由 tools/trim-runtime-assets.mjs 裁剪派生（只删 Android 运行时不读取的文件），不等于上游原样；上游完整性仍需单独恢复。",
         "Original source/build staging recipe is not checked into this repository.",
         "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
         "Complete transitive license inventory must be recovered before asserting source reproducibility."

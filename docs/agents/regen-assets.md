@@ -53,6 +53,25 @@ pnpm 是独立的纯 JS 运行资产，也不进入 C runner。当前版本和�
 
 keyinject 已退休，由 gateway 路径替代；安装器只清旧库。它不是 active APK 资产，也不是当前待补原生源码，不重新打包旧 TLS 注入库。
 
+## 裁剪以缩小 APK
+
+[`tools/trim-runtime-assets.mjs`](../../tools/trim-runtime-assets.mjs) 把两个大资产里 Android 运行时不读取的文件删掉后重打包，`engine.bin` 60.3 → 32.9 MB、`bootstrap-aarch64.zip` 23.1 → 20.5 MB，两个 APK 各减约 30 MB。删的都是死文件：sourcemap、`.d.ts`、包内测试与文档、Windows 的 `.pdb`、win32/darwin 的预编译产物、只能在 x64 上跑的 rg。唯一软损失是 bootstrap 的 `include/`（应用内编译原生模块要的头文件），`apt install` 可补。
+
+```bash
+node tools/trim-runtime-assets.mjs --check   # 只报告
+node tools/trim-runtime-assets.mjs           # 就地重写
+```
+
+裁剪后必须同步三处，否则门禁会红或改动不生效：
+
+1. `catalogs/runtime-assets.lock.json` 的 `bytes` / `sha256`（`tools/check-runtime-assets.mjs` 逐字节校验）。
+2. `catalogs/native-recipes.lock.json` 里 `engine`、`termux-bootstrap` 的 `observedArtifactSha256`；裁剪后的制品是**派生**而非上游原样，来源缺口说明里要保留这条。
+3. `MainActivity` 的 `assetStamp`：`.stamp` 命中会让设备继续用旧解包树，包变小却不生效。
+
+**归档格式是硬要求**：`engine.bin` 必须是 POSIX **ustar**。设备侧 `TarGz.kt` 是手写解析器，只认 name(100)+prefix(155) 和 `typeFlag` 的 `0`/`5`；GNU 格式用 `L` 长名条目代替 prefix，真机解包会静默丢一半条目，症状是引擎报 `Cannot find module '@deepseek-ai/dsh-app-boot'`，而本机 `tar -tzf` 一切正常。脚本内置了按设备规则复解析的自检，改脚本时别绕过它。
+
+**资产变小后要删旧 APK 再打包**：Gradle 的增量打包不会截断变短的条目，APK 文件里会留着上一版 `engine.bin` 的尾巴（实测多出 30 MB，`zipfile` 统计的条目合计比文件大小少 30 MB 才发现）。
+
 ## 手写运行脚本与桥协议
 
 手写源码不再存放在 APK assets 源目录，规范位置如下：

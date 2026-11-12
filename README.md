@@ -162,7 +162,7 @@ android 实现。link 与沙箱还被内核限制，需要 libc 边界的适配�
 | | `system`（`com.dsh.android`） | `gecko`（`com.dsh.webview`） |
 |---|---|---|
 | 内核 | 设备自带 WebView | 内置 GeckoView |
-| 体积 | 约 150 MB | 约 233 MB |
+| 体积 | 约 114 MB | 约 193 MB |
 | 适用 | 新设备、系统 WebView 正常 | 老设备 / WebView 被裁或过旧 |
 | 数据 | 独立 | 独立（可与 system 版同时安装） |
 
