@@ -1,6 +1,6 @@
-<div align="center">
-
 # DSH for Android
+
+<div align="center">
 
 **A full AI coding agent, in your pocket.**
 
@@ -17,7 +17,7 @@ Real Node, real engine, real terminal — not a chat wrapper, not a stripped-dow
 <img src="docs/images/readme/home.png" width="270" alt="Home screen">
 <img src="docs/images/readme/chat.png" width="270" alt="Conversation with tool execution">
 
-<sub>Real device: official frontend with narrow-screen adaptation; `bash` and the terminal tool really run on the phone.</sub>
+<sub>Real device: official frontend with narrow-screen adaptation; <code>bash</code> and the terminal tool really run on the phone.</sub>
 
 </div>
 

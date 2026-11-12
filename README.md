@@ -1,6 +1,6 @@
-<div align="center">
-
 # DSH for Android
+
+<div align="center">
 
 **把完整的 AI 编码 Agent 装进手机。**
 
@@ -17,7 +17,7 @@
 <img src="docs/images/readme/home.png" width="270" alt="启动界面">
 <img src="docs/images/readme/chat.png" width="270" alt="对话与工具执行">
 
-<sub>真机截图：官方前端 + 窄屏适配，`bash` / 终端工具真的在手机上跑。</sub>
+<sub>真机截图：官方前端 + 窄屏适配，<code>bash</code> / 终端工具真的在手机上跑。</sub>
 
 </div>
 
