@@ -1,0 +1,88 @@
+package com.dsh.android.backup
+
+import java.io.File
+import java.nio.file.Files
+
+// 真实备份导入安全逻辑的行为检查（声明原文由 BackupSafety.test.mjs 抽取后编译）。
+// 备份包可能来自别人（用户之间互相分享），所以「条目名能不能写到 root 之外」
+// 和「改写了哪些绝对路径」都必须钉死，而不是靠注释保证。
+
+private var passed = 0
+private val failures = mutableListOf<String>()
+
+private fun scenario(name: String, body: () -> Unit) {
+    try {
+        body()
+        passed++
+    } catch (t: Throwable) {
+        failures += "$name -> ${t.message}"
+    }
+}
+
+private fun check(condition: Boolean, message: () -> String) {
+    if (!condition) throw AssertionError(message())
+}
+
+fun main() {
+    val workspace = Files.createTempDirectory("backup-safety-").toFile()
+    try {
+        val root = File(workspace, "files").apply { mkdirs() }
+
+        scenario("zip 条目名无法逃出 root（zip-slip）") {
+            for (entry in listOf("../outside", "a/../../b", "../../etc/passwd", "home/../../x", "..")) {
+                check(BackupSafetyFixture.safeResolve(root, entry) == null) { "越界条目未被拒绝：$entry" }
+            }
+            // `File(root, "/etc/passwd")` 在 JVM 上得到 `root/etc/passwd`（子路径被当相对段拼接），
+            // 所以绝对路径条目不会拒绝、但也不会逃出 root —— 判据是「落在 root 内」而不是 null。
+            val absolute = BackupSafetyFixture.safeResolve(root, "/etc/passwd")
+            check(absolute != null) { "绝对路径条目被整体拒绝（行为已变，需重新确认是否仍是预期）" }
+            check(absolute!!.canonicalPath.startsWith(root.canonicalPath + File.separator)) {
+                "绝对路径条目逃出了 root：$absolute"
+            }
+        }
+
+        scenario("合法条目解析到 root 之内") {
+            val target = BackupSafetyFixture.safeResolve(root, "home/.dsh/sessions/s.jsonl")
+            check(target != null) { "合法条目被判为越界" }
+            check(target!!.canonicalPath.startsWith(root.canonicalPath + File.separator)) { "解析结果不在 root 内：$target" }
+            check(BackupSafetyFixture.safeResolve(root, "home/./.dsh/x")!!.canonicalPath ==
+                File(root, "home/.dsh/x").canonicalPath) { "未归一化 ./ 段" }
+        }
+
+        scenario("跨 flavor 路径改写成当前包名（两种路径前缀）") {
+            val text = "a: file:///data/user/0/com.dsh.android/files/home/x\nb: /data/data/com.dsh.android/files/home/y\n"
+            val out = BackupSafetyFixture.rewritePackagePaths(text, "com.dsh.webview")
+            check(out.contains("/data/user/0/com.dsh.webview/files/home/x")) { "未改写 /data/user/0 形式：$out" }
+            check(out.contains("/data/data/com.dsh.webview/files/home/y")) { "未改写 /data/data 形式：$out" }
+            check(!out.contains("com.dsh.android")) { "仍残留旧包名：$out" }
+            val back = BackupSafetyFixture.rewritePackagePaths(out, "com.dsh.android")
+            check(back == text) { "反向改写未回到原文：$back" }
+        }
+
+        scenario("已是当前包名时原样返回同一实例（调用方靠 === 跳过写盘）") {
+            val text = "path: /data/user/0/com.dsh.webview/files/home/x\n"
+            check(BackupSafetyFixture.rewritePackagePaths(text, "com.dsh.webview") === text) { "无改动时应返回同一实例" }
+        }
+
+        scenario("不认识的外部路径一个字节都不改") {
+            val text = listOf(
+                "/data/user/1/com.dsh.android/files/x",
+                "/data/data/com.other.app/files/x",
+                "/sdcard/Download/backup.zip",
+                "/data/local/tmp/x",
+            ).joinToString("\n")
+            check(BackupSafetyFixture.rewritePackagePaths(text, "com.dsh.webview") === text) { "外部路径被改动了：$text" }
+            val mixed = "/data/data/com.dsh.android/x /data/data/com.other.app/x"
+            val out = BackupSafetyFixture.rewritePackagePaths(mixed, "com.dsh.webview")
+            check(out == "/data/data/com.dsh.webview/x /data/data/com.other.app/x") { "只该改已知包名：$out" }
+        }
+    } finally {
+        workspace.deleteRecursively()
+    }
+
+    if (failures.isNotEmpty()) {
+        println(failures.joinToString("\n") { "FAIL $it" })
+        throw AssertionError("${failures.size} backup safety scenario(s) failed")
+    }
+    println("passed $passed production behavior checks")
+}

@@ -145,3 +145,72 @@ cordis 判定该插件 failed → 引擎**直接退出**。用户看到的是
 ⚠️ **给新插件写 `apply()` 时照抄这个形状**；已有插件逐个核对过，6/6 都带保护、
 无裸调用残留（`^\tctx\.tools\.register` 为 0 命中）。
 
+
+## 「浏览器侧那一半坏了」的判据（2026-11-12 重写）
+
+引擎健康、坏在 client 半时的降级入口有三类证据，**全部不依赖官方启动页长什么样**。
+
+| 判据 | 来源 | 处置 |
+|---|---|---|
+| 明确失败 | `Failed to load plugins`；整批 `/plugins/??` 资源加载失败；首帧正文是失败页 | 立刻降级 |
+| 健康证据 | `dsh-android-mobile` 上报**结构锚点 ≥ 1**（`[contenteditable="true"]` / `role=textbox` / `textarea` / `button[aria-label]` / `_sessionRow` / `.mp-nav-btn`） | 撤销待判 |
+| 超时 | 页面 `load` 之后 30 秒内**一条健康证据都没有**；插件自报「超时兜底」后缩短为 10 秒 | 到期降级 |
+
+实现分成三块，都不碰界面文本：
+
+- 判据本身 `app/src/main/java/com/dsh/android/ui/WebClientHealth.kt`（纯逻辑、零 Android
+  依赖，由 `app/src/test/WebClientHealth.test.mjs` 编译生产文件原文跑 13 条行为检查）；
+- 计时与三类处置 `app/src/main/java/com/dsh/android/ui/WebClientWatchdog.kt`
+  （`arm` / `disarm` / `reset`，规则是「允许提前，不允许推迟」，`MainActivity` 只做接线）；
+- 自愈额度 `core/logging/src/main/java/com/dsh/android/log/RescueAutoRetry.kt`
+  （自有 `rescue/auto-retry.json`，不碰 `state.json` 的 `since`）与
+  `runtime/engine/.../BootProfilePlan.kt`（决定本次用哪个 profile、是否允许 L1 隔离）。
+
+### 为什么废掉了「首帧正文里有 HARNESS」这条判据
+
+1. **那是 `polls=1` 的快照，不是当前状态。** 第一次轮询发生在 `dsh-android-mobile`
+   的 `apply()` 之后，官方启动页通常还在。真机（CDY-TN90 / 2026-11-12 15:13:55）：
+   `onUiReady` 已在 `.750` 成功上报，`.870` 那条 console 行仍带
+   `首帧正文="HARNESS Loading plugins…"` ⇒ **120 毫秒内**把一次本来健康的启动降级。
+2. **用户会自己换启动动画 / 主题 / 加载文案。** 文案一改，这条判据对真正的卡死**永久失效**；
+   换成本地化文案还可能在正常启动上继续误报。
+3. **单帧文本证明不了「持续卡住」。** 判据必须是「一段时间内始终拿不到健康证据」。
+
+### 第二条坑：`UiReady` 不是健康证据
+
+桥的 `onUiReady()` 只能证明**插件活着**。真机实测（2026-11-12 15:57，把
+`dsh-android-market/lib/client.js` 尾部加了一个 `)))`）：插件照常上报 `onUiReady`、
+页面始终停在启动页、结构锚点一直是 **0**。所以 `EngineManager.UiStage.UiReady`
+**不能**撤销待判窗口 —— 只有锚点 ≥ 1 才算「界面真的能用」。
+
+### 第三条坑：降级层级会粘死，必须自带额度
+
+`targetProfile` 只看 `RescueBoot.tier()`，而 tier 只在「用**正常** profile 起成功」时
+复位 —— 一旦写进 `RESCUE`，之后每次启动都用救援 profile，那条复位路径**永远走不到**。
+`RescueAutoRetry.shouldRetry()` 因此给了有上限的自愈额度：
+`RESCUE` + 距 `since` ≥ 5 分钟（`MIN_AGE_MS`）+ 本周期自动重试 < 2 次（`MAX_ATTEMPTS`）
+⇒ 本次故意用正常 profile 启动；启动成功则既有 `rescue.tier.reset` 把层级写回 `NORMAL`。
+额度记在 `~/.dsh/rescue/auto-retry.json`（`{schemaVersion,attempts}`，tmp+rename 落盘），
+层级不再是 `RESCUE` 时读取端自动归零，所以不需要额外的清理时机。
+
+⚠️ **自愈那一轮必须让 `BootProfilePlan.retryNormal` 为真**，因为 tier 里躺着的是
+**过期**值。否则 `maybeIsolateBadBundles()` 的入口闸门和启动前那次
+「L1 可能刚改层级 ⇒ 不发车，改走救援 profile」的重判会立刻把这次重试推回救援：
+真机现场 16:08 就是这样 —— `--profile web` 拉起 250 毫秒后被改回 `--profile rescue`，
+2 次额度在 5 秒内消耗光，自愈完全无效。
+
+### 真机验收（2026-11-12，CDY-TN90 / Android 10）
+
+| 场景 | 期望 | 实测 |
+|---|---|---|
+| 正常冷启动 | 不降级 | 待判窗口 30s 开启 → 0.6s 后收到 `锚点=2` ⇒ 撤销，tier 保持 normal |
+| 用户插件改坏（market client.js 加 `)))`） | 降级到救援 | `锚点=0` ⇒ 10s 窗口到期 ⇒ `tier=rescue`，改 `--profile rescue` 重启 |
+| 修好之后 | 自动回正常 | 冷却到期 ⇒ `自动回正常 profile 重试（第 1/2 次）` ⇒ `层级已复位：rescue → normal`，`锚点=2` |
+| 冷却期内重启（since 仅 90 秒） | 不进重试、不消耗额度 | 仍 `--profile rescue`，`auto-retry.json` 保持空 |
+
+重采（2026-11-12 19:11–19:16，判据重写成 `WebClientHealth` + 看门狗 + 自愈额度之后）
+逐条复核了上表三行与「冷却期内不重试」，原始记录在 `/tmp/dsh-judge/`
+（`A-degrade.txt`、`B-selfheal.txt`）：改坏 `dsh-android-market/lib/client.js` 后
+第 30 秒采样点已从 `normal` 变 `rescue`；还原并把 `since` 挪到 6 分钟前再启动，
+日志出现 `自动回正常 profile 重试（第 1/2 次，距进入 rescue 已 377s，落盘=true）`
+⇒ `降级层级已复位：rescue → normal`，`auto-retry.json = {"attempts":1}`。

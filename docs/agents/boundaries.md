@@ -12,8 +12,9 @@
   它同时是 shell 写入沙箱的强制层。
 - **沙箱不隔离 PID 命名空间**：`--unshare-pid` 需 CAP_SYS_ADMIN，普通应用拿不到。
   文件写边界是完整的。
-- **`engine-overlay/disable-native.yml` 已废弃**，可删。
-- **`x/` 目录是空的**，可删。
+- **`engine-overlay/disable-native.yml` 与空的 `x/` 目录均已删除**：前者针对 dsh
+  0.2.2-rc.1 的 `subprocess` / `attachment-local` 禁用，早已不被任何构建或运行路径读取
+  （node-pty 与 sharp wasm 变体已随资产提供）。
 - **`engine.bin` 在 APK 内每轮构建都要重新压缩**（52 MB）。若嫌构建慢，可在首次启动时
   改用 `adb push`，能把构建压到 10 秒内。
 - **APK 约 117 MB**：`engine.bin` 52 MB + `node-runtime.bin` 30 MB + bootstrap 23 MB

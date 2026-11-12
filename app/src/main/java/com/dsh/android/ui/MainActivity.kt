@@ -341,6 +341,22 @@ class MainActivity : AppCompatActivity() {
      */
     private val webRescueInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** 卡死检测的计时那一半；判据本体在 [WebClientHealth]，状态机在 [WebClientWatchdog]。 */
+    private val webClientWatchdog by lazy {
+        WebClientWatchdog(
+            handler = rendererHandler,
+            isNormalTier = { RescueBoot.tier().tier == RescueBoot.Tier.NORMAL },
+            logI = { Log.i(DshApplication.TAG, it) },
+            logE = { Log.e(DshApplication.TAG, it) },
+        ) { delayMs, why ->
+            degradeToRescue(
+                reason = "前端 ${delayMs / 1000} 秒内没有任何健康证据（$why）",
+                eventName = "web.client-silent",
+                extra = mapOf("deadlineMs" to delayMs.toString()),
+            )
+        }
+    }
+
     /** 内核回调可来自 Gecko 线程，恢复策略只在主线程推进。 */
     private fun onRendererGone(didCrash: Boolean) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
@@ -2737,8 +2753,18 @@ class MainActivity : AppCompatActivity() {
                     is EngineManager.UiStage.PageLoaded -> {
                         // 实测 onPageFinished 之后还有约 1.7s 插件激活期
                         showOverlay("正在准备界面…", hint = "激活移动端适配插件")
+                        // 待判窗口从**页面 load 完成**起算（没 load 完属 [WebRecoveryController]）；
+                        // 这是不用任何文案判据的卡死检测，见 [WebClientWatchdog]。
+                        webClientWatchdog.reset()
+                        webClientWatchdog.arm(
+                            delayMs = WebClientHealth.CLIENT_DEADLINE_MS,
+                            why = "页面 load 后没有任何健康证据",
+                        )
                     }
                     is EngineManager.UiStage.UiReady -> {
+                        // ⚠️ 这里**不能**撤销待判窗口：`UiReady` 只证明「插件活着」。
+                        //   真机把插件 client.js 加个 `)))` 后它照报 onUiReady，而页面
+                        //   始终停在启动页（`锚点=0`）。健康证据只认结构锚点 ≥ 1。
                         // ⚠️ 这里**不能**直接收起 —— DOM 就绪 ≠ 像素上屏。
                         //
                         // 真机实测（CDP `Page.startScreencast` 抓 WebView 内部帧）：
@@ -2984,79 +3010,53 @@ class MainActivity : AppCompatActivity() {
     /**
      * 浏览器侧插件加载失败 ⇒ 自动降级到救援模式（不加载任何第三方插件）。
      *
-     * ## 这是第四种故障形态，前三处判据都盖不到
-     *
-     * | 形态 | 判据落点 | 引擎 |
-     * |---|---|---|
-     * | 启动即崩 | stdout `startup failed` | 没起来 |
-     * | 起来了但 typert gateway 下线 | stdout `typert contributor(s) failed to register` | 起来了、功能废 |
-     * | 已降级仍失败 | 同上 | 起来了 |
-     * | **本次：client 半加载失败** | **浏览器 console `Failed to load plugins`** | **完全健康** |
+     * 这是第四种故障形态，前三处判据（stdout `startup failed`、`typert contributor(s)
+     * failed to register`、已降级仍失败）都盖不到：引擎**完全健康**，坏的是前端那半。
      *
      * 真机现场（OPPO PHY110，用户「做插件做到一半退出 App」）：引擎日志一切正常
      * （`dsh-gateway-ui: 已激活`、`已注册供应商 wb-gateway`），但前端整页变成
-     * `Failed to load plugins` —— 一个插件的 `client.js` 里多了一个 `)`，
-     * 而前端把所有插件的 client 半**合并成一批**下发，一个坏段让整批解析失败。
+     * `Failed to load plugins` —— 一个插件的 `client.js` 里多了一个 `)`，而前端把
+     * 所有插件的 client 半**合并成一批**下发，一个坏段让整批解析失败。
+     * 救援 profile 不含任何第三方 bundle（见 [EngineManager.ensureRescueProfile]），
+     * 所以界面能正常渲染、用户进得去对话，正好让 AI 把插件修好。
      *
-     * ## 为什么救援模式能解决它
-     *
-     * 救援 profile **不含任何第三方 bundle**（见 [EngineManager.ensureRescueProfile]），
-     * 所以那批合并 bundle 里根本不会有坏段 ⇒ 界面正常渲染 ⇒ 用户进得去对话，
-     * 而对话里正好可以让 AI 把插件修好（这正是用户要的）。
-     *
-     * ## ⚠️ 三条守卫，缺一不可
-     *
-     * ① **只推一次**（[webRescueInFlight]）：前端会**重复**打印这句话（重试加载），
-     *    不判重会叠起多次重启。
-     * ② **只在 NORMAL 态推**：已是 RESCUE 还推没有意义，且会把横幅的 `since`
-     *    刷成每次启动的时刻。同 `EngineManager` 里那处的论证。
-     * ③ **`rescueAvailable == false` 时不推**：那个 profile 建不出来，推过去
-     *    下次启动直接失败。
-     *
-     * ⚠️ 推完**不设 Ready**、状态打 [EngineManager.State.Dead] 而不是 `Failed` ——
-     *   `Failed` 会把用户引向**破坏性**的「安全模式」按钮（推开配置 + 重解包 15 秒），
-     *   而这里引擎是好的，只需要换个 profile 重启。与 `EngineManager` 里
-     *   gateway 那条降级路径的取舍完全一致。
+     * ⚠️ 三条守卫缺一不可：① 只推一次（[webRescueInFlight]，前端会重复打印这句话）；
+     * ② 只在 NORMAL 态推（否则横幅 `since` 每启动一次就跳一次）；③ `rescueAvailable`
+     * 为 false 时不推（profile 建不出来，推过去下次启动直接失败）。
+     * 推完**不设 Ready**、状态打 [EngineManager.State.Dead] 而非 `Failed` —— `Failed`
+     * 会把用户引向破坏性的「安全模式」按钮，而这里只需换个 profile 重启。
      */
     private fun maybeRescueFromWebFailure(line: String) {
-        // 判据**两类，缺一类就会漏**（真机矩阵实测，2026-10-17）：
+        // ⚠️ 判据全部在 [WebClientHealth]（2026-11-12 重写）：不再 grep 官方启动页
+        //   文案 `HARNESS` —— 那是「polls=1 的快照」而不是当前状态，正常启动也会带上
+        //   （真机 15:13:55 因此把健康启动降级成救援态），而用户一旦换掉启动动画 /
+        //   主题 / 加载文案，真正的卡死反而永远检测不到。事故全过程与替代判据见
+        //   `WebClientHealth` 的类注释与 `docs/agents/rescue-mode.md`。
         //
-        //  ① 前端自己打印的那句话（`Failed to load plugins`，大小写措辞照抄原文）。
-        //     它来自 App 自己的客户端插件 `dsh-android-mobile` —— 只有**单批里个别**
-        //     插件失败、整批 bundle 仍能加载时，它才活着并把这句话报出来。
-        //
-        //  ② **整批 `/plugins/??a,b,c` 资源加载失败**。前端把所有 client.js 合并成
-        //     一个请求下发，**任何一个 client bundle 有语法错误都会让整批失败** ——
-        //     于是连 `dsh-android-mobile` 自己都加载不了，**没有任何人上报 ①**。
-        //     真机复现（CDY-TN90）：`页面脚本错误: SyntaxError: expected expression,
-        //     got ';' @…/plugins/??@deepseek-ai/dsh-client-ui-open-in-app/client.js,…`
-        //     ⇒ 界面永久停在 `Failed to load plugins`，而 tier 一直是 normal。
-        //     ⚠️ 判据里那个 `/plugins/??` 不能省：单个插件的「资源加载失败」URL 里
-        //     只有它自己，那一种 ① 一般盖得住，但两者都收也不冲突（③ 保证只推一次）。
-        val selfReported = line.contains("Failed to load plugins")
-        val batchLoadFailed = line.contains("资源加载失败") && line.contains("/plugins/??")
-        //  ③ **首帧正文停在官方启动页**（`首帧正文="HARNESS …`）。
-        //
-        //     这一行由 `dsh-android-mobile` 在「官方启动页消失」时回报，是**唯一**
-        //     稳定可见的渲染结果。正常启动那里是真实 UI（如 `探索未至之境…`），
-        //     而前端 boot 卡住时是官方启动页原文 `HARNESS Loading plugins…` /
-        //     `HARNESS Failed to load plugins …`。
-        //
-        //     真机实测（2026-10-17）：带语法错误的 client bundle 让**整批**失败时，
-        //     console 只有 `[web] error: {}`（Error 序列化成空对象，判据抓不到）
-        //     和这一行，而它恰好抓在 `Loading plugins…` 这个**中间态**上 ——
-        //     ① ② 都不匹配 ⇒ 永不降级 ⇒ 用户点了「进入安全模式」也仍然进不去。
-        val stuckOnBootSplash = line.contains("首帧正文=\"HARNESS")
-        if (!selfReported && !batchLoadFailed && !stuckOnBootSplash) return
-        degradeToRescue(
-            reason = when {
-                selfReported -> "浏览器侧插件加载失败（Failed to load plugins）"
-                batchLoadFailed -> "浏览器侧插件整批加载失败（client bundle 语法错误）"
-                else -> "前端启动卡在官方启动页（插件加载没起来）"
-            },
-            eventName = "web.plugin-load-failed",
-            extra = mapOf("line" to line.take(200)),
-        )
+        //   三类事实：明确失败 ⇒ 立刻降级；健康证据（结构锚点 ≥1 最硬）⇒ 撤销待判；
+        //   超时（[WebClientHealth.CLIENT_DEADLINE_MS] 内一条健康证据都没有）⇒ 到期降级。
+        when (WebClientHealth.classify(line)) {
+            WebClientHealth.Verdict.EXPLICIT_FAILURE -> degradeToRescue(
+                reason = "浏览器侧插件加载失败（前端明确报错）",
+                eventName = "web.plugin-load-failed",
+                extra = mapOf("line" to line.take(200)),
+            )
+
+            WebClientHealth.Verdict.GAVE_UP -> {
+                // 插件自己说「等了 9 秒仍然没看到可用界面」。这**不等于**坏了
+                // （实测有 readyState 卡在 interactive 而界面可用的机型），
+                // 所以只把待判窗口缩短，到期仍无健康证据才降级。
+                Log.w(DshApplication.TAG, "[web-rescue] 插件自报超时兜底，缩短待判窗口: ${line.take(160)}")
+                webClientWatchdog.arm(
+                    delayMs = WebClientHealth.GAVE_UP_GRACE_MS,
+                    why = "插件自报超时兜底后仍无健康证据",
+                )
+            }
+
+            WebClientHealth.Verdict.HEALTHY -> webClientWatchdog.disarm("收到健康证据: ${line.take(120)}")
+
+            WebClientHealth.Verdict.NONE -> Unit
+        }
     }
 
     /**

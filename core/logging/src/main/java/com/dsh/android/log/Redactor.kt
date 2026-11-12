@@ -44,11 +44,28 @@ object Redactor {
      * 键名 + 分隔符 + 值：`api_key = "sk-abc..."` / `token: xyz` / `Authorization: Bearer ...`
      *
      * 值长度下限 8：太短的多半是 `token: 无` 这类正常文本，抹了反而看不懂。
+     *
+     * ⚠️ 起始位置用 `(?<![A-Za-z0-9])` 而**不是** `\b`：环境变量的键名几乎总是带前缀，
+     *   而 `_`/`-` 在正则里算 word 字符 —— `DSH_API_KEY=…`、`GEMINI_API_KEY=…`、
+     *   `MY_TOKEN=…`、`CLIENT_SECRET=…` 在 `\b` 下**全部不成立**（`KEY` 前面是 `_`，
+     *   没有 word 边界），整条值原样进诊断包。真实现象：`GEMINI_API_KEY=AIzaSy…`
+     *   既不被这条抓，也不被 [skTokenPattern] 抓（Google 形态没有分隔符），双漏。
+     *   改成「前面不是字母数字」之后，`_`/`-`/空格/行首都放行，前缀再多也命中。
      */
     private val secretKeyPattern = Regex(
-        "(?i)\\b(api[_-]?key|apikey|secret|token|password|passwd|authorization|bearer)" +
+        "(?i)(?<![A-Za-z0-9])(api[_-]?key|apikey|secret|token|password|passwd|authorization|bearer)" +
             "(\\s*[=:]\\s*)([\"']?)([A-Za-z0-9_\\-./+]{8,})\\3",
     )
+
+    /**
+     * `Bearer <token>` 形态（**空格分隔**，没有 `=`/`:`）。
+     *
+     * ⚠️ 与 [secretKeyPattern] 互补：`Authorization: Bearer <token>` 里 `:` 后面那个
+     *   值是 `Bearer` 本身（6 字符，短于下限 8），所以那条规范式一个字符都抹不到，
+     *   真正跟在空格后面的凭据原样出设备。`Bearer sk-xxx` 侥幸被 [skTokenPattern]
+     *   兜住，但任意非 `sk-` 形态的 bearer 凭据就是裸的。
+     */
+    private val bearerPattern = Regex("(?i)\\b(bearer\\s+)([A-Za-z0-9_\\-./+]{8,})")
 
     /**
      * 常见厂商的 token 前缀形态：`sk-…` / `sk-ant-…` / `xai-…` / `gsk_…` / `AIza…`
@@ -56,8 +73,13 @@ object Redactor {
      * ⚠️ 与上面那条**并存**而不是替代：这条抓「值本身长得像密钥」，上面那条抓
      * 「键名说明这是密钥」。两条都留着才能覆盖 `Authorization: Bearer sk-xxx`
      * 与裸的 `sk-xxx` 两种形态。
+     *
+     * ⚠️ `AIza`（Google/Gemini）必须单独一条：它**没有** `-`/`_` 分隔符，真实键形如
+     *   `AIzaSyD…`（`AIza` + 35 位），共用 `[-_]` 分支就永远匹配不到。
      */
-    private val skTokenPattern = Regex("\\b(sk|sk-or|sk-ant|xai|gsk|AIza)[-_][A-Za-z0-9_\\-]{12,}")
+    private val skTokenPattern = Regex(
+        "\\b(?:sk|sk-or|sk-ant|xai|gsk)[-_][A-Za-z0-9_\\-]{12,}|\\bAIza[A-Za-z0-9_\\-]{12,}",
+    )
 
     /**
      * URL query 里的密钥参数：`?token=abc...` / `&api_key=xyz`
@@ -85,8 +107,17 @@ object Redactor {
         // 反过来的话，第一条会把 sk-xxx 换成 ***REDACTED***，第二条的
         // `[A-Za-z0-9_\-./+]{8,}` 又可能匹配上标记里的字母 —— 虽然标记本身
         // 不会泄漏，但会产出 `***REDACTED***REDACTED***` 这种脏输出。
-        if (out.contains("sk-") || out.contains("sk_") || skTokenPattern.containsMatchIn(out)) {
+        //
+        // ⚠️ 守卫同样只问「这条正则会不会命中」，不枚举字面量：原来写的是
+        //   `contains("sk-") || contains("sk_") || …`，那等于给正则偷偷加了一层
+        //   白名单 —— [skTokenPattern] 新增 `AIza…` 形态后，不含 `sk-`/`sk_` 的
+        //   Google 键就会「正则能命中但守卫为假」，整段跳过。按键名/字面量枚举
+        //   守卫是同一个坑（见下面 [urlSecretPattern] 的注释），这里一并去掉。
+        if (skTokenPattern.containsMatchIn(out)) {
             out = skTokenPattern.replace(out) { m -> m.value.take(6) + "***REDACTED***" }
+        }
+        if (bearerPattern.containsMatchIn(out)) {
+            out = bearerPattern.replace(out) { m -> "${m.groupValues[1]}***REDACTED***" }
         }
         if (secretKeyPattern.containsMatchIn(out)) {
             out = secretKeyPattern.replace(out) { m ->
@@ -123,6 +154,7 @@ object Redactor {
      */
     fun looksUnredacted(s: String): Boolean =
         skTokenPattern.containsMatchIn(s) ||
+            bearerPattern.containsMatchIn(s) ||
             secretKeyPattern.containsMatchIn(s) ||
             urlSecretPattern.containsMatchIn(s)
 }

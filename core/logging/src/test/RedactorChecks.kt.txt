@@ -1,0 +1,110 @@
+package com.dsh.android.log
+
+// 真实 Redactor 行为检查（编译真实 core/logging/src/main/.../Redactor.kt，不改写实现）。
+//
+// 为什么这份检查必须存在：Redactor 是日志离开设备前的最后一道网，而它此前
+// **零用例**。KDoc 里记的那些真机复现（`?secret=%2B…` 漏抹、守卫枚举键名漏抹）
+// 只是注释，注释不会在回归时失败。这里把每条「实测会漏」的形态都钉成断言。
+
+private var passed = 0
+private val failures = mutableListOf<String>()
+
+private fun scenario(name: String, body: () -> Unit) {
+    try {
+        body()
+        passed++
+    } catch (t: Throwable) {
+        failures += "$name -> ${t.message}"
+    }
+}
+
+private fun check(condition: Boolean, message: () -> String) {
+    if (!condition) throw AssertionError(message())
+}
+
+private fun expect(label: String, input: String, expected: String) {
+    val actual = Redactor.redact(input)
+    check(actual == expected) { "$label\n  输入: $input\n  期望: $expected\n  实际: $actual" }
+}
+
+private fun expectRedacted(label: String, input: String) {
+    val actual = Redactor.redact(input)
+    check(actual.contains("***REDACTED***")) { "$label 一点都没抹：$input" }
+    check(!Redactor.looksUnredacted(actual)) { "$label 抹后仍被判为含密钥：$actual" }
+    check(actual == Redactor.redact(actual)) { "$label 非幂等：$actual" }
+}
+
+fun main() {
+    scenario("环境变量式键名（下划线前缀不是边界）必须抹值") {
+        // `\b` 在 `_` 后面不成立，这四个曾经整条原样进诊断包。
+        expectRedacted("DSH_API_KEY", "DSH_API_KEY=abcdefgh12345")
+        expectRedacted("MY_TOKEN", "MY_TOKEN=abcdefgh12345")
+        expectRedacted("CLIENT_SECRET", "CLIENT_SECRET=abcdefgh12345")
+        expectRedacted("GEMINI_API_KEY+AIza", "GEMINI_API_KEY=AIzaSyD-1234567890abcdefg")
+        expectRedacted("x-api-key 头", "x-api-key: abcdefgh1234")
+        // 前缀不是密钥名时不能误判成密钥名（`key` 单独不是键名）。
+        expect("monkey 不误抹", "monkey=abcdefgh12345", "monkey=abcdefgh12345")
+    }
+
+    scenario("键名 + 等号/冒号/引号形态抹掉值并保留键名与引号") {
+        expect("api_key + 引号", "api_key = \"abcd1234efgh\"", "api_key = \"***REDACTED***\"")
+        expect("token 冒号", "token: abcdefgh1234", "token: ***REDACTED***")
+        expect("password 等号", "password=hunter2hunter2", "password=***REDACTED***")
+        expect("Authorization 冒号", "Authorization: abcdefgh1234", "Authorization: ***REDACTED***")
+        expect("单引号", "secret = 'abcd1234efgh'", "secret = '***REDACTED***'")
+    }
+
+    scenario("Bearer 空格形态（没有 = 也没有 :）抹掉凭据") {
+        expect("Authorization: Bearer", "Authorization: Bearer abcdefgh1234", "Authorization: Bearer ***REDACTED***")
+        expect("裸 bearer", "bearer abcdefgh1234", "bearer ***REDACTED***")
+        // `sk-` 形态走另一条路径，前缀保留 6 字符，但不能再出现第二段标记。
+        expect("Bearer + sk-ant", "Authorization: Bearer sk-ant-api03-abcdefghijkl", "Authorization: Bearer sk-ant***REDACTED***")
+    }
+
+    scenario("厂商 token 自身形态（含无分隔符的 AIza）") {
+        expect("sk-", "裸 sk-abcdefghijklmn 值", "裸 sk-abc***REDACTED*** 值")
+        expect("gsk_", "gsk_abcdefghijklmn", "gsk_ab***REDACTED***")
+        expect("xai-", "xai-abcdefghijklmn", "xai-ab***REDACTED***")
+        expect("AIza 无分隔符", "AIzaSyD-1234567890abcdefg", "AIzaSy***REDACTED***")
+        // 长度不足 12 的 `AIza` 短串不是密钥形态，不能抹。
+        expect("AIza 短串不误抹", "AIzaShort", "AIzaShort")
+    }
+
+    scenario("URL query 密钥参数（含 KDoc 记录的历史漏抹形态）") {
+        expect("?token=", "http://127.0.0.1:3080/?token=abc12345678", "http://127.0.0.1:3080/?token=***REDACTED***")
+        expect("?secret= base64", "http://x/?secret=%2BWpZq3RtY9kLmNvBx4Td", "http://x/?secret=***REDACTED***")
+        expect("?access_token=", "http://x/?access_token=YWJjZGVmZ2hpamt&y=1", "http://x/?access_token=***REDACTED***&y=1")
+        expect("&api_key=", "http://x/?a=1&api_key=abcdefgh1234", "http://x/?a=1&api_key=***REDACTED***")
+        expect("?key=", "http://x/?key=abcdefgh12345", "http://x/?key=***REDACTED***")
+    }
+
+    scenario("幂等：二次脱敏不变，且不产出重复标记") {
+        val once = Redactor.redact("api_key=\"sk-abcdefghijklmn\" ?token=abc12345678 Bearer abcdefgh1234")
+        check(once == Redactor.redact(once)) { "二次脱敏改变了结果：$once" }
+        check(!once.contains("REDACTED***REDACTED")) { "标记被二次啃：$once" }
+        check(once.count { it == '*' } == 18) { "标记数量不对（期望 3 处 × 6 星号）：$once" }
+    }
+
+    scenario("非密钥文本原样保留（误抹会毁掉可读性）") {
+        expect("空串", "", "")
+        expect("短值", "token: 无", "token: 无")
+        expect("短值=形式", "token=short", "token=short")
+        expect("中文日志", "普通中文日志，路径 /data/data/com.dsh.android/files/termux/usr",
+            "普通中文日志，路径 /data/data/com.dsh.android/files/termux/usr")
+        expect("无键名长串", "request abcdefgh1234 finished", "request abcdefgh1234 finished")
+    }
+
+    scenario("looksUnredacted 能兜住新形态，且不误报干净文本") {
+        check(Redactor.looksUnredacted("AIzaSyD-1234567890abcdefg")) { "裸 AIza 未被判为密钥" }
+        check(Redactor.looksUnredacted("Bearer abcdefgh1234")) { "裸 Bearer 未被判为密钥" }
+        check(Redactor.looksUnredacted("DSH_API_KEY=abcdefgh12345")) { "DSH_API_KEY 未被判为密钥" }
+        check(!Redactor.looksUnredacted(Redactor.redact("Bearer abcdefgh1234"))) { "抹后仍被判为密钥" }
+        check(!Redactor.looksUnredacted("普通日志 token: 无")) { "干净文本被误判" }
+    }
+
+    if (failures.isNotEmpty()) {
+        println(failures.joinToString("\n") { "FAIL $it" })
+        throw AssertionError("${failures.size} redactor scenario(s) failed")
+    }
+    println("passed $passed production behavior checks")
+}

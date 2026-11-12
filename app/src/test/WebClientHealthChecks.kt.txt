@@ -1,0 +1,149 @@
+package com.dsh.android.ui
+
+// 「浏览器侧那一半坏没坏」判据的行为检查。
+//
+// 被检对象是**生产文件原文**（`app/src/main/java/com/dsh/android/ui/WebClientHealth.kt`
+// 整个文件直接编译，不做抽取复制）—— 它刻意不依赖任何 Android 类型，所以能在 JVM 上跑。
+//
+// 这一组用例存在的理由是真机事故（CDY-TN90 / 2026-11-12 15:13:55）：
+// 正常启动时前端会打出 `首帧正文="HARNESS Loading plugins…"`（那是 polls=1 的快照），
+// 旧判据把它当「卡住」，120 毫秒内把一次**本来健康**的启动降级到救援模式，
+// 且层级粘住、连续两次启动都停在救援态。同时用户只要换掉启动动画/主题/加载文案，
+// 旧判据就再也检测不到真正的卡死。下面每条用例都对着一个具体事故面。
+
+private var passed = 0
+private val failures = mutableListOf<String>()
+
+private fun scenario(name: String, body: () -> Unit) {
+    try {
+        body()
+        passed++
+    } catch (t: Throwable) {
+        failures += "$name -> ${t.message}"
+    }
+}
+
+private fun expect(actual: WebClientHealth.Verdict, expected: WebClientHealth.Verdict, why: String) {
+    if (actual != expected) throw AssertionError("$why：期望 $expected，实际 $actual")
+}
+
+private fun expectTrue(actual: Boolean, why: String) {
+    if (!actual) throw AssertionError(why)
+}
+
+fun main() {
+    // ① 事故原样回放：正常启动、首帧快照是官方启动页文案 —— 必须**不**判坏。
+    //    旧判据在这一行上 100% 误判（它只 grep `首帧正文="HARNESS`）。
+    scenario("正常启动的首帧快照带官方启动页文案不算坏") {
+        val line = "[dsh-android-mobile] onUiReady: 未见到官方启动页 " +
+            "[polls=1 bootSeen=false 锚点=4 首帧正文=\"HARNESS Loading plugins…\"]"
+        val v = WebClientHealth.classify(line)
+        expectTrue(!WebClientHealth.isExplicitFailure(line), "首帧快照不是失败证据")
+        expect(v, WebClientHealth.Verdict.HEALTHY, "插件已上报 onUiReady ⇒ 健康")
+    }
+
+    // ② 用户换掉启动动画 / 加载文案：正常启动依旧要被判健康（且**不依赖**那串文案）。
+    scenario("自定义启动动画下正常启动仍判健康") {
+        val line = "[dsh-android-mobile] onUiReady: 官方启动页已消失 " +
+            "[polls=3 bootSeen=true 锚点=5 首帧正文=\"我的自定义加载动画…\"]"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.HEALTHY, "自定义文案不影响健康判定")
+    }
+
+    // ③ 明确失败：前端自报插件加载失败 ⇒ 立刻降级。
+    scenario("前端自报 Failed to load plugins 判明确失败") {
+        val line = "[web] Failed to load plugins: @deepseek-ai/dsh-client-ui-open-in-app"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.EXPLICIT_FAILURE, "原文判据")
+        expectTrue(WebClientHealth.isExplicitFailure(line), "便捷判据同结论")
+    }
+
+    // ④ 明确失败：整批 /plugins/?? 资源加载失败（此时连本插件都加载不了，没人自报 ③）。
+    scenario("整批 /plugins/?? 资源加载失败判明确失败") {
+        val line = "页面脚本错误: 资源加载失败 https://127.0.0.1:3080/plugins/??a/client.js,b/client.js"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.EXPLICIT_FAILURE, "整批失败")
+    }
+
+    // ⑤ 用户换掉启动动画**并且**插件真的坏了：失败信息在首帧正文里 ⇒ 仍要判出来。
+    //    这条是「自定义文案」场景下的**真阳性**守卫：旧判据在这里是假阴性。
+    scenario("自定义启动动画下真卡死仍能判出") {
+        val line = "[dsh-android-mobile] onUiReady: 超时兜底 " +
+            "[polls=180 bootSeen=false 锚点=0 首帧正文=\"HARNESS Failed to load plugins dsh-jiuli\"]"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.EXPLICIT_FAILURE, "正文里的失败页优先于超时")
+    }
+
+    // ⑥ 插件自报超时兜底（等了 9 秒没等到可用界面）⇒ **弱信号**，不是立刻降级。
+    //    真机上见过 readyState 卡在 interactive 而界面其实可用的机型。
+    scenario("超时兜底只算弱信号") {
+        val line = "[dsh-android-mobile] onUiReady: 超时兜底 [polls=180 bootSeen=false 锚点=0]"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.GAVE_UP, "弱信号")
+        expectTrue(!WebClientHealth.isExplicitFailure(line), "弱信号不能直接触发降级")
+    }
+
+    // ⑦ 首帧正文里出现错误页 ⇒ 明确失败（内容判据，与启动页文案无关）。
+    scenario("首帧正文是错误页判明确失败") {
+        val line = "页面诊断: [polls=1 锚点=0 首帧正文=\"Something went wrong: Error\"]"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.EXPLICIT_FAILURE, "错误页")
+    }
+
+    // ⑧ 选择器体检命中 ⇒ 健康证据（页面里已经有真实 UI 的锚点）。
+    scenario("选择器体检命中算健康证据") {
+        expect(
+            WebClientHealth.classify("页面诊断: [2026-11-10-features] 选择器体检: 4 个关键锚点全部命中"),
+            WebClientHealth.Verdict.HEALTHY,
+            "命中 ⇒ 健康",
+        )
+        expect(
+            WebClientHealth.classify("页面诊断: 选择器体检: 1 个未命中 → 会话列表行"),
+            WebClientHealth.Verdict.NONE,
+            "有未命中时不冒充健康证据",
+        )
+    }
+
+    // ⑨ **插件活着 ≠ 界面能用**（真机事故 2026-11-12 15:57）：
+    //    把 dsh-android-market 的 client.js 尾部加了一个 `)))` 之后，移动端插件
+    //    照样上报 onUiReady，而页面始终停在启动页、锚点一直是 0。判「健康」会让
+    //    这种坏法**永远不降级**，所以锚点数必须压过 onUiReady 这个措辞。
+    scenario("onUiReady 但锚点为 0 不算健康") {
+        val line = "[dsh-android-mobile] onUiReady: 官方启动页已消失 " +
+            "[polls=7 bootSeen=true 锚点=0 首帧正文=\"HARNESS Loading plugins…\"]"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.GAVE_UP, "锚点 0 ⇒ 弱信号")
+        expectTrue(!WebClientHealth.isHealthy(line), "不能当成健康证据")
+    }
+
+    // ⑩ 锚点 ≥ 1 无论文案是什么都算健康（用户自定义启动动画/主题的正面场景）。
+    scenario("锚点非零即健康，与文案无关") {
+        val line = "[dsh-android-mobile] onUiReady: 未见到官方启动页 " +
+            "[polls=2 bootSeen=false 锚点=3 首帧正文=\"自定义加载中\"]"
+        expect(WebClientHealth.classify(line), WebClientHealth.Verdict.HEALTHY, "结构证据优先")
+    }
+
+    // ⑪ 锚点解析只吃紧跟标记的数字，不能被行尾别的字段骗。
+    scenario("锚点解析鲁棒") {
+        expectTrue(WebClientHealth.anchors("x 锚点=4 首帧正文=\"2 items\"") == 4, "取 4")
+        expectTrue(WebClientHealth.anchors("x 锚点=0") == 0, "取 0")
+        expectTrue(WebClientHealth.anchors("没有该字段") == null, "缺字段返回 null")
+    }
+
+    // ⑫ 无关行不能影响判定（内核 console 里什么都有）。
+    scenario("无关 console 行不影响判定") {
+        expect(WebClientHealth.classify("[web] 心跳 ok"), WebClientHealth.Verdict.NONE, "普通行")
+        expect(WebClientHealth.classify(""), WebClientHealth.Verdict.NONE, "空行")
+    }
+
+    // ⑩ 常量必须与客户端插件的兜底窗口相容：超时兜底后的宽限要明显短于总期限，
+    //    否则「插件自报超时」这个弱信号就毫无加速作用。
+    scenario("期限常量关系自洽") {
+        expectTrue(
+            WebClientHealth.GAVE_UP_GRACE_MS < WebClientHealth.CLIENT_DEADLINE_MS,
+            "超时兜底宽限必须短于总期限",
+        )
+        expectTrue(WebClientHealth.CLIENT_DEADLINE_MS >= 9000L, "总期限不能短于插件的 9 秒兜底")
+    }
+
+    if (failures.isEmpty()) {
+        println("passed $passed production behavior checks")
+    } else {
+        println("failed ${failures.size} of ${passed + failures.size} behavior checks")
+        failures.forEach { println(" - $it") }
+        kotlin.system.exitProcess(1)
+    }
+}

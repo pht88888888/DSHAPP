@@ -1,0 +1,133 @@
+package com.dsh.android.engine
+
+import com.dsh.android.engine.constants.CREDENTIALS_FILE
+import com.dsh.android.engine.constants.OWNER_ONLY_PERMISSIONS
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
+
+// 真实 EngineFilePolicy 行为检查（编译 runtime/engine 的生产源码，不改写实现）。
+//
+// 两条被检查的行为各自对应一类「真机上表现为别的问题」的故障：
+//  · ensurePickerRoots：入口链接坏了 → 目录选择器只剩一棵树，用户以为「文件丢了」；
+//  · ensureCredentialFileMode：`.credentials.yaml` 权限过宽 → 引擎判「必需插件没起来」
+//    直接退出，表现为「App 打不开」而看不到任何权限字样。
+// 两者此前都零用例。
+
+private var passed = 0
+private val failures = mutableListOf<String>()
+
+private fun scenario(name: String, body: () -> Unit) {
+    try {
+        body()
+        passed++
+    } catch (t: Throwable) {
+        failures += "$name -> ${t.message}"
+    }
+}
+
+private fun check(condition: Boolean, message: () -> String) {
+    if (!condition) throw AssertionError(message())
+}
+
+private fun permissions(file: File): Set<PosixFilePermission> =
+    Files.getPosixFilePermissions(file.toPath())
+
+fun main() {
+    val workspace = Files.createTempDirectory("engine-file-policy-").toFile()
+    try {
+        val filesDir = File(workspace, "files").apply { mkdirs() }
+        val homeDir = File(workspace, "files/home").apply { mkdirs() }
+        val dshHome = File(homeDir, ".dsh").apply { mkdirs() }
+        val policy = EngineFilePolicy(filesDir, homeDir, dshHome)
+
+        scenario("HOME 不存在时不建任何东西也不抛") {
+            val missing = File(workspace, "no-home")
+            EngineFilePolicy(filesDir, missing, dshHome).ensurePickerRoots()
+            check(!missing.exists()) { "不该创建不存在的 HOME" }
+        }
+
+        scenario("两个工作区入口链接指向约定目标且幂等") {
+            policy.ensurePickerRoots()
+            val storage = File(homeDir, "手机存储")
+            val appDir = File(homeDir, "应用目录")
+            check(Files.isSymbolicLink(storage.toPath())) { "手机存储 不是符号链接" }
+            check(Files.readSymbolicLink(storage.toPath()).toString() == "/sdcard") {
+                "手机存储 指向 ${Files.readSymbolicLink(storage.toPath())}"
+            }
+            check(Files.isSymbolicLink(appDir.toPath())) { "应用目录 不是符号链接" }
+            check(Files.readSymbolicLink(appDir.toPath()).toString() == filesDir.absolutePath) {
+                "应用目录 指向 ${Files.readSymbolicLink(appDir.toPath())}"
+            }
+            policy.ensurePickerRoots()
+            check(Files.readSymbolicLink(storage.toPath()).toString() == "/sdcard") { "二次调用破坏了 手机存储" }
+            check(Files.readSymbolicLink(appDir.toPath()).toString() == filesDir.absolutePath) { "二次调用破坏了 应用目录" }
+            check(homeDir.listFiles()!!.size == 2 + 1) { "HOME 下多出了预期之外的条目：${homeDir.list()?.joinToString()}" }
+        }
+
+        scenario("同名真实文件占位时跳过，不删用户文件") {
+            val occupiedHome = File(workspace, "occupied-home").apply { mkdirs() }
+            val occupied = File(occupiedHome, "手机存储").apply { writeText("user data") }
+            EngineFilePolicy(filesDir, occupiedHome, dshHome).ensurePickerRoots()
+            check(occupied.isFile && occupied.readText() == "user data") { "用户同名文件被改动了" }
+            check(!Files.isSymbolicLink(occupied.toPath())) { "用户同名文件被换成了链接" }
+            check(Files.isSymbolicLink(File(occupiedHome, "应用目录").toPath())) { "另一个入口应照建" }
+        }
+
+        scenario("换包名后旧目标链接被重建；断链也能重建") {
+            val staleHome = File(workspace, "stale-home").apply { mkdirs() }
+            val stale = File(staleHome, "应用目录")
+            Files.createSymbolicLink(stale.toPath(), File("/data/data/com.dsh.webview/files").toPath())
+            val broken = File(staleHome, "手机存储")
+            Files.createSymbolicLink(broken.toPath(), File(workspace, "deleted-target").toPath())
+            EngineFilePolicy(filesDir, staleHome, dshHome).ensurePickerRoots()
+            check(Files.readSymbolicLink(stale.toPath()).toString() == filesDir.absolutePath) {
+                "旧包名链接未重建：${Files.readSymbolicLink(stale.toPath())}"
+            }
+            check(Files.readSymbolicLink(broken.toPath()).toString() == "/sdcard") {
+                "断链未重建：${Files.readSymbolicLink(broken.toPath())}"
+            }
+        }
+
+        scenario("凭据文件不存在时静默返回，不创建文件") {
+            policy.ensureCredentialFileMode()
+            check(!File(dshHome, CREDENTIALS_FILE).exists()) { "不该凭空创建凭据文件" }
+        }
+
+        scenario("组/其他位非零的凭据文件被收窄为 0600 且内容不变") {
+            val credentials = File(dshHome, CREDENTIALS_FILE)
+            credentials.writeText("apiKey: fixtured\n")
+            for (mode in listOf("rw-rw----", "rw-r--r--", "rwxrwxrwx")) {
+                Files.setPosixFilePermissions(credentials.toPath(), PosixFilePermissions.fromString(mode))
+                policy.ensureCredentialFileMode()
+                check(permissions(credentials) == OWNER_ONLY_PERMISSIONS) {
+                    "$mode 未被收窄为 0600，实际 ${PosixFilePermissions.toString(permissions(credentials))}"
+                }
+                check(credentials.readText() == "apiKey: fixtured\n") { "$mode 收窄时改动了文件内容" }
+            }
+            policy.ensureCredentialFileMode()
+            check(permissions(credentials) == OWNER_ONLY_PERMISSIONS) { "二次调用后权限漂移" }
+            credentials.delete()
+        }
+
+        scenario("组/其他位为零的文件保持原样（与引擎判据逐位对齐）") {
+            val credentials = File(dshHome, CREDENTIALS_FILE)
+            credentials.writeText("apiKey: fixtured\n")
+            Files.setPosixFilePermissions(credentials.toPath(), PosixFilePermissions.fromString("rwx------"))
+            policy.ensureCredentialFileMode()
+            check(permissions(credentials) == PosixFilePermissions.fromString("rwx------")) {
+                "0700 被改动了：${PosixFilePermissions.toString(permissions(credentials))}"
+            }
+            credentials.delete()
+        }
+    } finally {
+        workspace.deleteRecursively()
+    }
+
+    if (failures.isNotEmpty()) {
+        println(failures.joinToString("\n") { "FAIL $it" })
+        throw AssertionError("${failures.size} engine file policy scenario(s) failed")
+    }
+    println("passed $passed production behavior checks")
+}

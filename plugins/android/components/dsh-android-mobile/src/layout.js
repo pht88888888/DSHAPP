@@ -409,9 +409,44 @@ export function createMobileLayout() {
   		document.documentElement.hasAttribute("data-mobile") &&
   		document.documentElement.hasAttribute("data-mp-shell");
 
+  	/*
+  	 * 真实 UI 的**结构锚点**：这些元素只存在于「官方前端已经渲染出可用界面」之后，
+  	 * 启动页（无论它长什么样）里一个都不会有。
+  	 *
+  	 * ⚠️ 为什么必须有这一条（2026-11-12，用户反馈）：
+  	 * 上面那条 `officialBootVisible()` 认的是**文案**（`Loading plugins`）。而
+  	 * **用户可以自己换掉启动动画 / 主题 / 加载文案** —— 换掉之后
+  	 *  - 文案判据永远返回 false：不能再拿它证明「启动页还在」（早收，白闪）；
+  	 *  - 更糟的是原生侧的卡死判据原本也钉在启动页文案上（`首帧正文="HARNESS`），
+  	 *    用户一改文案，**真正卡死时反而永远检测不到**。
+  	 * 所以判"界面真的能用了"必须落在**我们自己能观察到的事实**上：
+  	 * 真实 UI 的锚点在不在。
+  	 *
+  	 * 选择器的取舍：只挑**结构性的**、不随官方哈希类名漂移的
+  	 * （`aria-label`、`role`、`contenteditable`、以及本插件自己打的
+  	 * `data-mobile`/`.mp-nav-btn`）。`uV2eYG_input` 那类哈希类名**不进这里** ——
+  	 * 官方一升级就失效，等于又给自己造一条会静默失效的判据。
+  	 */
+  	const realUiAnchors = () => {
+  		if (!document.querySelectorAll) return 0;
+  		let n = 0;
+  		const probe = (sel) => { try { if (document.querySelector(sel)) n++; } catch (e) { /* 旧内核不认某个选择器不算错 */ } };
+  		probe('[contenteditable="true"]');
+  		probe('div[role="textbox"]');
+  		probe('textarea');
+  		probe('button[aria-label]');
+  		probe('[class*="_sessionRow"]');
+  		probe('.mp-nav-btn');
+  		return n;
+  	};
+
   	const ready = () => {
   		if (!shellReady()) { shellReadyAt = 0; return false; }
   		if (!shellReadyAt) shellReadyAt = Date.now();
+  		// ⚠️ 顺序：**先看结构锚点**。真实 UI 已经挂上就是最硬的证据，
+  		//   比任何文案判据都可靠，也比 `readyState === "complete"` 稳
+  		//   （后者会被一个挂住的图片/请求永久拖住，见下面 PAGE_LOAD_GRACE_MS）。
+  		if (realUiAnchors() > 0) return true;
   		if (officialBootVisible()) return false;
   		if (pageLoaded()) return true;
   		// 外壳早就位，但页面 load 迟迟不结束 ⇒ 宽限到点就交付。
@@ -433,13 +468,17 @@ export function createMobileLayout() {
   		if (ready()) {
   			// ⚠️ 诊断信息要带**实际观测到的文本**：只报"见到/没见到"无法区分
   			//   "判据正确"与"判据根本没生效"，这一轮就因此多绕了一次。
+  			// ⚠️ 锚点数一并上报：原生侧据此判断「界面真的能用了」，
+  			//   而这个判断**不依赖任何前端文案**（用户可换启动动画，见 realUiAnchors）。
   			report(
   				(bootSeen ? "官方启动页已消失" : "未见到官方启动页") +
   				" [polls=" + polls + " bootSeen=" + bootSeen +
+  				" 锚点=" + realUiAnchors() +
   				" 首帧正文=" + JSON.stringify(firstText) + "]"
   			);
   		} else if (Date.now() - t0 > UI_READY_MAX_WAIT_MS) {
-  			report("超时兜底 [polls=" + polls + " bootSeen=" + bootSeen + "]");
+  			report("超时兜底 [polls=" + polls + " bootSeen=" + bootSeen +
+  				" 锚点=" + realUiAnchors() + "]");
   		}
   	}, 50);
   	}

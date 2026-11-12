@@ -179,16 +179,21 @@ manifest.json      最后写 —— 它记录前面实际写进去什么
 
 #### 脱敏（`Redactor`）—— 不是可选项
 
-包要离开设备。落盘**之前**统一脱敏，三组模式：
+包要离开设备。落盘**之前**统一脱敏，四组模式：
 
 | 模式 | 拦什么 |
 |---|---|
-| `skTokenPattern` | `sk-…` 形式的 API key |
-| `secretKeyPattern` | `api_key=` / `token:` 等键值对 |
+| `skTokenPattern` | `sk-…` / `sk-ant-…` / `gsk_…` / `xai-…`，以及**没有分隔符**的 `AIza…`（Google/Gemini） |
+| `secretKeyPattern` | `api_key=` / `token:` 等键值对；起始用「前面不是字母数字」而不是 `\b`，所以 `DSH_API_KEY=` / `MY_TOKEN=` 这类带前缀的键名同样命中 |
+| `bearerPattern` | `Bearer <token>` 这种**空格分隔**形式（没有 `=` 也没有 `:`） |
 | `urlSecretPattern` | `?token=…` —— **引擎启动那行 URL 就带 token** |
 
-⚠️ 第三条是实测逼出来的：`[engine] dsh web: http://127.0.0.1:3080/?token=…` 是每次启动
+⚠️ 第四条是实测逼出来的：`[engine] dsh web: http://127.0.0.1:3080/?token=…` 是每次启动
 必打的一行，不拦就等于每次上报都泄漏一个可用凭据。
+
+⚠️ 这四条都有真实 Kotlin 回归用例（`core/logging/src/test/LogPrivacy.test.mjs`，L2
+`android-owner-behavior` 里执行），覆盖过历史上漏抹的形态：`?secret=<base64>`、`DSH_API_KEY=`、
+`Bearer <任意 token>`、裸 `AIza…`。改正则必须同时改那里的期望，不允许只改一边。
 
 **包内容边界**：含设备/系统/App 版本、脱敏日志、插件/文件/设置状态；
 **不含**会话正文（只含元数据）、凭据、工作区文件内容。

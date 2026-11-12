@@ -23,7 +23,7 @@ node tools/release/cli.mjs inspect --development --sdk /opt/android-sdk
 默认读取：
 
 - system/gecko 对应的 release APK。
-- [插件清单](../../tools/plugin-components.json)和 `app/build/generated/plugin-components` 的 ZIP、manifest。
+- [插件清单](../../catalogs/plugin-components.json)（唯一事实源；`tools/` 下不允许有同名副本）和 `app/build/generated/plugin-components` 的 ZIP、manifest。
 - [运行资产锁](../../catalogs/runtime-assets.lock.json)。开发模式下锁不存在可继续，但报告为 null；正式候选必须有锁。
 
 `inspect` 使用真实 `aapt dump badging` 和 `apksigner verify --verbose --print-certs`，检查：

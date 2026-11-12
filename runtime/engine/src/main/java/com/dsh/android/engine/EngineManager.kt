@@ -1684,6 +1684,7 @@ class EngineManager private constructor(
      *
      * @return 做了什么；没触发时返回 null。
      */
+
     private suspend fun maybeIsolateBadBundles(): IsolationResult? {
         val st = RescueBoot.tier()
         // ⚠️ [RescueBoot.Tier.QUARANTINED] **必须**放行（与 NORMAL 同等待遇）：
@@ -1691,7 +1692,8 @@ class EngineManager private constructor(
         //   用户就会卡在「每次启动都禁同一个插件、每次都起不来」的死循环里 ——
         //   正是闸门①的注释警告的那种「停在原地、永远到不了下一层」。
         //   QUARANTINED 的语义是**进行中**，不是终点。
-        if (st.tier != RescueBoot.Tier.NORMAL && st.tier != RescueBoot.Tier.QUARANTINED) {
+        // ⚠️ 自愈重试那一轮的层级是**过期**的，闸门要放行 —— 判据见 [BootProfilePlan.isolationAllowed]。
+        if (!BootProfilePlan.isolationAllowed(st.tier)) {
             Log.i(TAG, "L1 隔离：当前层级 ${st.tier.label}，跳过")
             return null
         }
@@ -2117,11 +2119,8 @@ class EngineManager private constructor(
         //   `tier()` 读的是 `$DSH_HOME/rescue/state.json`，由降级决策写入。
         //   ⚠️ 它**不会**因为"这次起来了"而自动复位 —— 复位只在用户点
         //   「退出救援模式」时发生（I4：降级状态必须常驻可见 + 可一键退出）。
-        val targetProfile = if (RescueBoot.tier().tier == RescueBoot.Tier.RESCUE) {
-            RESCUE_PROFILE_NAME
-        } else {
-            PROFILE_NAME
-        }
+        // 层级是**粘的**（tier 只在正常 profile 起成功时复位），所以走自愈决策，见 [BootProfilePlan]。
+        val targetProfile = BootProfilePlan.resolve(PROFILE_NAME, RESCUE_PROFILE_NAME)
         if (targetProfile != PROFILE_NAME) {
             Log.w(TAG, "以救援 profile 启动（--profile $targetProfile）：不加载任何第三方插件")
             EventLog.record("engine.start.rescue", mapOf("profile" to targetProfile))
@@ -2529,7 +2528,8 @@ class EngineManager private constructor(
         //     L1 **成功**摘掉了致命插件，而那时用用户的 web profile 启动恰恰是
         //     正确动作（绝大多数插件保住了）。写成 `!= NORMAL` 会把成功当成失败，
         //     把用户直接丢进救援模式、白丢全部插件。
-        if (RescueBoot.tier().tier == RescueBoot.Tier.RESCUE &&
+        if (!BootProfilePlan.retryNormal &&
+            RescueBoot.tier().tier == RescueBoot.Tier.RESCUE &&
             targetProfile != RESCUE_PROFILE_NAME
         ) {
             Log.w(TAG, "L1 已把层级改为救援模式，本次不发车，改用救援 profile 重启")
