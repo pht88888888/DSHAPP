@@ -258,8 +258,8 @@
       "id": "webview-compat",
       "path": "app/src/main/assets/webview-compat.zip",
       "apkEntry": "assets/webview-compat.zip",
-      "bytes": 7820046,
-      "sha256": "15086164b4e3453fd968d4cb38c5eb9f2b7bf43f1200105c522e9769ff3bb4bc",
+      "bytes": 7820044,
+      "sha256": "99d52a44ec3835cf1ba686458c35350013e6ea7598e3578cdd99206f8de88e2c",
       "source": {
         "location": "tools/build-webview-compat.mjs",
         "version": null,

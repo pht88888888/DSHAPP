@@ -34,16 +34,66 @@ internal class BuiltinPluginBundles(
 ) {
     private val stateDir = File(home, ".builtin-plugins")
 
+    /**
+     * 建 profile（幂等）。
+     *
+     * ## 为什么要按「引擎版本戳 + profile 名」短路
+     *
+     * 这一步是**再起一个 node 进程**跑 `initProfile()`，真机冷启动实测 0.6~0.7 秒；
+     * 而它真正会做的事只有一件 —— 按**本次 APK 那份**官方引擎的模板补 profile 清单
+     * （`profiles/<name>/package.json` 里的 `dsh.profile.bundles`）。引擎没换，补出来的
+     * 结果与上次一模一样，于是每次都白烧一次进程启动。
+     *
+     * 短路条件（缺一不可）：profile 的 `package.json` 在盘上、且记账里的
+     * 「引擎版本戳 + profile 名」与本次一致。引擎一升级（`.stamp` 变）就照旧真跑。
+     */
     fun initializeProfile(profile: String): File? = try {
-        runScript("init", profile)
-        File(home, "profiles/$profile").takeIf { File(it, "package.json").isFile }
+        val dir = File(home, "profiles/$profile")
+        val marker = File(stateDir, "init-$profile.stamp")
+        val key = "$profile@${engineStamp()}"
+        val fresh = dir.isDirectory && File(dir, "package.json").isFile &&
+            runCatching { marker.readText().trim() }.getOrNull() == key
+        if (!fresh) {
+            runScript("init", profile)
+            runCatching {
+                stateDir.mkdirs()
+                marker.writeText(key)
+            }
+        }
+        dir.takeIf { File(it, "package.json").isFile }
     } catch (error: Exception) {
         Log.w(TAG, "初始化 $profile profile 失败: ${error.message}")
         null
     }
 
-    fun ensure(): Boolean = try {
+    /**
+     * 装好并登记出厂 bundle（幂等）。
+     *
+     * ## 为什么也做「输入未变就不重复跑」的短路
+     *
+     * 这一步在真机上要起**两个** node 进程（`plan` 与 `register`），实测合计
+     * 0.6~0.8 秒。而它的输入只有三样：本次 APK 的引擎（`.stamp`）、用户对
+     * 14 个组件的开关状态、以及 profile 层的两个文件（`package.json` /
+     * `cordis.patch.yml`）。三者都没变时，跑出来的结果必然与上次逐字节相同。
+     *
+     * 记账里的 key 是**跑完之后**算的（见 [ensureKey]）：这样用户在界面里关掉一个
+     * 插件、或自己改坏了 patch 文件，下次启动的 `key` 与记账不相等，登记动作照旧
+     * 真跑一遍 —— 缓存只吃掉「什么都没变」的那部分启动。
+     */
+    fun ensure(): Boolean {
+        try {
+            ensureLocked()
+            return true
+        } catch (error: Exception) {
+            Log.w(TAG, "内置 bundle 登记失败: ${error.message}")
+            return false
+        }
+    }
+
+    private fun ensureLocked() {
         stateDir.mkdirs()
+        val marker = File(stateDir, "ensure.stamp")
+        if (marker.isFile && runCatching { marker.readText().trim() }.getOrNull() == ensureKey()) return
         val output = File(stateDir, "plan.json")
         runScript("plan", PROFILE_NAME, output)
         val plan = JSONArray(output.readText())
@@ -61,10 +111,36 @@ internal class BuiltinPluginBundles(
             }
         }
         runScript("register", PROFILE_NAME)
-        true
-    } catch (error: Exception) {
-        Log.w(TAG, "内置 bundle 登记失败: ${error.message}")
-        false
+        runCatching { marker.writeText(ensureKey()) }
+    }
+
+    /** 引擎版本戳：APK 里那份引擎的标识，换了引擎就必须重跑全部登记动作。 */
+    private fun engineStamp(): String =
+        runCatching { File(engineDir, ".stamp").readText().trim() }.getOrDefault("-")
+
+    /**
+     * 登记动作的输入指纹（见 [ensure]）。
+     *
+     * 覆盖：引擎版本戳、14 个组件的开关状态、profile 的两个配置文件内容。
+     * 任何一项变了都会让缓存失效 —— 宁可多重跑一次登记，也不要漏掉用户的开关。
+     */
+    private fun ensureKey(): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        fun feed(text: String) {
+            digest.update(text.toByteArray(Charsets.UTF_8))
+            digest.update(0)
+        }
+        feed("v1")
+        feed(engineStamp())
+        for (spec in BUILTIN_PLUGIN_BUNDLES) {
+            feed("${spec.id}=${EngineManager.isBuiltinPluginEnabled(context, spec.preferenceId)}")
+        }
+        for (name in listOf("package.json", "cordis.patch.yml")) {
+            val file = File(home, "profiles/$PROFILE_NAME/$name")
+            feed("$name:${file.length()}@${file.lastModified()}")
+            feed(runCatching { file.readText() }.getOrDefault(""))
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun runScript(phase: String, profile: String, output: File? = null) {

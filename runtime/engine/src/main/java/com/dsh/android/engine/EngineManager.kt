@@ -268,6 +268,11 @@ class EngineManager private constructor(
      */
     private var lastAssetStamp: String? = null
 
+    /** `--dump-config` 结果缓存（见 [PreflightDumpCache]）与宿主上报的内核主版本（0 = 未知）。 */
+    private val preflightCache by lazy { PreflightDumpCache(dshHome, engineDir, PROFILE_NAME) { lastAssetStamp ?: "" } }
+
+    @Volatile var webViewMajorHint = 0
+
     /**
      * 降级前端是否已就位（见 [ensureWebViewCompat]）。
      *
@@ -1550,6 +1555,8 @@ class EngineManager private constructor(
         val node = bootstrap.nodeBinary
         val entry = File(engineDir, "node_modules/@deepseek-ai/dsh/lib/bin.js")
         if (!node.isFile || !entry.isFile) return null
+        // 命中缓存就直接用上次那份输出：preflight 的判定逻辑照旧在这份输出上跑。
+        preflightCache.cached(node, entry)?.let { return it }
         val prefix = bootstrap.prefixDir.absolutePath
         val builder = ProcessBuilder(node.absolutePath, entry.absolutePath,
             "--profile", PROFILE_NAME, "--dump-config").directory(workspaceDir)
@@ -1563,7 +1570,7 @@ class EngineManager private constructor(
             put("CURL_CA_BUNDLE", "$prefix/etc/tls/cert.pem")
             put("NODE_OPTIONS", nodeOptions())
         }
-        return probeRunner.runDumpConfig(builder)
+        return probeRunner.runDumpConfig(builder).also { it?.let { r -> preflightCache.store(node, entry, r) } }
     }
 
     @Volatile
@@ -2027,6 +2034,7 @@ class EngineManager private constructor(
         // 启动计时锚点。后面「引擎就绪」事件用它算出总耗时 ——
         // 「打开 App 慢」这类反馈只有靠这个数才能定位到具体阶段。
         val startMs = System.currentTimeMillis()
+        val timeline = BootTimeline(TAG)
         EventLog.record("engine.start")
         // ⚠️ 每次启动都清掉「主动停止」标记，否则 stop() 之后再也起不来
         //   （EOF 会被当成用户停止而不再上报死亡，这里反过来：新一轮启动了，
@@ -2041,7 +2049,6 @@ class EngineManager private constructor(
         // 的 ensureXxx。理由是体检在发现核心 bundle 被改坏时会触发**整棵 engine/
         // 重解包**，而那会把已经打好的补丁与已解出的原生插件全部抹掉 —— 那些
         // ensureXxx 都是幂等的，重解包之后再跑一遍才是正确顺序。
-        // 真机实测：正常态体检耗时 0.7~0.8 秒，对 7~10 秒的启动时间可忽略。
         /*
          * ⚠️ **首次启动时 bootstrap 解压与引擎启动是并发的**（前者在
          *   `DshApplication.bootstrapTermux()` 的 `applicationScope.launch` 里），
@@ -2098,6 +2105,7 @@ class EngineManager private constructor(
         //   让降级决策直接跳到 L3（安全模式）。见 [rescueAvailable]。
         runtimeDependencies.ensureNativeAddon()
         runtimeDependencies.ensureSystemAddon(::patchFlockPlatform)
+        timeline.mark("原生插件")
         val builtinBundles = BuiltinPluginBundles(context, engineDir, dshHome, nodeBin, bootstrap.prefixDir)
         val rescueProfileDir = builtinBundles.initializeProfile(RESCUE_PROFILE_NAME)
         // web 初始化失败留给既有 preflight 修复；不得阻断独立救援 profile。
@@ -2128,21 +2136,17 @@ class EngineManager private constructor(
 
         // 启动前体检：profile 与 patch 层都是模型可写的，改坏会让引擎直接 exit 1，
         // 而 App 没有任何自救路径（用户只能卸载重装，那会清掉全部会话与凭据）。
-        //
-        // ⚠️ 结论**只是静态的**：它跑 `--dump-config`，不执行插件 `apply()`。
-        //   真机上杀死引擎的异常正是在 `apply()` 期抛的，所以体检放行 ≠ 能起来。
-        //   三态如实写进日志与事件时间线（原来 `false` 把两件事混成了一件）。
-        //
-        // ⚠️ **救援态下跳过体检**（I1：救援启动必须比正常启动简单，不能成为
-        //   第二个失败源）。体检会跑 `--dump-config`、可能触发整棵 engine/
-        //   重解包（15 秒 + 抹掉已打好的补丁）—— 那些动作在救援场景下全是风险，
-        //   而救援 profile 本来就只有核心 bundle，没什么可体检的。
+        // ⚠️ 结论**只是静态的**：真机上杀死引擎的异常在插件 `apply()` 期抛，放行 ≠ 能起来。
+        // ⚠️ **救援态下跳过体检**（I1：救援启动必须比正常启动简单）：体检会跑
+        //   `--dump-config`、可能触发整棵 engine/ 重解包（15 秒 + 抹掉补丁），
+        //   而救援 profile 只有核心 bundle，没什么可体检的。
         val pre = if (targetProfile == PROFILE_NAME) {
             preflight()
         } else {
             Log.i(TAG, "救援启动：跳过启动前体检（I1：救援路径不引入新的失败点）")
             PreflightResult.StaticOnly
         }
+        timeline.mark("启动前体检")
         Log.i(TAG, "启动前体检结论：${pre.label}")
         EventLog.record("preflight.result", mapOf("result" to pre.label))
         if (pre == PreflightResult.Repaired) {
@@ -2207,19 +2211,17 @@ class EngineManager private constructor(
         // 手机存储与 app 私有目录在 Android 上互不可达，靠 HOME 下两个链接做入口
         filePolicy.ensurePickerRoots()
         // 插件已在统一登记阶段就位；此处只处理引擎自己的兼容产物。
-        compatibilityInstaller.ensureWebViewCompat()
+        compatibilityInstaller.ensureWebViewCompat(webViewMajorHint)
+        timeline.mark("资产与补丁")
         // 兼容产物会覆盖会话 UI 源码，发图格式补丁必须在覆盖后应用。
         patchImageMediaType()
         // 出厂默认设置：只写 profile 的用户 patch 层，且只在它不存在时写一次。
         // 必须早于引擎启动 —— 引擎的 initProfile() 会给缺失的 patch 文件补一份空模板。
         profileDefaults.seedDefaultSettings()
         // ── 已移除：多模态配置 + Agnes 内置号池（用户要求整块删掉）──────────
-        // 不再解包 agnes-multimodal 插件（`generate_image` / `generate_video` 与
-        // 「多模态配置」设置页一并消失），不再播种账号池，也不再往 profile 注入
-        // 内置 `agnes` 供应商。引擎侧回落到官方默认模型（deepseek-official）。
-        // 老设备 profile 里已有的 `agnes` 供应商与旧默认模型由 profileDefaults.stripBuiltinAgnesProfile() 清掉。
-        // 内置**中文 skill**：落到 $DSH_HOME/skills（全局发现根，每个预设都扫得到），
-        // 让 AI 做主题/桌面宠物时不必重新摸一遍 DSH 结构。
+        // 不再解包 agnes-multimodal、不再播种账号池、不再注入 `agnes` 供应商；老 profile
+        // 里的残留由 profileDefaults.stripBuiltinAgnesProfile() 清掉。
+        // 内置**中文 skill** 落到 $DSH_HOME/skills（全局发现根，每个预设都扫得到）。
         toolInstaller.ensurePresetSkills()
         // 创造模式（cordis 预设）的 persona：在官方原句之上并入「快准狠」铁律。
         // ⚠️ 必须在 ensureExtracted() 之后（改的是 engine/ 里的文件），
@@ -2371,6 +2373,7 @@ class EngineManager private constructor(
         activeOverlays = overlays
         val port = resolveWebPort()
         val cmd = EngineLaunchSpec.buildEngineArgs(nodeBin, binJs, targetProfile, overlays, port)
+        timeline.mark("起进程前")
 
         Log.i(TAG, "启动引擎: ${cmd.joinToString(" ")}")
 
@@ -2407,6 +2410,9 @@ class EngineManager private constructor(
             put("DSH_HOME", dshHome.absolutePath)
             put("HOME", homeDir.absolutePath)
             put("TMPDIR", context.cacheDir.absolutePath)
+            // V8 编译缓存（node ≥ 22 支持）：把模块编译产物落到磁盘，冷启动少编译一遍。
+            // 实测引擎要加载 1000+ 个模块，这一项直接决定「启动引擎 → 引擎就绪」那 8 秒。
+            put("NODE_COMPILE_CACHE", File(context.cacheDir, "node-compile-cache").absolutePath)
             // $PREFIX/bin 必须排在最前：node 自己 spawn 子进程（如 shell 工具）时
             // 要能找到 Termux 的 sh/bash 而不是系统的。
             put("PATH", "$prefix/bin:$prefix/bin/applets:/system/bin:/system/xbin")
@@ -2783,11 +2789,13 @@ class EngineManager private constructor(
                 )
                 _state.value = State.Ready(url)
                 Log.i(TAG, "引擎就绪: $url")
+                preflightCache.markReady()
                 startHeapWatch(proc)
                 return@withContext
             }
             _state.value = State.Ready(url)
             Log.i(TAG, "引擎就绪: $url")
+            preflightCache.markReady()
             startHeapWatch(proc)
             // profile 如今一定已存在 ⇒ 补登记内置 bundle（见该函数的 KDoc）。
             // ⚠️ 引擎**真的起来了** ⇒ 清掉上次的失败记录。
@@ -2892,24 +2900,15 @@ class EngineManager private constructor(
             // v21 system，`20261014-165820-engine-start-failed.txt`）：
             //
             // ```
-            // 16:58:16.174 main                用户请求退出降级态（当前 rescue）
-            // 16:58:16.176 main                请求界面重启引擎：用户请求退出降级态
             // 16:58:16.177 main                停止引擎            ← stop()
-            // 16:58:16.479 main                引擎已退出: …，准备自动重启（第 2 次）
-            // 16:58:16.483 main                [connection] connection lost, retry #1
             // 16:58:17.195 DefaultDispatcher-2 启动引擎: …              ← 新 start()
-            // 16:58:18.443 main                界面就绪回调超时（WebView 内核 138）
             // 16:58:20.152 DefaultDispatcher-1 停止引擎            ← enterSafeMode → stop()
-            // 16:58:20.153 main                [rescue-auto] 连续失败仅 0 次（需 ≥3）
-            // 16:58:20.160 DefaultDispatcher-2 已记录现场: crash/…-engine-start-failed.txt
-            //                                  —— 引擎启动失败（引擎进程在打印 URL 之前就结束了（等了 3672 ms））
-            // 16:58:20.160 DefaultDispatcher-2 engine.failed reason=引擎进程在打印 URL 之前就结束了（等了 3672 ms）
-            // 16:58:23.155 DefaultDispatcher-1 安全模式：已隔离损坏的文件 cordis.patch.yml → …
+            // 16:58:20.160 … 引擎启动失败（引擎进程在打印 URL 之前就结束了（等了 3672 ms））
+            // 16:58:23.155 … 安全模式：已隔离损坏的文件 cordis.patch.yml → …
             // ```
             //
-            // 两次 `停止引擎` 都是**主动**的（`requestRestart` 与 `enterSafeMode`），
-            // 而那条 3672 ms 的「启动失败」纯粹是第 ③ 条唤醒路径的产物 ——
-            // 引擎**从未**失败过，是被人叫停的。
+            // 两次 `停止引擎` 都是**主动**的（`requestRestart` 与 `enterSafeMode`），那条
+            // 3672 ms 的「启动失败」纯粹是第 ③ 条唤醒路径的产物 —— 引擎**从未**失败过。
             //
             // ⚠️ 后果不止一行错日志：这次假失败触发了 `enterSafeMode`（推开用户的
             //    `cordis.patch.yml` / `package.json`、摘掉 7 个第三方 bundle、删掉

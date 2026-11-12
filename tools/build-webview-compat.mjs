@@ -105,8 +105,16 @@ function walk(dir, filter) {
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
-/** esbuild 的持久安装目录（构建期工具，不进 APK）。 */
+/**
+ * esbuild 的持久安装目录（构建期工具，不进 APK）。
+ *
+ * ⚠️ 顺序坑：这个脚本原先在**解析二进制之后**才去装 esbuild，于是干净机器上
+ *    第一次跑必然死在 `scandir /tmp/dsh-esbuild-tool/node_modules: ENOENT`
+ *    —— 报错完全没有指向「还没装」。现在先备好工具链（优先复用仓库自带的
+ *    `tools/node_modules`，没有才联网装到 tmp），再解析路径。
+ */
 const toolDir = join(tmpdir(), 'dsh-esbuild-tool');
+const localToolDir = join(ROOT, 'tools', 'node_modules');
 
 /**
  * 跑 esbuild。
@@ -119,7 +127,15 @@ const toolDir = join(tmpdir(), 'dsh-esbuild-tool');
  *    跨平台分支纯属自找麻烦。直接算出平台对应的原生包路径。
  */
 function esbuildBinary() {
-  const pkgDir = join(toolDir, 'node_modules');
+  for (const pkgDir of [join(localToolDir), join(toolDir, 'node_modules')]) {
+    const found = scanEsbuild(pkgDir);
+    if (found) return found;
+  }
+  return null;
+}
+
+function scanEsbuild(pkgDir) {
+  if (!existsSync(pkgDir)) return null;
   const candidates = [];
   const triples = {
     'linux-x64': ['esbuild-linux-64', 'bin/esbuild'],
@@ -133,7 +149,7 @@ function esbuildBinary() {
   if (hit) candidates.push(join(pkgDir, hit[0], hit[1]));
   // 兜底：扫 @esbuild/* 与 esbuild-* 两种打包布局。
   for (const name of readdirSync(pkgDir)) {
-    for (const [pkg, rel] of [['@esbuild', null], [null, null]]) {
+    for (const pkg of ['@esbuild', null]) {
       if (pkg && name !== pkg) continue;
       if (pkg) {
         for (const sub of readdirSync(join(pkgDir, pkg))) {
@@ -149,8 +165,21 @@ function esbuildBinary() {
   return candidates.find((c) => existsSync(c)) || null;
 }
 
+/** 备好 esbuild：优先仓库自带的 `tools/node_modules`，没有才装到 tmp 目录。 */
+function ensureEsbuildTool() {
+  if (esbuildBinary()) return;
+  log('安装 esbuild（构建期工具，不进 APK；仅首次需要）…');
+  mkdirSync(toolDir, { recursive: true });
+  // ⚠️ 服务器直连 npm 可用（不像 Windows 开发机需要代理）。
+  //    若所在地需要代理，在这里加 `--proxy`，不要写死 7897。
+  const r = spawnSync('npm', ['install', 'esbuild@0.25.0', '--prefix', toolDir,
+    '--no-audit', '--no-fund', '--loglevel=error'], { encoding: 'utf8' });
+  if (r.status !== 0) fail(`esbuild 安装失败\n${r.stderr || r.stdout}`, 2);
+}
+
+ensureEsbuildTool();
 const ESBUILD_BIN = esbuildBinary();
-if (!ESBUILD_BIN) fail(`找不到 esbuild 原生二进制（在 ${toolDir} 下），请删掉该目录重跑`, 2);
+if (!ESBUILD_BIN) fail(`找不到 esbuild 原生二进制（查过 ${localToolDir} 与 ${toolDir}）`, 2);
 
 function esbuild(args) {
   const r = spawnSync(ESBUILD_BIN, args, { encoding: 'utf8' });
@@ -163,17 +192,7 @@ function esbuild(args) {
 
 /* ── 1. 准备 esbuild ──────────────────────────────────────────────────── */
 
-if (!existsSync(join(toolDir, 'node_modules', 'esbuild', 'package.json'))) {
-  log('安装 esbuild（构建期工具，不进 APK；仅首次需要）…');
-  mkdirSync(toolDir, { recursive: true });
-  // ⚠️ 服务器直连 npm 可用（不像 Windows 开发机需要代理）。
-  //    若所在地需要代理，在这里加 `--proxy`，不要写死 7897。
-  const r = spawnSync('npm', ['install', 'esbuild@0.25.0', '--prefix', toolDir,
-    '--no-audit', '--no-fund', '--loglevel=error'], { encoding: 'utf8' });
-  if (r.status !== 0) fail(`esbuild 安装失败\n${r.stderr || r.stdout}`, 2);
-} else {
-  log(`复用已装的 esbuild: ${toolDir}`);
-}
+log(`使用 esbuild: ${ESBUILD_BIN}`);
 
 /* ── 2. 从 engine.bin 解出 dist 与插件 client bundle ──────────────────── */
 
@@ -397,7 +416,9 @@ const compatibility = {
   version: COMPAT_VERSION,
   engineDigest: sha256(readFileSync(ENGINE_BIN)),
   polyfillDigest: sha256(readFileSync(polyfill)),
-  esbuildVersion: JSON.parse(readFileSync(join(toolDir, 'node_modules/esbuild/package.json'), 'utf8')).version,
+  // 版本从**二进制实际所在**的工具目录读，不能写死 toolDir：本机优先复用的是
+  // 仓库自带的 `tools/node_modules`，写死 tmp 路径会在干净环境里 ENOENT。
+  esbuildVersion: JSON.parse(readFileSync(join(ESBUILD_BIN.split(sep + 'node_modules' + sep)[0], 'node_modules', 'esbuild', 'package.json'), 'utf8')).version,
   files: Object.fromEntries(changed.map((entry) => [entry.entry, sha256(readFileSync(join(out, entry.entry)))])),
 };
 const inputDigest = sha256(Buffer.from(JSON.stringify({ ...compatibility, files: undefined })));

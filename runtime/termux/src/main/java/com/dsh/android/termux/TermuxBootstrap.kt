@@ -27,6 +27,9 @@ class TermuxBootstrap(
     // 修复代际与 Node 标记独立；升级仍由原标记判断，不能因拆分改变安装判据。
     private val rewriteMarker get() = File(prefixDir, ".paths_rewritten_v7")
 
+    /** 「这份 node 已经补过路径」的记账文件（见 [ensureNodeRuntimePatched]）。 */
+    private val NODE_PATCH_RECORD get() = ".node_patched_v1"
+
     // 优先从真实 filesDir 反推身份；app 可显式提供后备包名，避免依赖 library BuildConfig。
     private val elfRootReplacement: String = run {
         val fallback = "/data/data/$fallbackApplicationId/"
@@ -122,12 +125,34 @@ class TermuxBootstrap(
         withPrefixFileLock { node.repairIfNeededLocked() }
     }
 
+    /**
+     * 把 `$PREFIX` 下所有 ELF/shebang 里的 `/data/data/com.termux/…` 换成实际包路径。
+     *
+     * ## 为什么现在要按「node 二进制指纹」短路
+     *
+     * [paths.rewriteLocked] 是**整棵 prefix 的全量遍历**：每个文件都要开关一次、
+     * 读 4 字节判 ELF、文本文件整份读进内存再找旧路径。真机上这一步实测 0.6~1 秒，
+     * 而它真正要保证的事情只有一件 —— **刚装/刚换掉的 node 二进制是打好补丁的**。
+     * prefix 里其余文件（shebang 之类）已经在 `installLocked` 里跟着
+     * [rewriteMarker] 一次性处理过，每次启动重扫纯属白烧。
+     *
+     * 所以这里按 node 的 `size@lastModified` 记账：同一份 node 已经补过就直接返回，
+     * node 被重装（大小/时间变了）或记账文件丢了才真扫一遍。记账失败不影响正确性
+     * —— 下次照旧全量扫。
+     */
     fun ensureNodeRuntimePatched() {
         if (!nodeBinary.isFile) return
+        val fingerprint = "${nodeBinary.length()}@${nodeBinary.lastModified()}"
+        val record = File(prefixDir, NODE_PATCH_RECORD)
+        if (record.isFile && runCatching { record.readText().trim() }.getOrNull() == fingerprint) return
         try {
             // 走锁：本方法与 DshApplication 的 installNodeRuntime 是**两个不同实例**
             // 上的两条并发路径，都会原地重写同一个 47 MB 的 node 二进制。
             prefixLock.withLock { withPrefixFileLock { paths.rewriteLocked(prefixDir) } }
+            runCatching {
+                record.parentFile?.mkdirs()
+                record.writeText(fingerprint)
+            }
         } catch (e: Exception) {
             Log.w("TERMUX", "ensure node patched: ${e.message}")
         }

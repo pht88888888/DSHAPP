@@ -153,10 +153,27 @@ internal class EngineCompatibilityInstaller(
     }
 
     /** 兼容包只覆盖引擎 dist/engine；出厂和市场插件由各自构建保证语法兼容。 */
-    fun ensureWebViewCompat() {
+    /**
+     * @param webViewMajor 宿主探测到的内核主版本，0 = 未知。
+     *
+     * 内核已经够新（≥ [OFFICIAL_MIN_WEBVIEW_MAJOR]）时**整段跳过**：官方 bundle 本来
+     * 就能被解析，降级产物只会让界面跑旧语法 + polyfill。跳过省掉的是真机上实测
+     * 1.5 秒左右的开销 —— 正是「全量 sha256(engine.bin) + 把 7.5 MB 的 zip 整个
+     * 解压两遍（一遍找 manifest、一遍找 stamp）」，而这两步在每次冷启动都做一遍。
+     */
+    fun ensureWebViewCompat(webViewMajor: Int = 0) {
         if (builtInWebEngine) return
         val dist = File(engineDir, "node_modules/@deepseek-ai/dsh-web-frontend/dist")
         if (!dist.isDirectory) return
+        if (webViewMajor >= OFFICIAL_MIN_WEBVIEW_MAJOR) {
+            webViewCompatApplied = false
+            if (File(dist, WEBVIEW_COMPAT_STAMP).isFile) {
+                // 曾经为旧内核装过降级产物：内核升级后它还在 dist 里，需要一次重解包才换回官方件。
+                Log.w(TAG, "内核已升级到 $webViewMajor，但 dist 里仍是降级前端（重解包 engine 可换回官方件）")
+            }
+            Log.i(TAG, "内核 $webViewMajor ≥ $OFFICIAL_MIN_WEBVIEW_MAJOR，跳过降级前端（省下 engine.bin 全量摘要与 zip 解压）")
+            return
+        }
         try {
             var manifest: JSONObject? = null
             var stamp = ""

@@ -782,10 +782,10 @@ class MainActivity : AppCompatActivity() {
      *   也不能因为一次读取失败就把本来能用的设备挡在门外。
      */
     private fun detectWebViewVersion() {
-        // ⚠️ 在 gecko flavor 里读到的**不是**设备上装的内核，而是打进 APK 的
-        //   GeckoView 版本（编译期确定）。所以那里永远不可能「内核过旧」——
-        //   版本拦截分支不会触发，这正是内置内核要解决的问题本身。
+        // ⚠️ gecko flavor 里读到的是打进 APK 的 GeckoView 版本（编译期确定），
+        //   那里永远不可能「内核过旧」——版本拦截分支不会触发，这正是内置内核要解决的问题本身。
         webViewMajor = web.engineMajor
+        engine.webViewMajorHint = webViewMajor // 内核够新 → 引擎跳过降级前端（省 1.5 秒，见 ensureWebViewCompat）
         Log.i(
             DshApplication.TAG,
             "Web 内核: ${web.engineLabel}（主版本 $webViewMajor；" +

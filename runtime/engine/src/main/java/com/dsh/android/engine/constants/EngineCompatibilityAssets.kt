@@ -26,6 +26,15 @@ const val FETCH_GUARD_FILE = "dsh-fetch-guard.mjs"
          */
 const val WEBVIEW_COMPAT_ASSET = "webview-compat.zip"
 
+        /**
+         * 官方 bundle 能跑起来的最低内核主版本。
+         *
+         * ⚠️ 必须与 [com.dsh.android.ui.MainActivity.MIN_WEBVIEW_MAJOR] 一致：
+         *    那边拿它做「太旧就别 loadUrl」的拦截，这边拿它做「根本不需要降级产物」的
+         *    短路。两处不同的唯一后果是**白跑一次兼容安装**（不会错装）。
+         */
+const val OFFICIAL_MIN_WEBVIEW_MAJOR = 94
+
         /** 降级资产在 dist 里留下的戳，以及 zip 内对应的条目名。 */
 const val WEBVIEW_COMPAT_STAMP = ".webview-compat-stamp"
 const val WEBVIEW_COMPAT_STAMP_ENTRY = ".compat-stamp"
