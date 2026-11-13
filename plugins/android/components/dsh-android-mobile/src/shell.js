@@ -403,15 +403,46 @@ export function createMobileShell({ mpIsMobile, mpDialogBack, mpInstallAliasBrid
   	//   var 会提升并初始化为 undefined，`if (mpCenterRaf) return` 对
   	//   undefined 判假 → 行为正确。
   	var mpCenterRaf = 0;
+  	/* ══ 每帧最多量一次还不够：聊天流式输出时**每帧都有 mutation** ══════
+  	 *
+  	 * ⚠️ 真机 CPU profile（2026-11-13）：这三件事合起来在 4 秒窗口里占掉
+  	 *   "getBoundingClientRect" 250+238ms、还有一次 "getComputedStyle" —— 而它们
+  	 *   量的是**顶栏标题居中留白 / 顶栏高度 / 浮层汉堡让位**，这些东西在流式输出
+  	 *   期间根本不变。等于每帧白扔几次强制同步布局，正是「用着发黏」的来源之一。
+  	 *
+  	 * 现在改成：首帧立刻量（保证首屏不错位），之后**最多每 200ms 一次**，
+  	 * 并且用末尾补一次的定时器保证「最后一次变化一定会被量到」。
+  	 * 纯外观量算晚 200ms 用户看不出来，但省下的是每帧一到两次强制布局。
+  	 */
+  	var mpCenterLastRun = 0;
+  	var mpCenterTrailing = 0;
+  	var MP_CENTER_INTERVAL_MS = 200;
+  	function mpRunHeaderCenter() {
+  		mpCenterLastRun = Date.now();
+  		// 修复 61：高度自校准与居中留白共用这一帧（共用节流，不额外增加重排次数）
+  		try { mpSyncHeaderHeight(); } catch (e) { /* 静默：纯外观，绝不影响功能 */ }
+  		try { mpSyncHeaderCenter(); } catch (e) { /* 静默：纯外观，绝不影响功能 */ }
+  		// 修复 66：与上面两件事共用同一帧（零额外重排）
+  		try { mpSyncFloatNavGap(); } catch (e) { /* 静默：纯外观，绝不影响功能 */ }
+  	}
   	function mpScheduleHeaderCenter() {
-  		if (!active || mpCenterRaf) return;
+  		if (!active) return;
+  		if (mpCenterRaf) return;
   		mpCenterRaf = requestAnimationFrame(() => {
   			mpCenterRaf = 0;
-  			// 修复 61：高度自校准与居中留白共用这一帧（共用节流，不额外增加重排次数）
-  			try { mpSyncHeaderHeight(); } catch (e) { /* 静默：纯外观，绝不影响功能 */ }
-  			try { mpSyncHeaderCenter(); } catch (e) { /* 静默：纯外观，绝不影响功能 */ }
-  			// 修复 66：与上面两件事共用同一帧（零额外重排）
-  			try { mpSyncFloatNavGap(); } catch (e) { /* 静默：纯外观，绝不影响功能 */ }
+  			const now = Date.now();
+  			if (mpCenterLastRun && now - mpCenterLastRun < MP_CENTER_INTERVAL_MS) {
+  				// 节流中：记一笔「稍后还欠一次」，保证最终状态一致
+  				if (!mpCenterTrailing) {
+  					mpCenterTrailing = window.setTimeout(() => {
+  						mpCenterTrailing = 0;
+  						if (!active) return;
+  						mpRunHeaderCenter();
+  					}, MP_CENTER_INTERVAL_MS);
+  				}
+  				return;
+  			}
+  			mpRunHeaderCenter();
   		});
   	}
 

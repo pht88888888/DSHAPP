@@ -30,6 +30,15 @@
 
 判据完全等价：宽度只在旋转/窗口变化时变，状态栏高度只会被原生改写。
 
+第三处（同一天继续剥）：顶栏三件量算（`mpSyncHeaderHeight` / `mpSyncHeaderCenter` / `mpSyncFloatNavGap`）
+原来只是「一帧最多一次」，而流式输出时**每帧都有 mutation**，等于每帧白扔几次
+`getBoundingClientRect` + 一次 `getComputedStyle`。改成首帧立刻量、之后最多每 200ms 一次，
+并加一个末尾补一次的定时器保证最终一致（纯外观量算晚 200ms，用户看不出来）。
+
+滚动帧间隔（插件页 1114px 长列表，页面内 rAF 采样 140 帧、每帧滚 37px）：
+`p50 19.7ms / p90 29.7ms / p95 30.5ms / max 47ms / >33ms 3 帧` —— 这条是优化后基线，
+没留优化前同口径数据，别拿它当收益证明。
+
 ## 顺带修掉的回归：换了 APK，出厂插件不更新
 
 上一轮给 `BuiltinPluginBundles.ensure()` 加记账短路时，指纹只算了
