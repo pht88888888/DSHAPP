@@ -436,6 +436,33 @@ export function createMobileShell({ mpIsMobile, mpDialogBack, mpInstallAliasBrid
   	     与汉堡的实际归属永远一致，不会出现"类与位置打架"的中间态。
 
   	   非移动端 / 汉堡不在浮层 → 变量归 0px，conversation 页逐像素不变。 */
+  	/* ══ 状态栏高度：读内联变量，绝不读 computed ══════════════════════
+  	 *
+  	 * ⚠️ 真机 CPU profile（2026-11-13）里 "getPropertyValue" 的自身耗时 550ms，
+  	 *   是全页最贵的一项，调用点就是这里 —— "getComputedStyle(...)" 是同步样式
+  	 *   计算，而 "mpSyncFloatNavGap()" 被 "mpScheduleHeaderCenter()" 挂在每个
+  	 *   mutation 批次后的 rAF 里，等于**每次界面更新都强制一次全量样式重算**。
+  	 *
+  	 * 原生写入方式（见 MainActivity.pushSystemBarInset）是
+  	 *   "document.documentElement.style.setProperty('--dsh-android-system-top', …)"
+  	 * —— 也就是**内联样式**。内联读取不触发任何计算，值还更准（computed 会
+  	 * 受层叠/继承影响）。只有内联值为空时（原生一次都没写过）才退回 computed，
+  	 * 那种情况只可能发生在启动极早期，兜底用。
+  	 */
+  	function mpReadSystemTop() {
+  		try {
+  			const inline = document.documentElement.style.getPropertyValue("--dsh-android-system-top");
+  			if (inline) return parseFloat(inline) || 0;
+  			if (mpSysTopFallback === undefined) {
+  				mpSysTopFallback = parseFloat(
+  					getComputedStyle(document.documentElement).getPropertyValue("--dsh-android-system-top"),
+  				) || 0;
+  			}
+  			return mpSysTopFallback;
+  		} catch (e) { return 0; }
+  	}
+  	var mpSysTopFallback;
+
   	const MP_FLOAT_NAV_GAP = 8; // 呼吸位：标题不要贴着汉堡下沿
   	var mpFloatNavH = "";
   	function mpSyncFloatNavGap() {
@@ -468,9 +495,7 @@ export function createMobileShell({ mpIsMobile, mpDialogBack, mpInstallAliasBrid
   		   ⚠️ 汉堡浮层时不必再取 max —— 它本身是 fixed 且 top 已含系统栏高度
   		     （calc(--dsh-android-system-top + 6px)），bottom 必然大于状态栏高度；
   		     取 max 只是为了在两种形态下都成立，多算一次不影响结果。 */
-  		const sysTop = parseFloat(
-  			getComputedStyle(root).getPropertyValue("--dsh-android-system-top"),
-  		) || 0;
+  		const sysTop = mpReadSystemTop();
   		if (sysTop > needed) needed = sysTop;
   		const next = Math.round(needed) + "px";
   		if (next === mpFloatNavH) return; // 无变化 ⇒ 不写 DOM ⇒ 不触发 observer

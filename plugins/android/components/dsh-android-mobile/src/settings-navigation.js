@@ -433,7 +433,8 @@ export function createSettingsNavigation(mpIsMobile, mpDialogBack) {
   		borderBottom: "none", background: "transparent", position: "relative",
   	});
   	// 回退 CSS 规则：用 !important 压内联 padding，让出状态栏
-  	const sysTop = getComputedStyle(document.documentElement).getPropertyValue("--dsh-android-system-top").trim() || "0px";
+  	/* 内联读取（原生就是用内联样式写的），避免为一行 padding 触发一次全量样式重算 */
+  	const sysTop = (document.documentElement.style.getPropertyValue("--dsh-android-system-top") || "").trim() || "0px";
   	backBar.style.setProperty("padding-top", sysTop, "important");
   	const backBtn = backBar.querySelector(".mp-back-circle");
   	Object.assign(backBtn.style, {

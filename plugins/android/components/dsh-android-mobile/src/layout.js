@@ -207,7 +207,43 @@ export function createMobileLayout() {
   // 分组（幂等，结构一致时不再改动，避免循环）。
 
 
-  	function mpIsNarrow() { return window.innerWidth < MP_NARROW; }
+  	/* ══ 视口宽度必须缓存，不能每次读 "window.innerWidth" ══════════════
+  	 *
+  	 * ⚠️ 真机 CPU profile（2026-11-13，插件页打开 4 秒）实测："mpIsNarrow" 的
+  	 *   自身耗时 716ms，是全页最贵的一项，把「进插件页」顶出 1 秒的 long task。
+  	 *   原因不是这个函数复杂，而是 **"window.innerWidth" 是同步布局读**：
+  	 *   只要样式/布局是脏的，读它就会立刻强制一次 reflow。
+  	 *   而 "mpIsMobile()" 在本插件里被调得极密 —— "mpSyncMobileAttr" 的
+  	 *   300ms 节流、body 上的 MutationObserver（消息流每次更新都触发）、
+  	 *   各种 rAF 回调里都在调，于是每一轮都踩一次强制布局。
+  	 *
+  	 * 宽度只在「旋转 / 窗口尺寸变化 / 视觉视口变化」时才会变，
+  	 * 所以缓存住、只在这几个事件里失效即可 —— 判据完全等价。
+  	 * 读一次的内联同步布局代价也就落在首帧一次，之后再无。
+  	 */
+  	var mpViewportW = -1;
+  	function mpViewportWidth() {
+  		if (mpViewportW >= 0) return mpViewportW;
+  		mpViewportW = window.innerWidth;
+  		return mpViewportW;
+  	}
+  	function mpInvalidateViewport() {
+  		mpViewportW = -1;
+  		mpMobileCache = -1;
+  	}
+  	// 监听器只装一次；"resize" 已覆盖旋转，visualViewport 覆盖软键盘弹出/收起时的视觉视口变化
+  	// （那种变化不改 innerWidth，但会触发一次 resize，多挂一条只是保险）。
+  	var mpViewportHooked = false;
+  	function mpHookViewport() {
+  		if (mpViewportHooked) return;
+  		mpViewportHooked = true;
+  		try { window.addEventListener("resize", mpInvalidateViewport, { passive: true }); } catch (e) { /* 忽略 */ }
+  		try { window.addEventListener("orientationchange", mpInvalidateViewport, { passive: true }); } catch (e) { /* 忽略 */ }
+  		try {
+  			if (window.visualViewport) window.visualViewport.addEventListener("resize", mpInvalidateViewport, { passive: true });
+  		} catch (e) { /* 忽略 */ }
+  	}
+  	function mpIsNarrow() { mpHookViewport(); return mpViewportWidth() < MP_NARROW; }
 
   	// ══ 修复 40：移动端模式总开关 ══
   	// 啾灵要求：「手机访问就用我们现在适配的UI，然后电脑那边完全不影响」。
@@ -234,10 +270,23 @@ export function createMobileLayout() {
   				&& window.matchMedia("(hover: hover)").matches);
   		} catch (e) { return false; }
   	}
+  	/* 同一次读取在**同一个事件循环轮次内**结果必然相同，所以做一层
+  	 * 「一次 tick 级」缓存：首次算完记下结果，微任务/下一帧前不再重算。
+  	 * 缓存失效点与宽度缓存一致（resize / orientationchange），
+  	 * 另外每帧开头兜底失效一次 —— 保证「同一帧内恒定、跨帧必然重算」。
+  	 * 这样即使上面某个事件没打进来，最坏也只多算一次/帧，不会长期读错。 */
+  	var mpMobileCache = -1;
   	function mpIsMobile() {
-  		if (!mpIsNarrow()) return false;
-  		if (mpIsPointerDesktop()) return false;
-  		return true;
+  		if (mpMobileCache >= 0) return mpMobileCache === 1;
+  		const on = mpIsNarrow() && !mpIsPointerDesktop();
+  		mpMobileCache = on ? 1 : 0;
+  		mpScheduleMobileCacheReset();
+  		return on;
+  	}
+  	function mpScheduleMobileCacheReset() {
+  		try {
+  			requestAnimationFrame(() => { mpMobileCache = -1; });
+  		} catch (e) { mpMobileCache = -1; }
   	}
 
 

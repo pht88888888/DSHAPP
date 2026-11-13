@@ -130,10 +130,19 @@ internal class BuiltinPluginBundles(
             digest.update(text.toByteArray(Charsets.UTF_8))
             digest.update(0)
         }
-        feed("v1")
+        feed("v2")
         feed(engineStamp())
         for (spec in BUILTIN_PLUGIN_BUNDLES) {
             feed("${spec.id}=${EngineManager.isBuiltinPluginEnabled(context, spec.preferenceId)}")
+            /* ⚠️ **必须把 APK 里那份出厂包的内容版本也算进来**（2026-11-13 补）：
+             *   原来这个指纹只含「引擎戳 + 开关 + profile 文件」，于是**换了 APK、
+             *   出厂插件更新了、引擎戳却没变**时，记账相等 ⇒ 登记动作被短路 ⇒
+             *   设备上一直跑着上一版插件。实测抓到的现场：本地改了移动端插件并
+             *   重装了 APK，设备里 `dsh-android-mobile/lib/client.js` 还是旧的
+             *   （bundle rev `ec917594…` 没变），改什么优化都看不见。
+             *   改写时只读那个几十字节的 manifest（`revision` = 版本+源码摘要），
+             *   不碰 zip 本体，代价可以忽略。 */
+            feed("asset:${spec.id}=${bundleRevision(spec.id)}")
         }
         for (name in listOf("package.json", "cordis.patch.yml")) {
             val file = File(home, "profiles/$PROFILE_NAME/$name")
@@ -142,6 +151,13 @@ internal class BuiltinPluginBundles(
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
+
+    /** 读 APK 里某个出厂包 manifest 的 `revision`（读不到就退化成占位，不影响启动）。 */
+    private fun bundleRevision(id: String): String = runCatching {
+        context.assets.open("$id.manifest.json").use { stream ->
+            JSONObject(stream.bufferedReader().readText()).optString("revision")
+        }
+    }.getOrDefault("-")
 
     private fun runScript(phase: String, profile: String, output: File? = null) {
         stateDir.mkdirs()
