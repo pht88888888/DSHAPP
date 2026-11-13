@@ -113,7 +113,10 @@ fun main(args: Array<String>) {
 `;
 
 function run(command, args) {
-  const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 30_000 });
+  // 编译用例（kotlinc）在并行跑整套 L2 时会被 CPU 争抢到 30 秒以上 —— 本机实测 35 秒
+  // （单独跑只要 14 秒）。这里与其它编译型用例（LogPrivacy / EngineFilePolicy / BackupSafety …）
+  // 统一用 120 秒：超时是机器速度问题，不是被测行为的问题。
+  const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 120_000 });
   assert.equal(result.status, 0, `${command} 失败\n${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
