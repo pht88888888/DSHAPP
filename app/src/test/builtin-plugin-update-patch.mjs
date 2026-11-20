@@ -40,7 +40,7 @@ with tarfile.open(sys.argv[1]) as t:
    p.write_bytes(t.extractfile(m).read())`, engineArchive, engine]);
   const official = fs.readFileSync(path.join(lib, 'index.js'), 'utf8');
   const host = fs.readFileSync(path.join(lib, 'typert.host.js'), 'utf8');
-  assert.match(host, /'updatable': z.boolean\(\)/);
+  assert.match(host, /'update': z\.union\(\[z\.literal\("registry"\), z\.literal\("git"\)\]\)\.optional\(\)/);
   assert.match(host, /'restore': z\.object\(/);
   const { stdlib } = runtime;
   const harness = path.join(tmp, 'Harness.kt');
@@ -128,7 +128,7 @@ fun main(args: Array<String>) {
     askRegistries: async spec => ({ status: 'answered', registry: 'https://registry.npmjs.org/', attempts: [], answer: spec === name ? { versions: ['0.9.0', '1.0.0', '1.1.0', '2.0.0'], 'dist-tags': { latest: '2.0.0' } } : { name, version: spec.split('@').at(-1), dsh: { bundle: { patch: 'cordis.patch.yml' } } } }),
   });
   await test('listBundles 与 listVersions 对可信出厂link放行并只列新版', async () => {
-    assert.equal((await manager.listBundles())[0].updatable, true);
+    assert.equal((await manager.listBundles())[0].update, 'registry');
     const answer = await manager.listVersions(name);
     assert.equal(answer.status, 'listed');
     assert.deepEqual(Array.from(answer.versions, v => v.version), ['2.0.0', '1.1.0']);
@@ -137,23 +137,23 @@ fun main(args: Array<String>) {
   await test('拒绝任意link、相对link、file spec、伪造元数据及解析目录', async () => {
     for (const spec of [`link:${tmp}`, 'link:../../node_modules/dsh-android-shell', `file:${pkg}`]) {
       reset(true, spec);
-      assert.equal((await manager.listBundles())[0].updatable, false);
+      assert.equal((await manager.listBundles())[0].update, undefined);
       assert.equal((await manager.listVersions(name)).problem, 'not-updatable');
     }
     reset();
     for (const info of [{ ...builtinManifest(), name: 'other' }, { ...builtinManifest(), dsh: { bundle: { patch: 'cordis.patch.yml' }, android: { builtinId: 'unknown' } } }]) {
       writeJson(path.join(pkg, 'package.json'), info);
-      assert.equal((await manager.listBundles())[0].updatable, false);
+      assert.equal((await manager.listBundles())[0].update, undefined);
     }
     reset(); resolved = tmp;
-    assert.equal((await manager.listBundles())[0].updatable, false);
+    assert.equal((await manager.listBundles())[0].update, undefined);
     resolved = pkg;
   });
   await test('拒绝白名单路径逃逸符号链接', async () => {
     reset();
     const away = path.join(tmp, 'away');
     fs.renameSync(pkg, away); fs.symlinkSync(away, pkg);
-    assert.equal((await manager.listBundles())[0].updatable, false);
+    assert.equal((await manager.listBundles())[0].update, undefined);
     fs.unlinkSync(pkg); fs.renameSync(away, pkg);
   });
   const ok = (stage, target) => ({ changed: true, application: 'applied', stage, target });
@@ -233,7 +233,7 @@ fun main(args: Array<String>) {
   });
   await test('registry依赖既有资格和registry旧版恢复不变', async () => {
     reset(true, '^1.0.0'); calls.length = 0; failInstall = true;
-    assert.equal((await manager.listBundles())[0].updatable, true);
+    assert.equal((await manager.listBundles())[0].update, 'registry');
     const result = await manager.updateBundle(name, '2.0.0');
     assert.equal(result.restore.application, 'applied');
     assert.equal(calls.at(-1)[1], `${name}@1.0.0`);

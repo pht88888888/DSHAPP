@@ -116,6 +116,15 @@ node tools/release/cli.mjs archive --candidate build/releases/candidate-115 --ad
 
 同一候选用 `release-state.lock` 阻止并行发布。进程被强制杀死可能留下锁；先确认无进程使用该候选，再由维护者清除该候选的锁文件后重试，不能删除状态文件假装从头成功。
 
+## 夸克网盘 Skill 手工上传
+
+这是用户明确授权时的手工网盘操作，不是上面的正式 adapter 流程，不生成 `release-state.json`，也不能代替正式候选门禁。默认不直接更新共享的「当前最新版」；只有用户明确指定该目录并要求更新时，才按下列顺序操作。不要新建分享链接，也不要在仓库、命令示例或日志里写授权码、令牌。
+
+1. **核对本地双包。** 只选 `app/build/outputs/apk/{system,gecko}/release/` 中本次要发布的两个 APK；分别核对包名、版本、正式签名、文件大小和 SHA-256。说明产物和门禁实际状态，不把 debug 包或旧 APK 当作本次发行包。
+2. **定位目录并保存旧包清单。** 在已授权的 DSH 会话加载 `quarkclouddrive`，按 Skill 说明做安装检查及公共参数处理。用 `search --keyword 'DSH APP' --search-type dir --stdout-only` 定位；从完整 Artifact 确认父路径为 `jiulingShare`，再用 `browse --parent-fid "$app_fid" --all` 确认「当前最新版」「历史版本」。写操作前浏览源、目标目录，记录旧双包的名称、大小、文件 ID；不要凭截图、文件名、预览或旧 ID 直接移动。目录不唯一、旧包不成对或出现意外的 APK 时先停下核实。
+3. **先上传并回查。** 用 `upload "$system_apk" "$gecko_apk" --parent-fid "$target_fid"` 指向已确认目录，只传两个文件，不传整个目录。预先使用能区分版本及 flavor 的文件名，避免触发 `(1)`。若夸克仍自动改名，以回查的实际名称为准，不能把同名旧包当新包。上传结束后 `browse --all`，从完整结果核对两个新包的实际名称、大小和目标路径；以服务端摘要或回下载计算 SHA-256 校验内容。不能只看进度或成功消息；两包未验证齐全，不移动旧包。
+4. **再归档旧包并复查。** 只对已核对的旧双包执行 `move "$old_system_fid" "$old_gecko_fid" --target-fid "$archive_fid"`。历史目录有同名文件时，使用独立且已核实的日期或版本子目录，不覆盖、不删除。最后复查「当前最新版」和归档目录，保留更新说明等其他文件。失败或超时先查实际状态，只补做缺失项；回复列出新包实际名称、归档路径和未完成的步骤。
+
 ## 回退
 
 源代码回退按独立变更处理。APK 默认通过原签名、更高 versionCode 的修复版本恢复，不能假设低 versionCode 可直接覆盖。市场插件由官方精确版本事务恢复，APK 回退不会自动覆盖用户 registry 插件。数据写入需要对应备份与兼容策略。

@@ -95,6 +95,7 @@ window.__ModuleLoader__.load({
 			cancelled: "操作已取消",
 			restored: "旧版恢复结果：",
 			updateCheckFailed: "检查更新失败：",
+			gitSource: "Git 安装（此处不提供更新）",
 			localSource: "本地或内置版本",
 			operationFailed: "操作失败：",
 			restartReason: "原因：",
@@ -197,6 +198,7 @@ window.__ModuleLoader__.load({
 			cancelled: "Operation cancelled",
 			restored: "Previous version restore result: ",
 			updateCheckFailed: "Update check failed: ",
+			gitSource: "Git-installed bundle (updates unavailable here)",
 			localSource: "Local or built-in version",
 			operationFailed: "Operation failed: ",
 			restartReason: "Reason: ",
@@ -476,6 +478,11 @@ window.__ModuleLoader__.load({
 			return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
 		}
 
+		// Git bundles need an explicit pinned commit, not a marketplace npm version.
+		function marketRegistryUpdate(bundle) {
+			return bundle.update === "registry";
+		}
+
 		/** 小胶囊徽章。 */
 		function marketBadge(React, tone, text) {
 			return React.createElement(
@@ -644,7 +651,7 @@ window.__ModuleLoader__.load({
 			const checkUpdates = React.useCallback(async (bundles) => {
 				const manager = scope && scope.remote && scope.remote.pluginManager;
 				if (!manager || typeof manager.listVersions !== "function" || !bundles) return;
-				const queue = [...bundles.values()].filter((bundle) => bundle.updatable);
+				const queue = [...bundles.values()].filter((bundle) => marketRegistryUpdate(bundle));
 				let cursor = 0;
 				const worker = async () => {
 					while (cursor < queue.length && mounted.current) {
@@ -745,7 +752,7 @@ window.__ModuleLoader__.load({
 			const update = React.useCallback(async (name, target) => {
 				const manager = scope && scope.remote && scope.remote.pluginManager;
 				const bundle = installed.bundles.get(name);
-				if (!manager || !bundle || !bundle.updatable || !target || !target.target || busy.current.has(name)) return;
+				if (!manager || !bundle || !marketRegistryUpdate(bundle) || !target || !target.target || busy.current.has(name)) return;
 				busy.current.add(name);
 				const previousRevision = clientRevision(name);
 				setOps((prev) => ({ ...prev, [name]: { phase: "updating", targetVersion: target.target, previousRevision } }));
@@ -890,7 +897,7 @@ window.__ModuleLoader__.load({
 						),
 					);
 				} else if (isInstalled) {
-					if (bundle.updatable) {
+					if (marketRegistryUpdate(bundle)) {
 						actions.push(React.createElement("button", {
 							key: "update", type: "button", style: S.btnSmPrimary,
 							disabled: installed.phase !== "ready" || available && available.phase === "checking",
@@ -957,7 +964,8 @@ window.__ModuleLoader__.load({
 					);
 				}
 
-				if (bundle) children.push(React.createElement("p", { key: "installed", style: S.meta }, marketFill(t("currentVersion"), { version: bundle.version || "?" }) + (!bundle.updatable ? " · " + t("localSource") : "")));
+				const sourceLabel = bundle && bundle.update === "git" ? t("gitSource") : t("localSource");
+				if (bundle) children.push(React.createElement("p", { key: "installed", style: S.meta }, marketFill(t("currentVersion"), { version: bundle.version || "?" }) + (!marketRegistryUpdate(bundle) ? " · " + sourceLabel : "")));
 				if (available && available.phase === "error") children.push(React.createElement("p", { key: "check-error", style: S.error }, t("updateCheckFailed") + available.message));
 				if (op.phase === "error") {
 					children.push(React.createElement("p", { key: "err", style: S.error }, t("operationFailed") + op.message));

@@ -53,6 +53,5 @@ node contracts/engine/market-fixtures.mjs --write
 Refresh only after reviewing the new official version and contract changes. The
 manifest diff exposes each source/package/license hash; tests never refresh files.
 Review the shipped zod version and deliberately update the exact test dependency
-and lock if needed, then run L0 and L1. The initial source baseline is DSH
-0.2.2-rc.1; shipped zod is 4.4.3, while the independently installed input metadata
-records 4.6.7. Test runtime is explicitly pinned to shipped zod 4.4.3.
+and lock if needed, then run L0 and L1. The current baseline for both inputs is
+DSH 0.2.2-rc.5 with zod 4.6.6; the test runtime is pinned to the shipped zod version.

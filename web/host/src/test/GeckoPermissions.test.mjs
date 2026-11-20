@@ -100,7 +100,11 @@ class Capability {
  fun request(capability: WebCapability, reply: (Boolean) -> Unit) { requests.add(capability); replies.addLast(reply) }
  fun answer(granted: Boolean) { replies.removeFirst()(granted) }
 }
-class Callbacks { val capability = Capability() }
+class Callbacks {
+ val capability = Capability()
+ val finishedUrls = mutableListOf<String>()
+ fun onPageFinished(url: String) { finishedUrls.add(url) }
+}
 class Reply : GeckoSession.PermissionDelegate.MediaCallback {
  var grants = 0; var rejects = 0
  var video: GeckoSession.PermissionDelegate.MediaSource? = null
@@ -113,6 +117,11 @@ class Reply : GeckoSession.PermissionDelegate.MediaCallback {
 class Host {
  val context = Context(); val geckoView = GeckoView(); val session = GeckoSession()
  val callbacks = Callbacks(); val uiHandler = Handler(); var destroyed = false
+ var lastLoadedUrl: String? = null
+ var gatedUrl: String? = null
+ var redirectFollows = 0
+ fun armTokenRedirectFollower() { redirectFollows++ }
+ ${declaration('override fun onPageStop(').replace('override fun ', 'fun ')}
  ${runtimeField}
  init { ${runtimeInit} }
  ${declaration('private fun postToUi(')}
@@ -158,6 +167,22 @@ fun main(args: Array<String>) {
    val dequeued = queued.uiHandler.pending.removeFirst(); queued.destroyed = true; dequeued()
    check(dispatched.grants == 0)
   }
+  "page-stop" -> {
+   val host = Host()
+   val url = "http://127.0.0.1:3080/"
+   host.onPageStop(host.session, true) // Initial blank document.
+   host.lastLoadedUrl = url
+   host.gatedUrl = url
+   host.onPageStop(host.session, true) // Engine load still queued behind the bridge.
+   host.gatedUrl = null
+   host.onPageStop(host.session, false)
+   check(host.callbacks.finishedUrls.isEmpty() && host.redirectFollows == 0)
+   host.onPageStop(host.session, true)
+   check(host.callbacks.finishedUrls == listOf(url) && host.redirectFollows == 1)
+   host.destroyed = true
+   host.onPageStop(host.session, true)
+   check(host.callbacks.finishedUrls == listOf(url) && host.redirectFollows == 1)
+  }
   "runtime" -> {
    val first = Host()
    check(first.runtime.settings.remoteDebuggingEnabled) { "actual Host initializer must enable remote debugging on non-null default runtime" }
@@ -191,6 +216,7 @@ for (const [scenario, name] of [
   ['denied','denied capability rejects without granting or asking remaining capabilities'],
   ['destroyed','destroyed Host rejects new requests and ignores late approvals and queued grant'],
   ['runtime','actual Host initializer enables debugging on reused non-null default runtime'],
+  ['page-stop','only a completed engine page may start the UI readiness check'],
 ]) test(name, () => {
   const result = spawnSync(runtime.java,['-cp',[join(work,'tests.jar'),runtime.stdlib].join(delimiter),'PermissionsKt',scenario],{encoding:'utf8',timeout:10_000});
   assert.equal(result.status,0,`${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);

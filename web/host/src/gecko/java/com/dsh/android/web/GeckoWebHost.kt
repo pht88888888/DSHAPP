@@ -173,8 +173,11 @@ class GeckoWebHost(
                 //   用 [lastLoadedUrl] —— 本 App 只加载一个地址，且它就是
                 //   `observeEngine` 里刚设过的那个。
                 if (success) {
+                    // 新会话会先完成初始空白文档；它不属于引擎导航，不能启动界面健康计时。
+                    val url = lastLoadedUrl?.takeIf { it.isNotBlank() } ?: return
+                    if (gatedUrl != null) return
                     armTokenRedirectFollower()
-                    callbacks.onPageFinished(lastLoadedUrl.orEmpty())
+                    callbacks.onPageFinished(url)
                 }
             }
         }

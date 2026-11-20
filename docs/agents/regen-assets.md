@@ -42,7 +42,7 @@ node --test tools/test-native-recipes.mjs
 | 类别 | 仍需恢复或核对的输入 |
 |---|---|
 | Termux bootstrap、Node | 精确 deb/revision、依赖与完整性、staging 配方 |
-| DSH `engine.bin` | 官方 npm tarball integrity、依赖锁与原打包流程 |
+| DSH `engine.bin` | 受控的完整依赖锁、staging 配方及传递许可证清单；上游 npm tarball integrity 已写入运行资产锁 |
 | require-builtin/system addons | 精确源码、Node headers、NDK 参数、打包与上游完整性 |
 | node-pty | 精确源码 revision、Node/Node-addon-api headers、C++/静态链接和封装配方 |
 | adb、ripgrep、sharp wasm | 精确上游版本和完整传递依赖、下载完整性、封装来源 |

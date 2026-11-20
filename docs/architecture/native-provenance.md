@@ -49,7 +49,7 @@ node native/build.mjs \
 |---|---|---|
 | Termux bootstrap | 上游 termux-packages、arm64 制品摘要 | 精确上游 revision、deb 清单/完整性、staging 配方 |
 | Node | Termux 26.4.0-2、当前制品摘要 | 上游 deb 完整性、依赖集与打包配方 |
-| 引擎 | 官方包 0.2.2-rc.1、归档摘要 | 精确 npm tarball integrity、依赖锁、原 staging 配方 |
+| 引擎 | 官方 npm 包 0.2.2-rc.5、已核对的 tarball integrity、Android USTAR 归档摘要 | 受控的完整依赖锁与 staging 配方 |
 | require-builtin native addon | 包 0.1.7、当前 ZIP 摘要 | 上游 tarball integrity、源码 revision、NDK/头文件与编译参数 |
 | system native addon | 包 0.1.2、当前 ZIP 摘要 | 原始源码/头文件/编译与打包配方 |
 | ripgrep | Android arm64 包 1.18.0、制品摘要 | 上游 tarball integrity、精确源码/编译链与封装配方 |

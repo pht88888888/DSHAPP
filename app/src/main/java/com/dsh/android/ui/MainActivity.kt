@@ -142,7 +142,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var web: WebHost
 
     /** 资产版本戳：改了引擎内容就改这里，App 会重新解包（`-2`：engine.bin/bootstrap 经 trim-runtime-assets 裁剪）。 */
-    private val assetStamp = "0.2.2-rc.1-2"
+    private val assetStamp = "0.2.2-rc.5-3"
 
     /**
      * 原生上传兜底通道。

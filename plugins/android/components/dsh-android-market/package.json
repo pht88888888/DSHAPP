@@ -9,7 +9,7 @@
     "test:engine": "node test/real-engine.mjs"
   },
   "devDependencies": {
-    "zod": "4.4.3"
+    "zod": "4.6.6"
   },
   "exports": {
     ".": {

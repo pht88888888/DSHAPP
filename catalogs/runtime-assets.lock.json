@@ -42,17 +42,17 @@
       "id": "engine",
       "path": "app/src/main/assets/engine.bin",
       "apkEntry": "assets/engine.bin",
-      "bytes": 34528781,
-      "sha256": "faf3aee2188ceefb9dd945314a9b08c6bbc8ce9354474062f8af404a3915a801",
+      "bytes": 52999222,
+      "sha256": "e2e6c022c0aeaeaabafeff91e1ff0d107b59515febc87cbb6ac1cd1c7220dcd7",
       "source": {
-        "location": "https://registry.npmjs.org/@deepseek-ai/dsh",
-        "version": "0.2.2-rc.1",
-        "upstreamIntegrity": null,
+        "location": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.2-rc.5.tgz",
+        "version": "0.2.2-rc.5",
+        "upstreamIntegrity": "sha512-cNbp12tLYLUTXaVli7zwwMjzmmEVCD1PRldg4oKtXM4+lFYckcaliMS2PU/FoThB4iAN/fKOSID0nrtRZU4Gjw==",
         "licenseStatus": "recorded-in-archive-or-source; full transitive inventory pending"
       },
       "build": {
         "status": "external-recipe",
-        "note": "Archive package version verified; dependency lock and original staging recipe are not recorded.",
+        "note": "Derived Android USTAR archive from a hoisted pnpm 12.21.0 production install (scripts and optional packages disabled). Full staging recipe and transitive inventory are not yet tracked.",
         "abi": null
       }
     },
@@ -258,8 +258,8 @@
       "id": "webview-compat",
       "path": "app/src/main/assets/webview-compat.zip",
       "apkEntry": "assets/webview-compat.zip",
-      "bytes": 7820044,
-      "sha256": "99d52a44ec3835cf1ba686458c35350013e6ea7598e3578cdd99206f8de88e2c",
+      "bytes": 7763007,
+      "sha256": "d6d208b1900b26a9316e57e192a84389679ce50f8ae585323e62dc94c7b3e377",
       "source": {
         "location": "tools/build-webview-compat.mjs",
         "version": null,

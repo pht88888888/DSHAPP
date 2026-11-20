@@ -107,7 +107,18 @@ internal object EngineFilePatches {
         }
         if (applied.size == 1) return source
         if (applied.isNotEmpty() || source.contains("return value.startsWith(\"image/\")")) return null
-        val exact = lines.indices.filter { lines[it].trimEnd().endsWith(edit.before.trimEnd()) }
+
+        // rc.5 ships the entire classifier inline with backtick literals. Keep
+        // adjacent functions intact and put the full applied body on its own lines
+        // so subsequent launches recognize the same patch as already applied.
+        val inline = "function isImageMediaType(value){return value===`image/png`||value===`image/jpeg`||value===`image/webp`||value===`image/gif`}"
+        if (hits(source, inline) == 1) {
+            return source.replace(inline, "function isImageMediaType(value){\n${edit.after}\n}")
+        }
+        if (source.contains(inline)) return null
+
+        val compatGuard = "return value === `image/png` || value === `image/jpeg` || value === `image/webp` || value === `image/gif`;"
+        val exact = lines.indices.filter { lines[it].trim() == edit.before.trim() || lines[it].trim() == compatGuard }
         val matching = if (exact.isNotEmpty()) exact else lines.indices.filter {
             lines[it].contains("return") && lines[it].contains("\"image/png\"") && lines[it].contains("\"image/gif\"")
         }

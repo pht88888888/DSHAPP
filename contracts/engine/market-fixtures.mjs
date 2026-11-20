@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
-import { dirname, resolve, isAbsolute } from 'node:path';
+import { readFile, mkdir, realpath, writeFile } from 'node:fs/promises';
+import { basename, dirname, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const fixtureRoot = fileURLToPath(new URL('./market/', import.meta.url));
@@ -28,8 +28,32 @@ function requiredPath(name) {
 export async function readRealInputs() {
   const enginePackage = requiredPath('DSH_ENGINE_PACKAGE');
   const archive = requiredPath('DSH_ENGINE_ARCHIVE');
-  const installedRoot = dirname(enginePackage);
-  const installed = Object.fromEntries(await Promise.all(allPaths.map(async (name) => [name, await readFile(name.startsWith('node_modules/@deepseek-ai/dsh/') ? resolve(installedRoot, name.slice('node_modules/@deepseek-ai/dsh/'.length)) : resolve(installedRoot, name), 'utf8')])));
+  const installedRoot = dirname(await realpath(enginePackage));
+  // Resolve only within the explicitly supplied installation: nested npm, a
+  // flat node_modules tree, or pnpm's adjacent private/hoisted dependency roots.
+  const adjacent = resolve(installedRoot, '../..');
+  const dependencyRoots = [resolve(installedRoot, 'node_modules'), adjacent];
+  const store = resolve(adjacent, '../..');
+  if (basename(adjacent) === 'node_modules' && basename(store) === '.pnpm') dependencyRoots.push(resolve(store, 'node_modules'));
+  const roots = new Map([['@deepseek-ai/dsh', installedRoot]]);
+  for (const name of packages.slice(1)) {
+    for (const root of dependencyRoots) {
+      const dir = resolve(root, name);
+      try {
+        const pkg = JSON.parse(await readFile(resolve(dir, 'package.json'), 'utf8'));
+        assert.equal(pkg.name, name);
+        roots.set(name, dir);
+        break;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    assert.ok(roots.has(name), `Missing installed ${name} next to explicit DSH_ENGINE_PACKAGE`);
+  }
+  const installed = Object.fromEntries(await Promise.all(allPaths.map(async (name) => {
+    const [pkg, dir] = [...roots].find(([key]) => name.startsWith(`node_modules/${key}/`));
+    return [name, await readFile(resolve(dir, name.slice(`node_modules/${pkg}/`.length)), 'utf8')];
+  })));
   const shipped = JSON.parse(execFileSync('python3', ['-c', `
 import json, sys, tarfile
 with tarfile.open(sys.argv[1]) as archive:

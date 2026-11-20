@@ -172,17 +172,16 @@
     {
       "id": "engine",
       "runtimeAssetId": "engine",
-      "observedArtifactSha256": "faf3aee2188ceefb9dd945314a9b08c6bbc8ce9354474062f8af404a3915a801",
+      "observedArtifactSha256": "e2e6c022c0aeaeaabafeff91e1ff0d107b59515febc87cbb6ac1cd1c7220dcd7",
       "upstream": {
-        "location": "https://registry.npmjs.org/@deepseek-ai/dsh",
-        "version": "0.2.2-rc.1",
-        "integrity": null
+        "location": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.2-rc.5.tgz",
+        "version": "0.2.2-rc.5",
+        "integrity": "sha512-cNbp12tLYLUTXaVli7zwwMjzmmEVCD1PRldg4oKtXM4+lFYckcaliMS2PU/FoThB4iAN/fKOSID0nrtRZU4Gjw=="
       },
       "recipeStatus": "incomplete",
       "gaps": [
-        "本地制品由 tools/trim-runtime-assets.mjs 裁剪派生（只删 Android 运行时不读取的文件），不等于上游原样；上游完整性仍需单独恢复。",
-        "Original source/build staging recipe is not checked into this repository.",
-        "Original upstream tarball integrity or revision must be recovered; observed local artifact SHA256 is not upstream integrity.",
+        "Android USTAR archive is derived from a hoisted pnpm install, not a byte-for-byte copy of the verified npm tarball.",
+        "Full dependency lock and staging recipe are not checked into this repository.",
         "Complete transitive license inventory must be recovered before asserting source reproducibility."
       ]
     },

@@ -50,9 +50,10 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const ok = (value) => ({ ok: true, value });
 const plugin = (version = '1.2.3', name = PACKAGE) => ({ name, version, installable: true });
 const bundle = (version = '1.0.0', extra = {}) => ({
-  name: PACKAGE, version, installed: true, updatable: true, removable: true,
+  name: PACKAGE, version, installed: true, update: 'registry', removable: true,
   enabled: false, ...extra,
 });
+const gitBundle = (version = '1.0.0', extra = {}) => bundle(version, { update: 'git', source: 'git+https://example.invalid/repo.git#0123456789abcdef0123456789abcdef01234567', ...extra });
 const listed = (versions, extra = {}) => ok({
   status: 'listed', installed: '1.0.0', registry: REGISTRY,
   versions: versions.map((version) => typeof version === 'string' ? { version, bundle: true } : version),
@@ -294,6 +295,12 @@ test('refresh and manual version checks retain the official options slot', async
   assert.doesNotMatch(app.page, /检查更新失败/);
 });
 
+test('Git-installed bundles are displayed but never checked or offered registry updates', async () => {
+  const app = await market({ bundles: [gitBundle()] });
+  assert.deepEqual(app.calls.listVersions, []);
+  assert.match(app.page, /Git 安装/);
+  assert.doesNotMatch(app.page, /更新至 v/);
+});
 test('removal passes the official name slot and refreshes installed bundles', async () => {
   const app = await market({
     bundles: [bundle()],
@@ -345,7 +352,7 @@ test('approval retry keeps the originally selected version after the catalog cha
 });
 
 test('installed updatable bundles select the first compatible stable bundle and delegate enabled preservation', async () => {
-  const local = bundle('9.0.0', { name: 'local-plugin', updatable: false });
+  const local = bundle('9.0.0', { name: 'local-plugin', update: undefined });
   let officialEnabled;
   const app = await market({
     plugins: [plugin('99.0.0')], bundles: [bundle(), local],

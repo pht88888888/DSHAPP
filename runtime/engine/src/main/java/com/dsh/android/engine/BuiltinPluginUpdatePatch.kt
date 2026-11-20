@@ -27,14 +27,14 @@ internal object BuiltinPluginUpdatePatch {
                 "${jsString(id)}:${jsString(name)}"
             } + "}}"
         val original = entry.readText()
-        val edits = patches(config)
+        val edits = patches(config, original)
         var patched = original
         if (original.contains(MARKER)) {
             val marker = uniqueIndex(original, MARKER)
             val end = original.indexOf('\n', marker)
             check(end > marker) { "Builtin plugin update patch: incomplete config marker" }
             val oldConfig = original.substring(marker + MARKER.length, end)
-            val oldEdits = patches(oldConfig)
+            val oldEdits = patches(oldConfig, original)
             for ((_, replacement) in oldEdits) uniqueIndex(original, replacement)
             if (oldConfig == config) return false
             val oldHeader = oldEdits.first().second
@@ -80,7 +80,12 @@ internal object BuiltinPluginUpdatePatch {
         append('"')
     }
 
-    private fun patches(config: String): List<Pair<String, String>> = listOf(
+    private const val PREVIOUS_REGISTRY = "\t\t\tconst previous = `${'$'}{name}@${'$'}{from}`;"
+    private const val PREVIOUS_GIT_OR_REGISTRY = "\t\t\tconst previous = target.kind === \"git\" ? target.source : `${'$'}{name}@${'$'}{from}`;"
+    private const val PREVIOUS_BUILTIN_OR_REGISTRY = "\t\t\tconst previous = target.builtinLink ?? `${'$'}{name}@${'$'}{from}`;"
+    private const val PREVIOUS_BUILTIN_GIT_OR_REGISTRY = "\t\t\tconst previous = target.builtinLink ?? (target.kind === \"git\" ? target.source : `${'$'}{name}@${'$'}{from}`);"
+
+    private fun patches(config: String, source: String): List<Pair<String, String>> = listOf(
         "function updateRefusal(bundle, name) {" to """
 // DSH_ANDROID_BUILTIN_UPDATE_V1 ${'$'}config
 const dshAndroidBuiltinUpdate = ${'$'}config;
@@ -140,8 +145,11 @@ function updateRefusal(bundle, name, profile) {
                 }
             };
 """.trimIndent(),
-        "\t\t\tconst previous = `${'$'}{name}@${'$'}{from}`;" to
-            "\t\t\tconst previous = target.builtinLink ?? `${'$'}{name}@${'$'}{from}`;",
+        if (source.contains(PREVIOUS_GIT_OR_REGISTRY) || source.contains(PREVIOUS_BUILTIN_GIT_OR_REGISTRY)) {
+            PREVIOUS_GIT_OR_REGISTRY to PREVIOUS_BUILTIN_GIT_OR_REGISTRY
+        } else {
+            PREVIOUS_REGISTRY to PREVIOUS_BUILTIN_OR_REGISTRY
+        },
         "\t\t\t\trestore: await settled(\"install\", previous, this.installBundle(previous, {" to
             "\t\t\t\trestore: await settled(\"install\", previous, target.builtinLink !== void 0 ? restoreBuiltin() : this.installBundle(previous, {",
     )
