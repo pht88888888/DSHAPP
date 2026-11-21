@@ -71,14 +71,6 @@ object DiagnosticBundle {
      */
     private const val HEADER_LINES_FOR_BOOT_ID = 8
 
-    /**
-     * `rescue/attempts/` 最多带几份（L1 二分逐步记录）。
-     *
-     * 与 [MAX_STARTUP_LOGS] 同一取舍：试探次数随隔离轮次增长，最近几份足以
-     * 还原「摘到哪一个 bundle 时好了」。按修改时间取最近的。
-     */
-    private const val MAX_RESCUE_ATTEMPTS = 8
-
     private val fmt = SafeDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
     private val fileFmt = SafeDateFormat("yyyyMMdd-HHmmss", Locale.US)
 
@@ -144,10 +136,6 @@ object DiagnosticBundle {
 
                 // ── ② 崩溃现场（价值高、体量中等）──
                 budget -= writeCrashes(zos, logDir, entriesWritten, completeness)
-
-                // ── ②.5 救援阶梯状态（小而关键：`diagnosis.json` 的 boot-tier 项
-                //    明确指向 `rescue/state.json`，此前那个目录从未进过包）──
-                budget -= writeRescueState(zos, entriesWritten, completeness)
 
                 // ── ③ 关键文件状态 ──
                 if (extraFiles.isNotEmpty()) {
@@ -637,99 +625,6 @@ object DiagnosticBundle {
         return total
     }
 
-    /**
-     * 把救援阶梯的状态文件打进包（`$DSH_HOME/rescue/`）。
-     *
-     * ## 为什么必须有
-     *
-     * `runChecks()` 的 `boot-tier` 检查项对降级态明确写着「已摘除的 bundle 见
-     * rescue/state.json」「详见 rescue/state.json」，而**那个目录此前从未进过
-     * 诊断包** —— 服务器侧 567 个包里，`rescue/` 条目数为 0，`last-boot-failure.json`
-     * 一次都没出现过。分析者被结论指向一个拿不到的文件，于是「引擎为什么起不来」
-     * 这件事在产物里**无从判断**：`state.json` 说当前是 normal/rescue，
-     * `last-boot-failure.json` 说连续失败几次、哪几个 required 插件没激活 ——
-     * 这两份正是 L1/L2/L3 每一次判断的**输入**，缺了它们，救援阶梯的行为
-     * 在事后完全不可复盘。
-     *
-     * ⚠️ 与 `crash/` 同理：这三份文件都是**小且价值最高**的，放在 ② 段写，
-     *   保证不会被日志挤掉预算。
-     * ⚠️ `attempts/` 是 L1 二分的逐步记录（`0001.json`…），数量随试探次数增长，
-     *   这里按修改时间只带最近 [MAX_RESCUE_ATTEMPTS] 份 —— 与
-     *   [MAX_STARTUP_LOGS] 同一取舍。
-     */
-    private fun writeRescueState(
-        zos: ZipOutputStream,
-        written: MutableList<String>,
-        completeness: JSONObject,
-    ): Long {
-        val dir = RescueBoot.dirOrNull()
-        if (dir == null) {
-            completeness.put("rescue_absent", "RescueBoot 未安装记录目录")
-            return 0L
-        }
-        if (!dir.isDirectory) {
-            // ⚠️ 区分「目录不存在」与「存在但没有文件」：前者是「从未降级过」，
-            //   后者是「降级过但状态没写下去」—— 两者对排查的意义完全相反。
-            completeness.put("rescue_absent", "目录不存在（从未进入过降级/救援）")
-            return 0L
-        }
-        val all = dir.listFiles { f: File -> f.isFile }?.sortedBy { it.name } ?: emptyList()
-        val attemptsDir = File(dir, "attempts")
-        val attempts = attemptsDir.listFiles { f: File -> f.isFile && f.name.endsWith(".json") }
-            ?.sortedByDescending { it.lastModified() }
-            ?.take(MAX_RESCUE_ATTEMPTS)
-            ?: emptyList()
-        if (all.isEmpty() && attempts.isEmpty()) {
-            completeness.put("rescue_empty", "目录存在但没有任何状态文件（从未降级过）")
-            return 0L
-        }
-
-        var total = 0L
-        val index = JSONArray()
-        val failures = JSONArray()
-        for (f in all + attempts) {
-            val entryName = if (f.parentFile == attemptsDir) "rescue/attempts/${f.name}" else "rescue/${f.name}"
-            // ⚠️ 先取流、再建条目（与 [writeCrashes] / [writeEngineStartupLogs] 同口径）：
-            //   反过来会在读失败时留下 0 字节僵尸条目，与「没收进来」的结论矛盾。
-            runCatching {
-                val ins = f.inputStream()
-                zos.putNextEntry(ZipEntry(entryName))
-                ins.use { it.copyTo(zos) }
-                zos.closeEntry()
-                written.add(entryName)
-                total += f.length()
-                index.put(
-                    JSONObject().apply {
-                        put("file", entryName)
-                        put("sizeBytes", f.length())
-                        put("at", f.lastModified())
-                        put("atText", fmt.format(Date(f.lastModified())))
-                    },
-                )
-            }.onFailure { t ->
-                failures.put(
-                    JSONObject().apply {
-                        put("file", entryName)
-                        put("error", "${t.javaClass.simpleName}: ${t.message}")
-                    },
-                )
-            }
-        }
-        val attemptsAll = attemptsDir.listFiles { f: File -> f.isFile } ?: emptyArray()
-        completeness.put(
-            "rescueFiles",
-            JSONObject().apply {
-                put("totalOnDevice", all.size + attemptsAll.size)
-                put("included", index.length())
-                // ⚠️ 当前层级一并写进 completeness：它是「此刻是不是降级态」这个
-                //   问题最直接的答案，与 `boot-tier` 那条检查互相印证。
-                put("tier", RescueBoot.tier().tier.id)
-                if (failures.length() > 0) put("failedToWrite", failures)
-            },
-        )
-        return total
-    }
-
     private fun buildTimeline(logDir: File, completeness: JSONObject): String {
         val events = EventLog.readAll(logDir)
         completeness.put("eventCount", events.size)
@@ -798,48 +693,6 @@ object DiagnosticBundle {
     private fun runChecks(logDir: File, extra: List<Check>): JSONObject {
         val checks = mutableListOf<Check>()
 
-        // ⚠️ **跨 check 共用的事实只算一遍**：「最近一次启动的引擎起没起来」。
-        //
-        //   两处需要它，而它们的**判据来源不同**，这正是问题所在：
-        //     · ② `crash-scenes` —— 判据就是它，决定 fail 还是 warn；
-        //     · ⑦ `boot-tier`   —— 判据是**层级**，却顺手在文案里断言了**插件加载情况**。
-        //
-        //   原先只有 ② 算这件事（且算在 `runCatching` 块内、作用域出不来），
-        //   于是 ⑦ 只能凭 `tier == NORMAL` 写出「插件全部按配置加载」——
-        //   那是**推断，不是它检查过的事实**。引擎自己因版本不兼容禁用插件行时
-        //   （`dsh: disabling profile plugin row "…"`），tier 仍是 normal，
-        //   插件却实实在在少了一批。
-        //
-        //   真机现场（`20261014-210912-87475efa`，vivo V2232A / Android 15 /
-        //   v21 system / `debuggable:false`）**同一份** `diagnosis.json` 里两条
-        //   check 直接打架：
-        //     · `crash-scenes`: fail「最近一次启动的引擎**没能起来**（界面打不开）」
-        //     · `boot-tier`  : ok  「正常启动（未降级）：插件全部按配置加载」
-        //   而包里的 `engine.log` 是引擎自己写的：
-        //     `disabling profile plugin row "llm": …incompatible with dsh 0.2.0-rc.2`
-        //     `disabling profile plugin row "settings": …`
-        //     `agent-loop (required)      llm`
-        //     `dsh: startup failed: 1 required plugin did not activate`
-        //   插件**没有**全部加载，引擎**没有**起来。
-        //
-        //   实测 564 个包里 **24 个**（全部 `debuggable:false` 的真实用户）
-        //   同时出现上面那两句。
-        //
-        //   这是本项目缺陷族「结论与它描述的对象不是同一个」的又一例：
-        //   文案描述的是**插件加载情况**，而判据查的是**层级**。
-        //   修法是把两者对齐 —— 层级照旧由 tier 判（那确实是它的职责），
-        //   但文案不许替一个没查过的事实作保。
-        //
-        //   ⚠️ 现场里的 bootId **永远不会**等于 `BootState.bootId`（本次启动）：
-        //     失败发生在**上一次**启动里，而诊断包是用户重开 App 之后才导出的。
-        //     真机核对过 40 个包，无一例外，所以只能跟 `previous()` 比。
-        val latestStartFailedCount = runCatching {
-            val prevBoot = BootState.previous().bootId
-            CrashRecorder.listScenes().count {
-                CrashRecorder.kindOf(it) == "engine-start-failed" && sceneBootId(it) == prevBoot
-            }
-        }.getOrDefault(0)
-
         // ① 上次退出类型
         runCatching {
             val prev = BootState.previous()
@@ -893,13 +746,14 @@ object DiagnosticBundle {
         //   失败发生在**上一次**启动里，而诊断包是在用户重开 App 之后才导出的。
         //   真机核对过 40 个包，无一例外。所以只能跟 `previous()` 比。
         //
-        // ⚠️ 这件事**已经在上面算过了**（`latestStartFailedCount`），因为 ⑦
-        //   `boot-tier` 也要用同一份事实。这里直接取，**不要再算一遍** ——
-        //   同一个事实量两遍，两处就可能因为时序不同而给出不同答案。
         runCatching {
             val scenes = CrashRecorder.listScenes()
             val hard = scenes.count { CrashRecorder.isHardCrash(it) }
             val startFailed = scenes.filter { CrashRecorder.kindOf(it) == "engine-start-failed" }
+            val previousBootId = BootState.previous().bootId
+            val latestStartFailedCount = previousBootId?.let { bootId ->
+                startFailed.count { sceneBootId(it) == bootId }
+            } ?: 0
             checks.add(
                 when {
                     // 「最近一次启动的引擎起不来」= 界面直接不可用 ⇒ 必须 fail。
@@ -1070,94 +924,7 @@ object DiagnosticBundle {
             )
         }
 
-        // ⑦ 救援层级（P5）
-        //
-        // ## 🔴 为什么必须有这一项
-        //
-        // 救援机制（见 `docs/RESCUE-BOOT-PLAN.md`）让 App 在插件坏掉时**降级启动**：
-        // 「已隔离可疑插件」/「救援模式」/「安全模式」。降级本身是好事，
-        // 但它会引入一种**新的静默**：用户此刻看到的是**功能不全**的界面，
-        // 而诊断包里没有任何一项能说明这件事 —— 6 个检查全 ok、headline
-        // 写「未发现异常」，而用户其实少了一批插件。
-        //
-        // 这正是本项目已确认 28 例的缺陷族（「结论与它描述的对象不是同一个」）：
-        // 「未发现异常」描述的是**日志**，而它会被读成**App 状态正常**。
-        // 加了本项之后，降级状态第一次在报告里**可见**。
-        //
-        // ⚠️ 判据是「**当前**处于哪个层级」，不是「历史上降级过几次」：
-        //   `state.json` 是**当前状态**（成功启动会把它清回 normal），
-        //   所以它天然对齐「此刻」—— 与 ② 里那条「必须按 bootId 对齐、
-        //   不能拿历史现场当现状」是同一个道理。
-        //
-        // 🔴 **但「层级是 normal」不等于「插件全部加载了」。**（2026-10-15 修，同族第 29 例）
-        //
-        //   层级只说明**救援阶梯没介入**（`RescueBoot` 没降级、没隔离、没摘 bundle）。
-        //   插件**仍然可以因为别的原因没加载** —— 最常见的是引擎自己判版本不兼容而
-        //   整行禁用：
-        //
-        //   ```
-        //   dsh: disabling profile plugin row "llm": Plugin @deepseek-ai/dsh-llm@0.1.0-rc.6
-        //        is incompatible with dsh 0.2.0-rc.2 …
-        //   dsh: disabling profile plugin row "settings": …
-        //   agent-loop (required)      llm
-        //   dsh: startup failed: 1 required plugin did not activate
-        //   ```
-        //
-        //   此时 tier 是 normal、`state.json` 里 `removedBundles: []`、
-        //   `RescueBoot` 一次都没记过失败 —— 而用户面对的是**界面打不开**。
-        //   原文案「正常启动（未降级）：插件全部按配置加载」把「阶梯没介入」
-        //   说成了「插件都加载了」，是**替一个本项没查过的事实作保**。
-        //
-        //   真机现场（`20261014-210912-87475efa`，vivo V2232A / Android 15 /
-        //   v21 system / `debuggable:false`）**同一份** `diagnosis.json` 里：
-        //     · `crash-scenes`: fail「最近一次启动的引擎**没能起来**（界面打不开）」
-        //     · `boot-tier`  : ok  「正常启动（未降级）：插件全部按配置加载」
-        //   两条直接打架。实测 564 个包里 **24 个**（全部 `debuggable:false`
-        //   的真实用户）同时出现这两句。
-        //
-        //   修法：层级照旧由 tier 判（那确实是本项的职责），但文案**只陈述
-        //   它真正查过的东西**；「引擎这次有没有起来」另有 `crash-scenes` 负责，
-        //   这里不再替它说话。
-        runCatching {
-            // ⚠️ `RescueBoot.tier()` 返回的是 **State**（含 tier/since/reason/…），
-            //   不是 Tier 本身 —— 名字短，容易读错。这里取字段。
-            val st = RescueBoot.tier()
-            val since = RescueBoot.stateSinceText()
-            checks.add(
-                when (st.tier) {
-                    RescueBoot.Tier.NORMAL -> Check(
-                        "boot-tier", "ok",
-                        "未进入救援阶梯（层级 normal）：没有摘除任何插件、" +
-                            "没有切换到 rescue profile。⚠️ 这只说明**阶梯没介入**，" +
-                            "不等于插件全部加载 —— 引擎自己判版本不兼容而禁用插件行时" +
-                            "层级仍是 normal。本次引擎是否真的起来了看 crash-scenes 那一项。",
-                    )
-                    // 降级了但界面能用 ⇒ 不是故障，但**必须让人看见**
-                    RescueBoot.Tier.QUARANTINED -> Check(
-                        "boot-tier", "warn",
-                        "以「已定向隔离坏插件」启动${since?.let { "（自 $it）" } ?: ""}：" +
-                            "App 能打开，但被禁用的插件条目**没有加载**。" +
-                            "已禁用的条目见 rescue/state.json 的 quarantinedNames，" +
-                            "执行层是 quarantine.patch.yml 的 disabled: true（文件没删）",
-                    )
-                    RescueBoot.Tier.ISOLATED -> Check(
-                        "boot-tier", "warn",
-                        "以「已隔离可疑插件」启动${since?.let { "（自 $it）" } ?: ""}：" +
-                            "App 能打开，但被隔离的插件**没有加载**。" +
-                            "已摘除的 bundle 见 rescue/state.json 的 removedBundles",
-                    )
-                    // 救援/安全模式：第三方插件全部不加载 —— 用户面对的是"能打开但不完整"
-                    RescueBoot.Tier.RESCUE, RescueBoot.Tier.SAFE_MODE -> Check(
-                        "boot-tier", "fail",
-                        "以「${st.tier.label}」启动${since?.let { "（自 $it）" } ?: ""}：" +
-                            "**第三方插件全部未加载**（App 刻意只加载核心 bundle 以保住「打得开」）。" +
-                            "这不是日志问题而是当前功能状态 —— 详见 rescue/state.json",
-                    )
-                },
-            )
-        }
-
-        // ⑧ 调用方给的检查（资产版本戳、补丁锚点、插件激活 —— EngineManager 知道这些）
+        // ⑦ 调用方给的检查（资产版本戳、补丁锚点、插件激活 —— EngineManager 知道这些）
         checks.addAll(extra)
 
         val ok = checks.count { it.status == "ok" }

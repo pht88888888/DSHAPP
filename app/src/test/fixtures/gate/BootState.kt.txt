@@ -1,0 +1,2 @@
+package com.dsh.android.log
+object BootState { val bootId = "fresh-boot" }

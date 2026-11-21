@@ -35,35 +35,11 @@ internal data class BuiltinPluginSpec(val id:String,val packageName:String,val a
 object DshLog {
  fun i(tag:String, message:String) {}
  fun w(tag:String, message:String) {}
- fun e(tag:String, message:String) {}
-}
-object BootState { val bootId = "fixture" }
-object EventLog { fun record(name:String, details:Map<String,String>) {} }
-object RescueBoot {
- const val DIR_NAME = "rescue"
- enum class Tier(val id:String) { NORMAL("normal"), ISOLATED("isolated"), RESCUE("rescue") }
- data class Failure(val requiredDidNotActivate:Int?, val tail:List<String>)
- fun parseFailure(bootId:String, exitCode:Int?, tailLines:List<String>, at:Long) = Failure(null, tailLines.takeLast(100))
-}`),
-    fixture('EngineManager.kt', `package com.dsh.android.engine
-class EngineManager {
- internal class ProbeResult(val ready:Boolean,val exitCode:Int?,val requiredDidNotActivate:Int?,val tail:List<String>)
- internal class IsolationResult(val removed:List<String>,val reason:String,val attempts:Int,val verified:Boolean)
+ fun e(tag:String, message:String, throwable:Throwable? = null) {}
 }`),
   ];
   const node = path.join(tmp, 'node');
   fs.symlinkSync(process.execPath, node);
-  const program = path.join(tmp, 'fixture.cjs');
-  fs.writeFileSync(program, `const fs = require('node:fs');
-fs.writeFileSync(process.env.PID_FILE, String(process.pid));
-if (process.env.MODE === 'ready') {
- console.log(JSON.stringify({ args: process.argv.slice(2), env: process.env.CUSTOM, cwd: process.cwd() }));
- console.log('dsh web: http://127.0.0.1:43911/?token=fixture');
- setInterval(() => {}, 1000);
-} else if (process.env.MODE === 'fail') {
- console.log('fixture failure'); process.exit(7);
-} else { setInterval(() => {}, 1000); }
-`);
   sources.push(fixture('Runner.kt', String.raw`package com.dsh.android.engine
 import java.io.File
 import java.nio.file.Files
@@ -75,10 +51,8 @@ import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import android.content.res.AssetManager
 import com.dsh.android.engine.constants.*
-import com.dsh.android.log.RescueBoot
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
-import org.json.JSONArray
 
 fun main(args:Array<String>) = runBlocking {
  val root=File(args[0]); var count=0
@@ -98,11 +72,12 @@ fun main(args:Array<String>) = runBlocking {
  val apk=File(root,"test.apk");zip(apk,mapOf("assets/$ASSET_NAME" to archiveFile.readBytes()))
  val installer=EngineAssetInstaller(assets,root,apk,engine)
  val progress=ArrayList<Int>(); val failures=ArrayList<String>()
- installer.ensureExtracted("v1",progress::add,failures::add)
+ verify(installer.ensureExtracted("v1",progress::add,failures::add),"asset installer did not report success")
  verify(File(engine,"payload.txt").readText()=="new engine","asset payload missing")
  verify(File(engine,".stamp").readText()=="v1","asset stamp missing")
  verify(progress.first()==0 && progress.last()==100,"asset progress incomplete")
- val opens=assets.opens;installer.ensureExtracted("v1",{error("unchanged stamp extracted")},failures::add)
+ val opens=assets.opens
+ verify(installer.ensureExtracted("v1",{error("unchanged stamp extracted")},failures::add),"asset stamp did not report ready")
  verify(assets.opens==opens,"unchanged asset reopened")
  archiveFile.writeText("corrupt")
  verify(runCatching { installer.ensureExtracted("v2",{},failures::add) }.isFailure,"corrupt archive accepted")
@@ -144,83 +119,40 @@ fun main(args:Array<String>) = runBlocking {
  verify(stripped.contains("https://user.example") && !stripped.contains("      agnes:"),"legacy provider cleanup removed user provider")
  verify(defaults.stripBuiltinAgnesText(stripped)==stripped,"legacy cleanup not idempotent")
  val overlays=ProfileOverlayWriter(home,File(root,"workspace")){true}
- val instructions=File(home,INSTRUCTIONS_FILE).also{it.writeText("USER BEFORE\n")}
+ val legacyPrompt="<!-- dsh-android:rescue BEGIN（本段由客户端生成，勿手改）-->\nOLD CONTENT\n<!-- dsh-android:rescue END -->"
+ val instructions=File(home,INSTRUCTIONS_FILE).also{it.writeText("USER BEFORE\n"+legacyPrompt+"\n")}
+ val legacyQuarantine=file("dsh/quarantine.patch.yml","old patch\n")
+ val legacyState=file("dsh/rescue/state.json","old state\n")
+ val legacyProfile=file("dsh/profiles/rescue/package.json","old profile\n")
  overlays.ensurePrivilegedPrompt(true);instructions.appendText("USER AFTER\n");overlays.ensurePrivilegedPrompt(false)
  verify(instructions.readText().contains("USER BEFORE") && instructions.readText().contains("USER AFTER"),"prompt section overwrote user text")
  val prompt=instructions.readText();overlays.ensurePrivilegedPrompt(false)
  verify(instructions.readText()==prompt,"prompt section not idempotent")
- overlays.ensureRescuePrompt(RescueBoot.Tier.RESCUE);overlays.ensureRescuePrompt(RescueBoot.Tier.NORMAL)
- verify(instructions.readText().contains("本机**没有**处于降级启动模式"),"rescue prompt remained stale")
- val quarantinePatch=overlays.writeQuarantinePatch(listOf("bad-plugin"))!!
- verify(quarantinePatch.readText().contains("disabled: true"),"quarantine overlay missing")
- verify(overlays.writeQuarantinePatch(emptyList())==null && !quarantinePatch.exists(),"quarantine overlay not cleared")
+ verify(instructions.readText().contains(legacyPrompt),"normal prompt rewrote legacy section")
+ verify(legacyQuarantine.readText()=="old patch\n" && legacyState.readText()=="old state\n" && legacyProfile.readText()=="old profile\n","normal overlays touched legacy rescue data")
+ verify(user.readText()==custom,"normal overlays touched the user patch")
 
- val manifest=file("dsh/profiles/web/package.json","{\n \"custom\": \"keep exact whitespace\", \"dsh\": {\"profile\": {\"bundles\": [\"@deepseek-ai/core\",\"bad\",\"good\"]}}}\n")
- val original=manifest.readText(); var temporarySeen=false
- val tx=PluginIsolationTransaction(home,engine){_,_ ->
-  val rows=JSONObject(manifest.readText()).getJSONObject("dsh").getJSONObject("profile").getJSONArray("bundles")
-  temporarySeen=(0 until rows.length()).map{rows.getString(it)}==listOf("@deepseek-ai/core","good")
-  throw IllegalStateException("probe interrupted")
- }
- verify(runCatching{tx.probeWithBundleFilter("web",listOf("good"),emptyList())}.isFailure,"probe fixture did not throw")
- verify(temporarySeen && manifest.readText()==original && !File(manifest.parentFile,"package.json.bak-probe").exists(),"filter failed to restore exact original after exception")
- val bad=file("broken-dir/payload","retain me").parentFile
- verify(tx.quarantine(bad,"fixture") && !bad.exists(),"directory quarantine failed")
- verify(root.listFiles()!!.any{it.name.startsWith("broken-dir.bak-") && File(it,"payload").readText()=="retain me"},"quarantine deleted original data")
- val isolation=PluginIsolationTransaction(home,engine){_,_ ->
-  val rows=JSONObject(manifest.readText()).getJSONObject("dsh").getJSONObject("profile").getJSONArray("bundles")
-  val keep=(0 until rows.length()).map{rows.getString(it)}
-  EngineManager.ProbeResult("bad" !in keep,if("bad" in keep) 1 else null,if("bad" in keep) 1 else null,emptyList())
- }
- val isolated=isolation.isolateBadBundles(emptyList())!!
- verify(isolated.verified && isolated.removed==listOf("bad"),"isolation failed to find one fatal bundle")
- verify(File(manifest.parentFile,"package.json.bak-l1").readText()==original,"L1 backup changed original bytes")
- val finalRows=JSONObject(manifest.readText()).getJSONObject("dsh").getJSONObject("profile").getJSONArray("bundles")
- verify((0 until finalRows.length()).map{finalRows.getString(it)}==listOf("@deepseek-ai/core","good"),"L1 duplicated core or removed healthy bundle")
+ val node=File(root,"node");val program=File(root,"bin.js")
+ val patches=listOf(file("first.yml","[]"),file("second.yml","[]"))
+ val prefix=listOf(node.absolutePath,program.absolutePath,"--profile",PROFILE_NAME,"--patch",patches[0].absolutePath,"--patch",patches[1].absolutePath)
+ verify(EngineLaunchSpec.buildEngineArgs(node,program,PROFILE_NAME,patches,0)==prefix+listOf("--port","0","--no-open"),"patch flags must precede inner port flag")
+ verify(EngineLaunchSpec.buildEngineArgs(node,program,PROFILE_NAME,patches,null)==prefix+"--no-open","default port must be omitted")
+ val url="http://127.0.0.1:43911/?token=fixture"
+ verify(URL_PATTERN.find("dsh web: "+url)?.groupValues?.get(1)==url,"valid readiness line not recognized")
+ verify(!URL_PATTERN.containsMatchIn("dsh web: http://127.0.0.1:43911/"),"readiness accepted missing token")
 
- val workspace=File(root,"workspace").also{it.mkdirs()};val node=File(root,"node");val program=File(root,"fixture.cjs")
- val env=linkedMapOf("MODE" to "ready","CUSTOM" to "snapshot", "PID_FILE" to File(root,"pid").absolutePath)
- val patchFiles=mutableListOf(file("first.yml","[]"),file("second.yml","[]"))
- val spec=EngineLaunchSpec(node,program,"web",patchFiles,workspace,env,3080)
- env["CUSTOM"]="mutated";patchFiles.clear()
- verify(spec.environment["CUSTOM"]=="snapshot" && spec.overlays.size==2,"launch snapshot mutated through inputs")
- verify(runCatching{(spec.environment as MutableMap)["CUSTOM"]="mutated"}.isFailure,"launch environment exposed mutation")
- val probe=spec.forProbe("rescue",spec.overlays)
- verify(probe.environment==spec.environment && probe.profile=="rescue" && probe.port==0,"probe diverged from real environment")
- val expected=listOf(node.absolutePath,program.absolutePath,"--profile","rescue","--patch",spec.overlays[0].absolutePath,"--patch",spec.overlays[1].absolutePath,"--port","0","--no-open")
- verify(probe.arguments==expected,"launcher flags after inner port")
- val runner=EngineProbeRunner();val ready=runner.probeBoot(probe,3000)!!
- verify(ready.ready && ready.tail.any{it.contains("snapshot") && it.contains(workspace.absolutePath)},"probe did not use exact cwd/env")
- fun dead() = !ProcessHandle.of(File(root,"pid").readText().toLong()).map{it.isAlive}.orElse(false)
- verify(dead(),"ready probe child survived return")
- val failedSpec=EngineLaunchSpec(node,program,"web",emptyList(),workspace,spec.environment+mapOf("MODE" to "fail"),0)
- val failed=runner.probeBoot(failedSpec,3000)!!
- verify(!failed.ready && failed.exitCode==7 && failed.tail.contains("fixture failure"),"exit failure lost code or tail")
- val hungSpec=EngineLaunchSpec(node,program,"web",emptyList(),workspace,spec.environment+mapOf("MODE" to "hang"),0)
- verify(runner.probeBoot(hungSpec,300)?.ready==false && dead(),"timeout probe left child alive")
- val concurrent=runner.runDumpConfig(ProcessBuilder(node.absolutePath,"-e","process.stdout.write('a'.repeat(150000)); process.stderr.write('b'.repeat(150000))"),3000)!!
- verify(concurrent.exitCode==0 && concurrent.stdout.trim().length==150000 && concurrent.stderr.trim().length==150000,"dump pipes blocked or truncated")
- val hung=ProcessBuilder(node.absolutePath,program.absolutePath).apply{environment().putAll(hungSpec.environment)}
- verify(runner.runDumpConfig(hung,300)==null && dead(),"dump timeout left child alive")
- val interruptThread=Thread{runner.probeBoot(hungSpec,10000)};interruptThread.start()
- val until=System.currentTimeMillis()+2000
- while(File(root,"pid").readText().toLong().let{!ProcessHandle.of(it).map{p->p.isAlive}.orElse(false)} && System.currentTimeMillis()<until) Thread.sleep(10)
- interruptThread.interrupt();interruptThread.join(4000)
- verify(!interruptThread.isAlive && dead(),"interrupted probe left child alive")
+ val manifest=file("dsh/profiles/web/package.json", """{"dependencies":{"extra":"^1.0.0"},"custom":"keep me","dsh":{"profile":{"bundles":["@deepseek-ai/core","extra"]}}}""")
+ val manifestBefore=manifest.readText()
+ verify(!PluginManifest.setBundle(manifest.parentFile,"@deepseek-ai/core",remove=true).first && manifest.readText()==manifestBefore,"official bundle toggle altered user manifest")
+ verify(PluginManifest.setBundle(manifest.parentFile,"extra",remove=true).first,"explicit plugin disable failed")
+ val (disabled, entries)=requireNotNull(PluginManifest.read(manifest.parentFile))
+ verify(entries.map { it.name }==listOf("@deepseek-ai/core") && disabled.getJSONObject("dependencies").getString("extra")=="^1.0.0" && disabled.getString("custom")=="keep me","plugin toggle did not preserve unrelated manifest fields")
+ verify(PluginManifest.setBundle(manifest.parentFile,"extra",remove=false).first && PluginManifest.read(manifest.parentFile)?.second?.map { it.name }==listOf("@deepseek-ai/core","extra"),"explicit plugin re-enable failed")
 
- val monitor=EngineMemoryMonitor({true},{false},{error("unexpected restart")})
- val child=ProcessBuilder(node.absolutePath,"-e","setInterval(()=>{},1000)").start()
- fun watchers()=Thread.getAllStackTraces().keys.filter{it.isAlive && it.name=="dsh-heap-watch"}
- try {
-  monitor.start(child,3072,0.85);val first=watchers().single();monitor.start(child,3072,0.85);first.join(1000)
-  verify(!first.isAlive && watchers().size==1,"monitor replacement leaked old worker")
-  val last=watchers().single();monitor.stop();last.join(1000)
-  verify(!last.isAlive && watchers().isEmpty(),"monitor stop left worker alive")
- } finally {monitor.stop();child.destroyForcibly();child.waitFor()}
  println("engine components: $count assertions passed; 0 skipped")
 }
 `));
-  const components = ['TarGz', 'EngineAssetInstaller', 'EngineCompatibilityInstaller', 'EngineLaunchSpec', 'EngineProbeRunner', 'ProfileDefaultsInstaller', 'KeyPoolProfileConfig', 'ProfileOverlayWriter', 'PluginIsolationTransaction', 'PluginSyntaxPreflight', 'EngineMemoryMonitor'];
+  const components = ['TarGz', 'EngineAssetInstaller', 'EngineCompatibilityInstaller', 'EngineLaunchSpec', 'ProfileDefaultsInstaller', 'KeyPoolProfileConfig', 'ProfileOverlayWriter', 'PluginManifest'];
   sources.push(...resolveEngineConstantSources(root), ...components.map(name => resolveProjectKotlinSource(root, `engine/${name}.kt`)));
   const classes = path.join(tmp, 'classes');
   const classpath = [...jars, jsonJar].join(path.delimiter);

@@ -175,20 +175,19 @@ fun main(args: Array<String>) {
                 if (mode == "node-missing") {
                     check(prefix.canonicalPath.startsWith(root.path + File.separator))
                     prefix.deleteRecursively()
-                    check(!runtime.installLocked() && !runtime.repairIfNeededLocked())
+                    check(!runtime.installLocked())
                     check(opened == 0)
                 } else if (mode == "node-cached") {
                     executable(prefix, "bin/node", GOOD_NODE)
                     File(prefix, MARKER).writeText("unchanged")
                     check(runtime.installLocked())
-                    check(!runtime.repairIfNeededLocked())
                     check(opened == 0 && rewritten == 0)
                     check(File(prefix, MARKER).readText() == "unchanged")
                 } else {
                     if (mode == "node-repair") {
                         executable(prefix, "bin/node", "#!/bin/sh\nexit 2\n".toByteArray())
                         File(prefix, MARKER).writeText("old")
-                        check(runtime.repairIfNeededLocked())
+                        check(runtime.installLocked())
                     } else check(runtime.installLocked() == (mode != "node-failed"))
                     check(opened == 1 && rewritten == 1)
                     check(File(prefix, MARKER).exists() == (mode != "node-failed"))

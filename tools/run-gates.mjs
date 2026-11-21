@@ -6,9 +6,10 @@ import { resolve, dirname, join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reference, sourceSnapshot, inspectPair } from './release/inspect.mjs';
 import { checkRuntimeAssets } from './check-runtime-assets.mjs';
+import { inspectRepairArtifacts } from './check-repair-artifacts.mjs';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const DEVICE_SCENARIOS = ['cold-start', 'keep-alive', 'web-permissions-system', 'web-permissions-gecko', 'recovery', 'bubble-dispose', 'browser-dispose', 'upgrade-market-state'];
+export const DEVICE_SCENARIOS = ['cold-start', 'keep-alive', 'web-permissions-system', 'web-permissions-gecko', 'manual-failure-actions', 'bubble-dispose', 'browser-dispose', 'upgrade-market-state'];
 const LEVELS = ['L0', 'L1', 'L2', 'L3'];
 const json = value => JSON.stringify(value, null, 2) + '\n';
 const regular = path => existsSync(path) && statSync(path).isFile();
@@ -152,7 +153,9 @@ export function runGates(options) {
     });
     if (input.status === 'passed') {
       nodeTests('market-real-engine', ['test/market.mjs'], join(root, 'plugins/android/components/dsh-android-market'), { ...process.env, DSH_MARKET_REAL_ENGINE: '1' });
-      nodeTests('real-kotlin-engine', ['tools/test-kotlin-runtime.mjs', 'app/src/test/engine-components.mjs', 'app/src/test/engine-patch-registry.mjs', 'app/src/test/builtin-plugin-update-patch.mjs', 'app/src/test/engine-constants-values.mjs', 'runtime/engine/src/main/java/com/dsh/android/engine/BuiltinPluginBootstrap.test.mjs']);
+      nodeTests('real-kotlin-engine', ['tools/test-kotlin-runtime.mjs', 'app/src/test/engine-components.mjs', 'app/src/test/engine-patch-registry.mjs', 'app/src/test/builtin-plugin-update-patch.mjs', 'app/src/test/engine-constants-values.mjs', 'app/src/test/RepairDiagnosticSummary.test.mjs', 'runtime/engine/src/main/java/com/dsh/android/engine/BuiltinPluginBootstrap.test.mjs']);
+      nodeTests('repair-preset', ['repair/assistant/test/repair-agent.test.mjs', 'repair/assistant/test/repair-file-tools.test.mjs', 'repair/assistant/test/profile-smoke.mjs', 'repair/assistant/test/settings-guard.test.mjs']);
+      nodeTests('repair-native-policy', ['repair/assistant/test/repair-native-policy.test.mjs', 'repair/assistant/test/repair-host-flow.test.mjs', 'repair/assistant/test/repair-task-bridge.test.mjs', 'repair/assistant/test/repair-task-state.test.mjs', 'app/src/test/RepairEvidenceRedaction.test.mjs']);
       execute('official-registry-engine', process.execPath, ['app/src/test/engine-patch-registry.mjs', '--official']);
     }
   } else if (level === 'L2') {
@@ -185,6 +188,7 @@ export function runGates(options) {
     if (input.status === 'passed') {
       nodeTests('android-owner-behavior', [
         'app/src/main/java/com/dsh/android/ui/tests/ui-controllers.test.mjs',
+        'app/src/test/BootOverlayLayout.test.mjs',
         'feature/bubble/tests/bubble.test.mjs',
         'feature/browser/src/main/java/com/dsh/android/browser/BrowserLifecycle.test.mjs',
         'feature/browser/src/main/java/com/dsh/android/browser/BrowserMailbox.test.mjs',
@@ -192,13 +196,19 @@ export function runGates(options) {
         'core/logging/src/test/LogPrivacy.test.mjs',
         'runtime/engine/src/test/EngineFilePolicy.test.mjs',
         'app/src/test/BackupSafety.test.mjs',
-        'app/src/test/WebClientHealth.test.mjs',
         'runtime/termux/src/main/java/com/dsh/android/termux/TermuxBootstrap.test.mjs',
         'web/host/src/test/WebHostLifecycle.test.mjs',
         'web/host/src/test/GeckoPermissions.test.mjs',
+        'app/src/test/RepairFileBroker.test.mjs',
+        'app/src/test/AndroidRepairFileIo.test.mjs',
+        'app/src/test/RepairFileAccess.test.mjs',
+        'app/src/test/RepairProcessPolicy.test.mjs',
+        'app/src/test/RepairTaskCoordinator.test.mjs',
+        'app/src/test/RepairRuntimeGate.test.mjs',
+        'app/src/test/RepairValidationService.test.mjs',
       ]);
       const since = Date.now();
-      const gradleArgs = ['--offline', '--no-daemon', '--rerun-tasks', ':app:testSystemDebugUnitTest', ':app:testGeckoDebugUnitTest', ':app:lintSystemDebug', ':app:lintGeckoDebug', ':app:assembleSystemRelease', ':app:assembleGeckoRelease', '--console=plain'];
+      const gradleArgs = ['--offline', '--no-daemon', '--rerun-tasks', ':app:testSystemDebugUnitTest', ':app:testGeckoDebugUnitTest', ':app:lintSystemDebug', ':app:lintGeckoDebug', ':app:assembleSystemRelease', ':app:assembleGeckoRelease', ':repair:assistant:assembleRelease', ':repair:assistant:lintDebug', '--console=plain'];
       const task = execute('android-tasks', process.env.DSH_GRADLE_BINARY ?? 'bash', process.env.DSH_GRADLE_BINARY !== undefined ? gradleArgs : ['gradlew', ...gradleArgs], { env: { ...process.env, ANDROID_HOME: options.sdk, ANDROID_SDK_ROOT: options.sdk } });
       if (task.status === 'passed') {
         record('android-junit-results', 'read fresh JUnit XML for both flavor unit-test tasks', () => {
@@ -213,6 +223,10 @@ export function runGates(options) {
           const runtimeAssets = JSON.parse(readFileSync(options['runtime-lock'], 'utf8')).assets;
           const products = inspectPair({ root, ...apks, sdk: options.sdk, buildTools: options['build-tools'], catalog: join(root, 'catalogs/plugin-components.json'), generatedDir: options['generated-dir'] || join(root, 'app/build/generated/plugin-components'), runtimeAssets });
           return { tests: products.length + lint.length, inputs: [...products, ...lint.map(reference)] };
+        });
+        record('repair-artifacts', 'inspect freshly built assistant/target manifests, same signing certificate and assistant lint', () => {
+          const products = inspectRepairArtifacts({ root, sdk: options.sdk, buildTools: options['build-tools'], since });
+          return { tests: products.length, skipped: 0, inputs: products };
         });
       }
     }

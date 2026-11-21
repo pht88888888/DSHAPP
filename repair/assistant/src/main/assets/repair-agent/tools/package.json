@@ -1,0 +1,10 @@
+{
+  "name": "@dsh-android/repair-tools",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Scoped DSH task repair tools; asynchronous validation and user-only final UI entry",
+  "exports": { ".": "./index.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg" },
+  "files": ["index.js", "mailbox.js", "contract.js", "settings.js", "settings-policy.js", "locale/*.json", "icon.svg"],
+  "engines": { "dsh": "0.2.2-rc.5" }
+}

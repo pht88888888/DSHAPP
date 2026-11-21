@@ -453,9 +453,7 @@ class LogViewerActivity : AppCompatActivity() {
      *
      * ⚠️ **只在真的有变化时才重启**：重启要十几秒，用户点开看一眼再取消
      *   不该触发它。
-     * ⚠️ **重启走 [EngineManager.requestRestart]**：它内部先 `stop()` 再置
-     *   `State.Dead`，而 `MainActivity` 的 `Dead` 分支会重新 `start()` 并重载
-     *   界面 —— 与我在电脑上用 adb 改完文件后手动重启是**同一条路径**。
+     * [EngineManager.requestRestart] 会发出显式重启请求；它不是进程意外退出。
      */
     private fun applyPluginToggles(
         profileDir: File,

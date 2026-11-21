@@ -1,0 +1,15 @@
+package android.os
+
+import android.system.Os
+import java.io.Closeable
+import java.io.FileDescriptor
+
+/** JVM fixture only; calls the narrow host-backed simulated Os. */
+class ParcelFileDescriptor private constructor(val fileDescriptor: FileDescriptor) : Closeable {
+    val fd: Int get() = Os.number(fileDescriptor)
+    private var closed = false
+    override fun close() { check(!closed); closed = true; Os.close(fileDescriptor) }
+    companion object {
+        fun dup(fd: FileDescriptor) = ParcelFileDescriptor(Os.dup(fd))
+    }
+}

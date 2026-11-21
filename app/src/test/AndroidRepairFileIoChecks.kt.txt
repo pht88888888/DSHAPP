@@ -1,0 +1,323 @@
+package com.dsh.android.repair.files
+
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
+import org.json.JSONObject
+import java.io.File
+import java.nio.file.Files
+import java.security.MessageDigest
+
+/** Executes the actual production adapter + broker, not a HostIo replacement.
+ * The Android API boundary is a deliberately narrow host-backed simulation.
+ * This proves control flow/flags/lifetimes, NOT Android SELinux or race behavior. */
+fun main(argv: Array<String>) {
+    val sandbox = Files.createTempDirectory("android-file-io-check-").toFile().canonicalFile
+    val publicAncestor = File(sandbox, "public-data").apply { mkdir() }
+    val root = File(publicAncestor, "package/files").apply { mkdirs() }.canonicalFile
+    val io = AndroidRepairFileIo(root)
+    val path = "engine/node_modules/@deepseek-ai/dsh/lib/main.js"
+    val target = File(root, path).apply { parentFile.mkdirs(); writeText("export const value = 1;\n") }
+    val original = target.readText()
+    val replacement = "export const value = 2;\n"
+    val grant = "repair-grant-android-adapter-01"
+    val broker = RepairFileBroker(root, io)
+    Os.deniedAncestors += listOf("/", publicAncestor.path, sandbox.path, root.parentFile.path)
+    var checks = 0
+    fun noLeaks() = check(Os.liveDescriptors == 0) { "Leaked ${Os.liveDescriptors} descriptors" }
+    fun body(vararg values: Pair<String, Any>) = JSONObject().apply { values.forEach { put(it.first, it.second) } }
+    fun good(value: JSONObject): JSONObject = value.also { check(it.optBoolean("ok")) { it.toString() }; noLeaks() }
+    fun bad(value: JSONObject, code: String) { check(!value.optBoolean("ok") && value.optString("error") == code) { value.toString() }; noLeaks() }
+    fun call(method: String, args: JSONObject = JSONObject()) = broker.dispatch(method, args, grant)
+    fun hash(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+    fun rejected(code: String? = null, action: () -> Unit) {
+        var failure: Exception? = null
+        try { action() } catch (error: Exception) { failure = error }
+        check(failure != null) { "Expected rejection" }
+        if (code != null) check(failure is RepairFileException && failure.code == code) { "Expected $code, got $failure" }
+        noLeaks()
+    }
+    try {
+        // The policy is deterministic even when this host test happens to run as root.
+        rejected { Os.open(publicAncestor.path, OsConstants.O_RDONLY, 0) }
+        check(Os.deniedAttempts == 1)
+        Os.deniedAttempts = 0
+        Os.opens.clear()
+        val statBefore = Os.statCalls
+        val fstatBefore = Os.fstatCalls
+        check(io.statNoFollow(root)?.directory == true)
+        check(Os.statCalls == statBefore && Os.fstatCalls > fstatBefore) { "Root stat must use fstat, not lstat of a reopened parent" }
+        check(Os.opens.first().path == root.path)
+        noLeaks(); checks++
+
+        check(String(io.read(target, RepairFileBroker.MAX_FILE_BYTES)) == original)
+        check(io.children(target.parentFile).contains("main.js"))
+        noLeaks(); checks++
+
+        // Anchor itself is not a target file; sibling-prefix and lexical traversals fail closed.
+        rejected("unsafe_path") { io.read(root, 1024) }
+        rejected("unsafe_path") { io.mkdir(root) }
+        for (outside in listOf(File("/"), root.parentFile, File(root.path + "-sibling/evil.js"), File(root, "../outside.js"), File(root, "./engine/x.js"), File("/etc/passwd"))) {
+            rejected("unsafe_path") { io.statNoFollow(outside) }
+            rejected("unsafe_path") { io.children(outside) }
+            rejected("unsafe_path") { io.read(outside, 1024) }
+            rejected("unsafe_path") { io.replace(outside, byteArrayOf(1), 384) }
+        }
+        check(io.statNoFollow(File(root, "absent.js")) == null)
+        noLeaks(); checks++
+
+        val outside = File(sandbox, "outside").apply { mkdir(); File(this, "secret.js").writeText("outside") }
+        val dirLink = File(root, "linked-directory")
+        Files.createSymbolicLink(dirLink.toPath(), outside.toPath())
+        check(io.statNoFollow(dirLink)?.directory == false)
+        rejected { io.read(File(dirLink, "secret.js"), 1024) }
+        rejected { io.children(dirLink) }
+        rejected { io.mkdir(File(dirLink, "created")) }
+        rejected { io.replace(File(dirLink, "secret.js"), "changed".toByteArray(), 384) }
+        check(File(outside, "secret.js").readText() == "outside")
+        val anchorLink = File(sandbox, "anchor-link")
+        Files.createSymbolicLink(anchorLink.toPath(), root.toPath())
+        rejected { AndroidRepairFileIo(anchorLink).statNoFollow(anchorLink) }
+        val leafLink = File(target.parentFile, "link.js")
+        Files.createSymbolicLink(leafLink.toPath(), target.toPath())
+        check(io.statNoFollow(leafLink)?.regular == false)
+        rejected { io.read(leafLink, 1024) }
+        bad(call("read_file", body("path" to path.replace("main.js", "link.js"))), "unsafe_file")
+        bad(call("read_file", body("path" to path.replace("main.js", "linked/main.js"))), "not_found")
+        val nestedLink = File(target.parentFile, "linked")
+        Files.createSymbolicLink(nestedLink.toPath(), target.parentFile.toPath())
+        bad(call("read_file", body("path" to path.replace("main.js", "linked/main.js"))), "unsafe_path")
+        noLeaks(); checks++
+
+        val hard = File(target.parentFile, "hard.js")
+        Files.createLink(hard.toPath(), target.toPath())
+        check(io.statNoFollow(target)?.regular == false)
+        rejected("unsafe_file") { io.read(target, 1024) }
+        bad(call("read_file", body("path" to path)), "unsafe_file")
+        Files.delete(hard.toPath()); checks++
+
+        // Non-directory ancestors and strict file type / size checks exercise real adapter fstat.
+        val flat = File(root, "flat").apply { writeText("not directory") }
+        rejected("unsafe_path") { io.read(File(flat, "child.js"), 1024) }
+        rejected("unsafe_file") { io.read(target.parentFile, 1024) }
+        rejected("file_too_large") { io.read(target, 1) }
+        noLeaks(); checks++
+
+        // Production broker transactions operate through the production Android adapter.
+        check(good(call("read_file", body("path" to path))).getString("content") == original)
+        check(good(call("list_changes")).getJSONArray("changes").length() == 0)
+        // Simulate a private-storage policy denying link(2), without claiming device errno.
+        Os.deniedHardlinkRoots += root.canonicalPath
+        Os.requireFdSpaceQuery = true
+        println("regression: private hardlinks denied with EACCES before stage_edit")
+        val staged = good(call("stage_edit", body("path" to path, "expected_sha256" to hash(original), "content" to replacement)))
+        val change = staged.getString("change_id")
+        check(target.readText() == original)
+        check(good(call("list_changes")).getJSONArray("changes").length() == 1)
+        good(broker.previewChange(change, grant))
+        check(good(call("apply_changes", body("change_id" to change))).getString("status") == "applied_pending_verification")
+        check(target.readText() == replacement)
+        check(good(call("rollback", body("change_id" to change))).getString("status") == "rolled_back")
+        check(target.readText() == original)
+        check(Os.deniedHardlinkAttempts >= 2) { "Private backup/candidate writes did not exercise denied links" }
+        check(Os.fstatvfsCalls > 0 && Os.statvfsCalls == 0) { "Space query must use the pinned descriptor" }
+        noLeaks(); checks++
+
+        // Pinned descriptors must close on open/stat/dup/read/write/publish failures too.
+        for (failure in listOf("open", "fstat", "dup", "lstat", "read")) {
+            Os.failOperation = failure
+            rejected { if (failure == "lstat") io.statNoFollow(target) else io.read(target, 1024) }
+            check(Os.failOperation == null) { "Failure $failure was not reached" }
+        }
+        // Fail after earlier directories were successfully pinned, not only at the root.
+        for (failure in listOf("open", "fstat", "dup")) {
+            Os.failOperation = failure
+            Os.failAfterMatchingCalls = if (failure == "open") 4 else 2
+            rejected { io.read(target, 1024) }
+            check(Os.failOperation == null)
+        }
+        for (failure in listOf("write", "fchmod", "fsync", "rename")) {
+            Os.failOperation = failure
+            rejected { io.replace(target, replacement.toByteArray(), 384, hash(original)) }
+            check(Os.failOperation == null)
+            check(target.readText() == original) { "Prepublication failure overwrote target" }
+        }
+        rejected("hash_conflict") { io.replace(target, replacement.toByteArray(), 384, "0".repeat(64)) }
+        check(target.readText() == original)
+        noLeaks(); checks++
+
+        // Link permission/unsupported failures may fall back; collision and generic I/O may not.
+        for (errno in listOf(OsConstants.EACCES, OsConstants.EPERM, OsConstants.EOPNOTSUPP, OsConstants.ENOSYS)) {
+            val absent = File(root, "allowed-link-fallback-$errno")
+            Os.failOperation = "link"; Os.failErrno = errno
+            io.replace(absent, replacement.toByteArray(), 384, ABSENT)
+            check(absent.readText() == replacement && Os.failOperation == null)
+            io.remove(absent, hash(replacement)); noLeaks()
+        }
+        for (errno in listOf(OsConstants.EEXIST, OsConstants.EIO)) {
+            val absent = File(root, "rejected-link-fallback-$errno")
+            val renames = Os.renameCalls
+            Os.failOperation = "link"; Os.failErrno = errno
+            var failure: RepairIoException? = null
+            try { io.replace(absent, replacement.toByteArray(), 384, ABSENT) }
+            catch (e: RepairIoException) { failure = e }
+            check(failure?.operation == "write" && failure.errno == errno)
+            check(!absent.exists() && Os.renameCalls == renames) { "Unexpected fallback publication" }
+            check(failure.message?.contains(root.path) != true && failure.message?.contains("/proc/") != true)
+            noLeaks()
+        }
+        // Reservation-open denial is surfaced with write phase/errno and never publishes.
+        val deniedReservation = File(root, "denied-reservation")
+        Os.failOperation = "open"; Os.failErrno = OsConstants.EACCES; Os.failAfterMatchingCalls = 1
+        var reservationFailure: RepairIoException? = null
+        try { io.replace(deniedReservation, replacement.toByteArray(), 384, ABSENT) }
+        catch (e: RepairIoException) { reservationFailure = e }
+        check(reservationFailure?.operation == "write" && reservationFailure.errno == OsConstants.EACCES)
+        check(!deniedReservation.exists() && root.listFiles()!!.none { it.name.startsWith(".repair-") })
+        noLeaks(); checks++
+
+        // A real concurrent creator reaches link EEXIST (or denied-link -> O_EXCL EEXIST), never clobber.
+        for (denied in listOf(false, true)) {
+            if (!denied) Os.deniedHardlinkRoots.remove(root.canonicalPath)
+            val raced = File(root, "concurrent-creator-$denied")
+            val renames = Os.renameCalls
+            Os.beforeLink = { File(it).writeText("concurrent data") }
+            rejected { io.replace(raced, replacement.toByteArray(), 384, ABSENT) }
+            check(raced.readText() == "concurrent data" && Os.renameCalls == renames)
+            Os.deniedHardlinkRoots += root.canonicalPath
+        }
+        check(root.listFiles()!!.none { it.name.startsWith(".repair-") })
+        noLeaks(); checks++
+
+        // Safe operation labels preserve errno only, not OS path/message; nested labels survive.
+        fun errnoFailure(operation: String, failureAt: String, action: () -> Unit) {
+            Os.failOperation = failureAt
+            var failure: RepairIoException? = null
+            try { action() } catch (e: RepairIoException) { failure = e }
+            check(failure?.operation == operation && failure.errno == OsConstants.EIO) { "Wrong safe IO diagnostic: $failure" }
+            check(Os.failOperation == null)
+            check(failure.message?.contains(root.path) != true && failure.message?.contains("/proc/") != true)
+            noLeaks()
+        }
+        errnoFailure("stat", "lstat") { io.statNoFollow(target) }
+        errnoFailure("input", "read") { io.read(target, 1024) }
+        errnoFailure("write", "write") { io.replace(target, replacement.toByteArray(), 384, hash(original)) }
+        errnoFailure("mkdir", "mkdir") { io.mkdir(File(root, "errno-dir")) }
+        errnoFailure("remove", "remove") { io.remove(target, hash(original)) }
+        val emptyDir = File(root, "errno-empty-dir").apply { mkdir() }
+        errnoFailure("rmdir", "remove") { io.rmdir(emptyDir, io.statNoFollow(emptyDir)!!.identity) }
+        errnoFailure("children", "open") { io.children(root) }
+        errnoFailure("space_query", "fstatvfs") { io.availableBytes(root) }
+        errnoFailure("input", "read") { io.write(File(root, "nested-failure"), 384, ABSENT) { out -> io.input(target) { it.copyTo(out) } } }
+        check(!File(root, "nested-failure").exists() && target.readText() == original)
+        noLeaks(); checks++
+
+        // Regress the real app-boot entry (~227100 bytes), not a synthetic larger whitelist.
+        val realBoot = File(argv.single()).readBytes()
+        check(realBoot.size == 227100) { "Fixture must bind actual rc.5 app-boot (227100 bytes), got ${realBoot.size}" }
+        val bootPath = "engine/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js"
+        val boot = File(root, bootPath).apply { parentFile.mkdirs() }
+        val injected = "throw new Error('injected first line');\n".toByteArray()
+        boot.writeBytes(injected + realBoot)
+        fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        bad(call("read_file", body("path" to bootPath)), "file_too_large")
+        val readChunk = good(call("read_file", body("path" to bootPath, "offset" to 0L, "length" to 4096, "encoding" to "base64")))
+        check(readChunk.getLong("size_bytes") == boot.length() && readChunk.getString("sha256") == sha(boot.readBytes()))
+        check(java.util.Base64.getDecoder().decode(readChunk.getString("content")).contentEquals(boot.readBytes().copyOf(4096)))
+        val patch = good(call("stage_patch", body("path" to bootPath, "expected_sha256" to sha(boot.readBytes()), "offset" to 0L,
+            "delete_bytes" to injected.size.toLong(), "content" to "")))
+        val patchId = patch.getString("change_id")
+        val patchPreview = good(broker.previewChange(patchId, grant))
+        check(patchPreview.getBoolean("candidate_truncated") && patchPreview.getInt("candidate_preview_bytes") <= 16384)
+        check(patchPreview.getString("candidate_content").length <= 22000 && patchPreview.has("patch_original_content"))
+        good(call("apply_changes", body("change_id" to patchId)))
+        check(boot.readBytes().contentEquals(realBoot) && boot.length() == 227100L)
+        good(call("rollback", body("change_id" to patchId)))
+        check(boot.readBytes().contentEquals(injected + realBoot)); checks++
+
+        // App config outside the engine, binary content, Unicode/spaces, and precise protections.
+        Os.deniedAncestors.remove(root.parentFile.path) // app dataDir becomes an explicit trusted platform anchor.
+        val appRoots = mapOf("app" to root.parentFile, "external_files" to File(sandbox, "external files").apply { mkdir() })
+        Os.noHardlinkRoots += appRoots.getValue("external_files").canonicalPath
+        Os.ignoredChmodRoots += appRoots.getValue("external_files").canonicalPath
+        val appIo = AndroidRepairFileIo(root, appRoots)
+        val wide = RepairFileBroker(root, appRoots, appIo)
+        fun wideCall(method: String, values: JSONObject = JSONObject()) = wide.dispatch(method, values, grant)
+        val config = File(root.parentFile, "shared_prefs/配置 空格.xml").apply { parentFile.mkdirs(); writeText("<config/>\n") }
+        val configPath = "app/shared_prefs/配置 空格.xml"
+        check(good(wideCall("read_file", body("path" to configPath))).getString("content") == "<config/>\n")
+        val rootsList = good(wideCall("list_files"))
+        check(rootsList.getJSONArray("roots").length() == 2)
+        val paged = good(wideCall("list_files", body("path" to "app/shared_prefs", "offset" to 0, "limit" to 1)))
+        check(paged.getJSONArray("entries").length() == 1)
+        for (blocked in listOf("app/files/.engine-repair.lock", "app/files/repair-candidates", "app/shared_prefs/repair-diagnostics-consent.xml", "app/shared_prefs/repair-diagnostics-consent.xml.bak")) {
+            bad(wideCall("read_file", body("path" to blocked)), "protected_path")
+        }
+        val binary = byteArrayOf(0, -1, -2, 3, 4, 5)
+        val blobPath = "external_files/数据 binary.bin"
+        val blob = File(appRoots.getValue("external_files"), "数据 binary.bin")
+        val created = good(wideCall("stage_file", body("path" to blobPath, "operation" to "create", "encoding" to "base64",
+            "content" to java.util.Base64.getEncoder().encodeToString(binary)))).getString("change_id")
+        good(wideCall("apply_changes", body("change_id" to created)))
+        check(blob.readBytes().contentEquals(binary))
+        val blobRead = good(wideCall("read_file", body("path" to blobPath, "encoding" to "base64")))
+        check(blobRead.getString("sha256") == sha(binary))
+        val binaryPreview = good(wide.previewChange(created, grant))
+        check(binaryPreview.getString("candidate_encoding") == "base64")
+        good(wideCall("rollback", body("change_id" to created))); check(!blob.exists())
+        good(wideCall("apply_changes", body("change_id" to good(wideCall("stage_file", body("path" to blobPath,
+            "operation" to "create", "encoding" to "base64", "content" to java.util.Base64.getEncoder().encodeToString(binary)))).getString("change_id"))))
+        val deleted = good(wideCall("stage_file", body("path" to blobPath, "operation" to "delete", "expected_sha256" to sha(binary)))).getString("change_id")
+        good(wideCall("apply_changes", body("change_id" to deleted))); check(!blob.exists())
+        good(wideCall("rollback", body("change_id" to deleted))); check(blob.readBytes().contentEquals(binary))
+        val edit = good(wideCall("stage_edit", body("path" to configPath, "expected_sha256" to sha(config.readBytes()), "content" to "<config fixed='true'/>\n"))).getString("change_id")
+        good(wideCall("apply_changes", body("change_id" to edit))); check(config.readText().contains("fixed"))
+        good(wideCall("rollback", body("change_id" to edit))); check(config.readText() == "<config/>\n")
+        bad(wideCall("stage_edit", body("path" to configPath, "expected_sha256" to sha(config.readBytes()), "content" to "x", "mode" to 0)), "unsupported_mode")
+        checks++
+
+        val dirPath = "external_files/new directory"
+        val dir = File(appRoots.getValue("external_files"), "new directory")
+        val made = good(wideCall("stage_file", body("path" to dirPath, "operation" to "mkdir"))).getString("change_id")
+        good(wideCall("apply_changes", body("change_id" to made))); check(dir.isDirectory)
+        good(wideCall("rollback", body("change_id" to made))); check(!dir.exists())
+        dir.mkdir()
+        val removed = good(wideCall("stage_file", body("path" to dirPath, "operation" to "rmdir"))).getString("change_id")
+        good(wideCall("apply_changes", body("change_id" to removed))); check(!dir.exists())
+        good(wideCall("rollback", body("change_id" to removed))); check(dir.isDirectory)
+        File(dir, "keep").writeText("not empty")
+        bad(wideCall("stage_file", body("path" to dirPath, "operation" to "rmdir")), "directory_not_empty")
+        noLeaks(); checks++
+
+        val controls = File(root, "all-controls.bin").apply { writeBytes(ByteArray(131072)) }
+        val controlsChunk = good(wideCall("read_file", body("path" to "app/files/all-controls.bin", "offset" to 0, "length" to 131072)))
+        check(controlsChunk.toString().toByteArray().size < 768 * 1024)
+        check(controlsChunk.getInt("length") < 131072 && !controlsChunk.getBoolean("eof"))
+        val controlsFull = good(wideCall("read_file", body("path" to "app/files/all-controls.bin")))
+        check(controlsFull.getString("encoding") == "base64" && controlsFull.getInt("length") == 131072)
+        val longNames = File(root, "long names").apply { mkdir() }
+        repeat(200) { File(longNames, "${it}-" + "字".repeat(70)).writeText("") }
+        val namePage = good(wideCall("list_files", body("path" to "app/files/long names", "limit" to 200)))
+        check(namePage.toString().toByteArray().size < 768 * 1024 && namePage.getJSONArray("entries").length() > 0)
+        checks++
+
+        // Every production open is either the direct anchor or a single procfd component.
+        check(Os.deniedAttempts == 0) { "Production tried to read a denied public ancestor" }
+        for (opened in Os.opens) {
+            if (opened.path in listOf(root.path, anchorLink.path, root.parentFile.path, appRoots.getValue("external_files").path)) {
+                check(opened.flags and OsConstants.O_NOFOLLOW != 0)
+            } else {
+                val match = Regex("/proc/self/fd/[0-9]+(?:/([^/]+))?").matchEntire(opened.path)
+                check(match != null) { "Unexpected absolute/multicomponent open: $opened" }
+                // Bare procfd opens are the fixture's PFD.dup implementation only.
+                if (match.groupValues[1].isNotEmpty()) check(opened.flags and OsConstants.O_NOFOLLOW != 0) { "Missing NOFOLLOW: $opened" }
+            }
+        }
+        noLeaks(); checks++
+        println("passed $checks production adapter checks (host OS simulation; NOT Android/SELinux)")
+    } finally {
+        check(Os.liveDescriptors == 0) { "Do not hide FD leaks during cleanup" }
+        check(sandbox.canonicalPath.startsWith(File(System.getProperty("java.io.tmpdir")).canonicalPath + "/android-file-io-check-"))
+        sandbox.deleteRecursively()
+    }
+}

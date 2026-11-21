@@ -5,11 +5,9 @@ import android.os.Build
 import com.dsh.android.BuildConfig
 import com.dsh.android.log.RuntimeAppInfo
 import com.dsh.android.log.VersionInfo
-import com.dsh.android.engine.EngineActivitySource
 import com.dsh.android.engine.EngineCommandMailboxes
 import com.dsh.android.bubble.BubbleCommandBridge
 import com.dsh.android.command.LogCommandBridge
-import com.dsh.android.command.RescueCommandBridge
 import com.dsh.android.command.SystemBarCommandBridge
 import com.dsh.android.privilege.PairingOperations
 import com.dsh.android.runtime.RuntimePaths
@@ -20,7 +18,6 @@ import com.dsh.android.log.EventLog
 import com.dsh.android.log.LogContext
 import com.dsh.android.log.LogStore
 import com.dsh.android.log.LogUploader
-import com.dsh.android.log.RescueBoot
 import com.dsh.android.termux.TermuxBootstrap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +26,6 @@ import kotlinx.coroutines.launch
 import java.io.File
 import com.dsh.android.bubble.BubbleA11yService
 import com.dsh.android.engine.EngineManager
-import com.dsh.android.engine.EngineService
 import com.dsh.android.privilege.AdbPairingNotifier
 
 /**
@@ -44,6 +40,9 @@ import com.dsh.android.privilege.AdbPairingNotifier
  * 永远不生效。这是 kit 的 README §3.4 特意记下的坑。
  */
 class DshApplication : Application() {
+    @Volatile private var logsInitialized = false
+    @Volatile private var logSession = ""
+    @Volatile private var runtimeInitialized = false
 
     /**
      * ⚠️ **日志系统必须在这里装，不能等到 `onCreate`。**
@@ -61,7 +60,7 @@ class DshApplication : Application() {
      *   ③ [DshLog]      —— 把 `DshLog` 接到 `LogStore`（此后 476 处 `DshLog.*` 才落盘）
      *   ④ [EventLog]    —— 事件时间线
      *   ⑤ [BootState]   —— 读上次退出状态（要在任何崩溃可能发生之前）
-     *   ⑥ [CrashRecorder] —— 装未捕获处理器与 watchdog
+     *   ⑥ [CrashRecorder] —— 装未捕获异常处理器
      */
     override fun attachBaseContext(base: Context?) {
         super.attachBaseContext(base)
@@ -70,15 +69,24 @@ class DshApplication : Application() {
             android.util.Log.i(TAG, "非主进程启动，跳过日志系统与 Termux 引导")
             return
         }
+        val ctx = base ?: return
+        if (com.dsh.android.repair.RepairRuntimeGate.blocked(ctx)) return
+        initializeLogs(ctx)
+    }
+
+    @Synchronized
+    private fun initializeLogs(ctx: Context, validationAttempt: String? = null) {
+        val session = validationAttempt ?: "normal"
+        if (logsInitialized && logSession == session) return
         try {
-            val ctx = base ?: return
             LogContext.install(ctx)
             VersionInfo.initInfo(RuntimeAppInfo(
                 BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE,
                 BuildConfig.FLAVOR, BuildConfig.APPLICATION_ID,
             ))
 
-            val logDir = File(ctx.filesDir, LOG_DIR)
+            val logDir = if (validationAttempt == null) File(ctx.filesDir, LOG_DIR)
+                else File(ctx.filesDir, "repair-control/validation/log-$validationAttempt")
             LogStore.init(logDir)
 
             // ⚠️ 顺序要紧：DshLog 必须在 LogStore.init 之后接，否则接了个空出口。
@@ -88,19 +96,14 @@ class DshApplication : Application() {
             EventLog.init(logDir)
             BootState.begin(logDir)
             CrashRecorder.install(logDir)
-            // ⚠️ 救援启动的目录装在 `$DSH_HOME/rescue/`，而不是 logs/ ——
-            //   它是**关于启动本身**的状态（哪个层级、上次为什么起不来），
-            //   与 logs/ 下那堆日志文件的生命周期不同：清日志不该清掉它
-            //   （清了就等于忘记"上次是救援模式起来的"）。
-            //   位置必须在 BootState.begin 之后：它要读 BootState.bootId 对齐。
-            RescueBoot.installUnder(File(ctx.filesDir, DSH_HOME_REL))
-
-            LogUploader.configure(LOG_UPLOAD_ENDPOINT, LOG_UPLOAD_TOKEN, logDir)
+            if (validationAttempt == null) LogUploader.configure(LOG_UPLOAD_ENDPOINT, LOG_UPLOAD_TOKEN, logDir)
 
             // 走到这里日志系统就完整可用了 —— 用 DshLog 而不是 Log，
             // 这一条必须落进文件（它是「日志系统已就绪」的唯一证据）。
             DshLog.i(TAG, "日志系统就绪：${logDir.absolutePath}（${BootState.previous().describe()}）")
             EventLog.record("DshLog.ready", mapOf("dir" to logDir.absolutePath))
+            logsInitialized = true
+            logSession = session
         } catch (t: Throwable) {
             // ⚠️ 日志系统装不上**绝不能让 App 起不来**。退回「只有 logcat」的
             // 旧行为，与改造前一致。
@@ -117,11 +120,50 @@ class DshApplication : Application() {
                 BubbleCommandBridge.start(home)
                 LogCommandBridge.start(home)
                 SystemBarCommandBridge.start(home)
-                RescueCommandBridge.start(home)
             },
-            EngineActivitySource { EngineService.currentStatus()?.running == true },
             BuildConfig.BUILT_IN_WEB_ENGINE,
+            if (BuildConfig.IS_REPAIR_ASSISTANT) com.dsh.android.engine.EngineLaunchAdditions { engine ->
+                com.dsh.android.repair.RepairAssistantAssets.prepare(this, engine)
+            } else null,
+            object : com.dsh.android.engine.EngineExecutionGate {
+                override fun allowed() = com.dsh.android.repair.RepairRuntimeGate.canRun(this@DshApplication)
+                override fun allowForceStop() = com.dsh.android.repair.RepairRuntimeGate.activePermit() == null &&
+                    !com.dsh.android.repair.RepairRuntimeGate.blocked(this@DshApplication)
+            },
         )
+        if (com.dsh.android.repair.RepairRuntimeGate.blocked(this)) return
+        initializeRuntime(false)
+    }
+
+    /** Only a still-valid :repair-issued permit may wake a fenced main process. */
+    suspend fun ensureRuntimeInitialized(permit: com.dsh.android.repair.RepairRuntimeGate.Permit): Boolean {
+        if (!com.dsh.android.repair.RepairRuntimeGate.valid(this, permit)) return false
+        initializeLogs(this, if (permit.kind == "engine") permit.attemptId else null)
+        return kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val bootstrap = TermuxBootstrap(this@DshApplication)
+            fun requirePermit() = check(com.dsh.android.repair.RepairRuntimeGate.valid(this@DshApplication, permit))
+            requirePermit()
+            if (!bootstrap.isReady) bootstrap.install()
+            requirePermit(); bootstrap.ensurePathsRewritten()
+            requirePermit(); bootstrap.ensureMirrorsConfigured()
+            requirePermit(); check(bootstrap.installNodeRuntime())
+            requirePermit(); bootstrap.ensureNodeRuntimePatched()
+            com.dsh.android.repair.RepairRuntimeGate.valid(this@DshApplication, permit)
+        }
+    }
+
+    fun ensureNormalRuntimeInitialized(): Boolean {
+        if (com.dsh.android.repair.RepairRuntimeGate.blocked(this)) return false
+        initializeLogs(this)
+        initializeRuntime(false)
+        return true
+    }
+
+    @Synchronized
+    private fun initializeRuntime(validation: Boolean) {
+        // Validation prepares only the normal Termux essentials through a live permit, separately.
+        if (validation || runtimeInitialized) return
+        runtimeInitialized = true
         AdbPairingNotifier.initialize(applicationScope, PairingOperations { code, port ->
             EngineManager.get(this).pairWirelessDebugging(code, port)
         })
@@ -277,10 +319,9 @@ class DshApplication : Application() {
          * ## 为什么不能用 `Application.getProcessName()` 一个 API 了事
          *
          * 它是 **API 28** 才有的，而本 App 的 `minSdk = 26`。API 26/27 退回读
-         * `/proc/self/cmdline`（内核给的 `argv[0]` 就是进程名）。
-         *
-         * ⚠️ **读不到时按主进程处理**（返回 true）：宁可多跑一遍，也不要因为一个
-         * 探测失败让真主进程跳过引导 —— 那会让 App 完全起不来。
+         * `/proc/self/cmdline`（内核给的 `argv[0]` 就是进程名），失败后按当前 PID
+         * 查询 ActivityManager。两种途径都失败时不引导，避免维护进程再次执行故障启动链。
+         * 这意味着无法确认身份的主进程也会跳过引导；不能以破坏 :repair 隔离换取猜测。
          */
         private fun isMainProcess(base: Context?): Boolean {
             val ctx = base ?: return false
@@ -289,27 +330,19 @@ class DshApplication : Application() {
                 Application.getProcessName()
             } else {
                 runCatching {
-                    File("/proc/self/cmdline").readText().substringBefore('\u0000')
+                    File("/proc/self/cmdline").readText().substringBefore('\u0000').takeIf { it.isNotBlank() }
+                }.getOrNull() ?: runCatching {
+                    val manager = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                    manager.runningAppProcesses?.firstOrNull { it.pid == android.os.Process.myPid() }?.processName
                 }.getOrNull()
             }
-            return actual == null || actual == expected
+            // Unknown identity must not bootstrap Node or mutate startup records in :repair.
+            return actual == expected
         }
 
         /** 日志目录名（`filesDir/logs`）。 */
         const val LOG_DIR = LogContext.LOG_DIR
 
-        /**
-         * `$DSH_HOME` 相对 `filesDir` 的路径（即 `filesDir/home/.dsh`）。
-         *
-         * ⚠️ **单一真相源**：`attachBaseContext()` 里要装救援启动的记录目录
-         * （[com.dsh.android.log.RescueBoot]），而那时 `EngineManager` 实例还不存在
-         * （它的 `dshHome` 是实例属性），所以这个路径必须有一份**不依赖实例**的定义。
-         *
-         * 定义放在这里、并由 `EngineManager.dshHome` 引用同一常量 —— 两边各拼一次
-         * `File(filesDir, "home/.dsh")` 的话，改了一处漏一处就是「两个进程看不同目录」，
-         * 而症状只是「工具超时」/「状态读不到」，没有任何线索指向路径。
-         * 本项目已经吃过这个形态的亏（见 `EngineManager.dshHomeDir` 的 KDoc）。
-         */
         const val DSH_HOME_REL = RuntimePaths.DSH_HOME_REL
 
         /**
@@ -355,6 +388,6 @@ class DshApplication : Application() {
          * 进程级协程作用域：用于不随任何界面生命周期结束的后台任务。
          * 用 SupervisorJob 让一个子任务失败不影响其它任务。
          */
-        val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val applicationScope by lazy { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
     }
 }

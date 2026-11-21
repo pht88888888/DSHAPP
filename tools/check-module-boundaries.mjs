@@ -4,15 +4,18 @@ import { resolve, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const MODULES = [':app', ':core:contracts', ':core:logging', ':runtime:termux', ':platform:privilege', ':runtime:engine', ':web:contract', ':web:host', ':feature:bubble', ':feature:browser', ':bridge:transport'];
+export const MODULES = [':app', ':core:contracts', ':core:logging', ':runtime:termux', ':platform:privilege', ':runtime:engine', ':web:contract', ':web:host', ':feature:bubble', ':feature:browser', ':bridge:transport', ':repair:contract', ':repair:assistant'];
 // Code dependencies are checked against the actual declaring module, not package names.
 export const ALLOWED = {
-  ':app': MODULES.filter(name => name !== ':app'),
+  ':app': MODULES.filter(name => name !== ':app' && name !== ':repair:assistant'),
   ':core:logging': [],
   ':core:contracts': [':core:logging'],
   ':runtime:termux': [':core:logging'],
   ':platform:privilege': [':core:logging'],
   ':bridge:transport': [],
+  ':repair:contract': [],
+  // A second APK composition root compiling the same app sources, not a library dependency on :app.
+  ':repair:assistant': MODULES.filter(name => name !== ':app' && name !== ':repair:assistant'),
   ':runtime:engine': [':core:logging', ':core:contracts', ':runtime:termux', ':platform:privilege'],
   ':web:contract': [],
   ':web:host': [':web:contract', ':core:logging'],
@@ -115,12 +118,15 @@ function walkSources(directory, pattern = /\.(kt|java)$/) {
 
 export function checkModules({ root = ROOT, modules = MODULES, allowed = ALLOWED } = {}) {
   const errors = [], dependencies = {}, sources = [], providers = new Map();
+  const sharedComposition = new Set();
   const settingsPath = resolve(root, 'settings.gradle.kts');
   const settings = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8').replace(/\/\/[^\n]*/g, '') : '';
   const included = new Set([...settings.matchAll(/include\s*\(([^)]*)\)/g)].flatMap(match => [...match[1].matchAll(/["'](:[\w:-]+)["']/g)].map(value => value[1])));
   for (const name of included) if (!modules.includes(name)) errors.push(`Unregistered Gradle module: ${name}`);
   function addProvider(symbol, owner, file) {
     const existing = providers.get(symbol);
+    // Only this explicitly verified source-sharing APK may regenerate the original R/BuildConfig.
+    if (sharedComposition.has(owner) && existing?.module === ':app' && /\.(?:R|BuildConfig)$/.test(symbol)) return;
     if (existing && existing.module !== owner) errors.push(`Ambiguous declaration ${symbol}: ${existing.module} and ${owner}`);
     else providers.set(symbol, { module: owner, file });
   }
@@ -130,6 +136,10 @@ export function checkModules({ root = ROOT, modules = MODULES, allowed = ALLOWED
     if (!included.has(module)) errors.push(`Missing settings include: ${module}`);
     if (!existsSync(build)) { errors.push(`Missing module build file: ${module}`); dependencies[module] = []; continue; }
     const buildSource = readFileSync(build, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    if (module === ':repair:assistant' &&
+        buildSource.includes('java.srcDir(rootProject.file("app/src/main/java"))') &&
+        buildSource.includes('res.srcDir(rootProject.file("app/src/main/res"))') &&
+        buildSource.includes('manifest.srcFile(rootProject.file("app/src/main/AndroidManifest.xml"))')) sharedComposition.add(module);
     dependencies[module] = [...new Set([...buildSource.matchAll(/project\s*\(\s*["'](:[\w:-]+)["']\s*\)/g)].map(match => match[1]))];
     for (const target of dependencies[module]) {
       if (!modules.includes(target)) errors.push(`${module}: unknown project dependency ${target}`);
@@ -175,6 +185,8 @@ export function checkModules({ root = ROOT, modules = MODULES, allowed = ALLOWED
   const refs = new Set();
   function checkReference(source, provider, symbol) {
     if (!provider || source.module === provider.module) return;
+    // These declarations are compiled into this APK from its verified shared source tree.
+    if (sharedComposition.has(source.module) && provider.module === ':app') return;
     const key = `${source.file}:${provider.module}:${symbol}`;
     if (refs.has(key)) return; refs.add(key);
     if (!(dependencies[source.module] ?? []).includes(provider.module)) errors.push(`${relative(root, source.file)}: ${symbol} is declared by ${provider.module}; missing direct project dependency from ${source.module}`);

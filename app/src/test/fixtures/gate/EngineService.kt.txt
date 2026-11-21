@@ -1,0 +1,2 @@
+package com.dsh.android.engine
+object EngineService { fun stop(context: android.content.Context) {} }

@@ -1,0 +1,10 @@
+{
+  "name": "@dsh-android/repair-profile",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Additive DSH rescue authorization settings entry",
+  "exports": { ".": "./index.js", "./client": "./client.js", "./package.json": "./package.json" },
+  "dsh": { "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-api-gateway", "@deepseek-ai/dsh-api-session-controller", "@deepseek-ai/dsh-api-workspace-controller", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-workspace", "@deepseek-ai/dsh-client-ui-conversation"] } },
+  "engines": { "dsh": "0.2.2-rc.5" }
+}

@@ -38,22 +38,10 @@
     -->
     <!-- 悬浮气泡收起态的头像（与 App 图标同一个角色）。纯装饰，无障碍描述写清用途即可。 -->
 
-    <!--
-      失败浮层上的「安全模式」按钮。
-
-      ⚠️ 文案刻意写清「不丢会话」：这一步会推开用户的插件配置（改名备份，不删），
-      代价必须让用户看得见才敢点。
-    -->
-    <string name="safe_mode_entry">进入安全模式（不改动会话与凭据）</string>
-
-    <!--
-      降级态常驻横幅上的两个按钮（方案 §4.4.5，不变量 I4）。
-
-      「退出」做的是把层级复位成 NORMAL 并重启（不是删数据）；「详情」把
-      state.json 里的原因摆出来给用户看。两个都刻意短 —— 横幅上横向放得下。
-    -->
-    <string name="rescue_banner_exit">退出并重试</string>
-    <string name="rescue_banner_detail">上次为什么失败</string>
+    <string name="overlay_retry">重试启动</string>
+    <string name="overlay_reload">重载界面</string>
+    <string name="overlay_show_page">查看已加载的页面</string>
+    <string name="overlay_reload_unavailable">无法重载界面，请查看日志</string>
 
     <!--
       启动层上的「导出数据」「导入数据」按钮。

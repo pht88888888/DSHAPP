@@ -3,9 +3,8 @@ package com.dsh.android.engine
 import com.dsh.android.engine.constants.*
 import com.dsh.android.log.DshLog as Log
 import java.io.File
-import com.dsh.android.log.RescueBoot
 
-/** 拥有 App 生成的 overlay 和说明片段；不拥有用户 profile 或恢复决定。 */
+/** 写入 Android 运行所需的 overlay 和特权通道说明片段。 */
 internal class ProfileOverlayWriter(
     private val dshHome: File,
     private val workspaceDir: File,
@@ -284,48 +283,6 @@ internal class ProfileOverlayWriter(
     }
 
     /**
-     * 写出**定向隔离层** `$DSH_HOME/quarantine.patch.yml`（L1.5 的执行端）。
-     *
-     * 内容 = [RescueBoot.tier] 的 `quarantinedNames` 里每个条目一条
-     * `- id: <id>` + `disabled: true`。**没有隔离项时删掉该文件并返回 null** ——
-     * 留一个空层会让 `--patch` 多传一个空文件，且下次排查时「有文件」会被误读成
-     * 「隔离过东西」。
-     *
-     * 幂等：每次启动整体覆盖，与其它 overlay 同构。
-     *
-     * ⚠️ **不能**把这里做成「扫描并删掉坏插件」：删文件是不可逆的，
-     * 而用户要的是「App 能开」而不是「我的插件没了」。禁用层可一键撤销
-     * （[RescueBoot.clearQuarantine]）。
-     *
-     * @return 写好的文件；无隔离项或写入失败时 null（失败时**不**挂这一层，
-     *   退化成「本轮没隔离」，下次启动重试 —— 绝不让写文件失败变成新的启动失败点）。
-     */
-    fun writeQuarantinePatch(names: Collection<String>): File? {
-        val patch = File(dshHome, QUARANTINE_PATCH)
-        if (names.isEmpty()) {
-            if (patch.isFile) patch.delete()
-            return null
-        }
-        return try {
-            val body = buildString {
-                appendLine("# 由 DSH Android 客户端生成，请勿手改（每次启动会整体覆盖）。")
-                appendLine("# 定向隔离：这些插件条目上次把引擎弄到起不来，本轮禁用它们。")
-                appendLine("# 文件一个没删 —— 想放回来见 rescue/state.json 的 quarantinedNames。")
-                for (n in names) {
-                    appendLine("- id: $n")
-                    appendLine("  disabled: true")
-                }
-            }
-            patch.writeText(body)
-            Log.i(TAG, "已写入定向隔离 overlay: ${patch.name}（${names.size} 项: ${names.joinToString()}）")
-            patch
-        } catch (t: Throwable) {
-            Log.w(TAG, "写入定向隔离 overlay 失败: ${t.message}")
-            null
-        }
-    }
-
-    /**
      * 往 `$DSH_HOME/AGENTS.md` 写入特权身份说明（幂等）。
      *
      * ## 为什么写这个文件
@@ -364,45 +321,6 @@ internal class ProfileOverlayWriter(
             end = PRIVILEGED_PROMPT_END,
             body = if (available) PRIVILEGED_PROMPT_ENABLED else PRIVILEGED_PROMPT_DISABLED,
             label = "特权身份说明（uid 2000）",
-        )
-    }
-
-    /**
-     * 把「你正处于降级态、可以这样修」写进 agent 指令（方案 §4.4 的 P4）。
-     *
-     * ## 为什么是条件注入
-     *
-     * 正常态下这段整个不写（`writePromptSection` 不能删段落，所以正常态写一段
-     * **空的**替代文本 —— 见下）。理由有两条：
-     *
-     * ① 它描述的是一个**当下成立的事实**（"你的插件被隔离了"）。正常态下这句话
-     *    是假的，而把一个假前提塞进系统提示词会让模型做出错误判断 —— 那正是
-     *    本项目缺陷族的形态（"结论与它描述的对象不符"）。
-     * ② 它不短（约 2KB）。降级态下是值得的，正常态下纯属浪费上下文。
-     *
-     * ⚠️ 不能用「从没写过」来表示正常态：那样从降级态恢复后，旧文本会**永远
-     *    留在 `AGENTS.md` 里**，模型此后一直以为自己处在救援模式。
-     *    所以正常态要写一段**显式的否定**。
-     */
-    fun ensureRescuePrompt(tier: RescueBoot.Tier) {
-        val degraded = tier != RescueBoot.Tier.NORMAL
-        // 单独打一行：AGENTS.md 的验收手法查的就是这条（同 [ensurePrivilegedPrompt]）。
-        Log.i(TAG, "降级态说明: 层级=${tier.id}，注入=${degraded}")
-        writePromptSection(
-            begin = RESCUE_PROMPT_BEGIN,
-            end = RESCUE_PROMPT_END,
-            body = if (degraded) {
-                RESCUE_PROMPT
-            } else {
-                """
-                ## 启动状态：正常
-
-                本机**没有**处于降级启动模式，用户的插件配置完好。
-                若用户说他打不开 App、或有插件没生效，读 `${'$'}DSH_HOME/rescue/state.json`
-                与 `${'$'}DSH_HOME/rescue/last-boot-failure.json` 看有没有历史记录。
-                """.trimIndent()
-            },
-            label = "降级态说明",
         )
     }
 

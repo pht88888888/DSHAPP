@@ -29,8 +29,8 @@ android {
         // 一升到 29 就会全线 Permission denied。Termux 官方 App 同样停在 28。
         targetSdk = 28
         // 版本身份保持既有发行值；历史记录见 docs/history/gradle-version-notes.md。
-        versionCode = 115
-        versionName = "0.5.0"
+        versionCode = 116
+        versionName = "0.5.2"
 
         // 只支持 arm64-v8a：内置的引擎资产与 Termux bootstrap 都是 arm64 架构
         ndk {
@@ -43,6 +43,7 @@ android {
         // 的版本在编译期就定了（GeckoView 140），永远不可能"过旧"，跑降级只会白白把
         // 前端换成语法受限的版本 —— 所以那一整套在 gecko 版必须整个跳过。
         buildConfigField("boolean", "BUILT_IN_WEB_ENGINE", "false")
+        buildConfigField("boolean", "IS_REPAIR_ASSISTANT", "false")
     }
 
     // ══ 两个 Web 内核版本共存 ══════════════════════════════════════════
@@ -190,6 +191,7 @@ tasks.named("preBuild") {
 }
 
 dependencies {
+    implementation(project(":repair:contract"))
     implementation(project(":core:contracts"))
     implementation(project(":core:logging"))
     implementation(project(":runtime:termux"))

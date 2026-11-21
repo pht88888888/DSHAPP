@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="repair_agent_preparing">正在启动独立修复 DSH…</string>
+    <string name="repair_agent_close">关闭修复</string>
+    <string name="repair_agent_privacy">这是独立 DSH，不读取原应用的模型密钥或会话。请在设置中配置本助手自己的模型；发送给模型的错误与源码会离开设备。本次任务授权普通修复，敏感操作另行确认，最终界面由你主动验证。</string>
+    <string name="repair_agent_invalid_session">修复授权或会话目录无效，请返回诊断页重新授权。</string>
+    <string name="repair_agent_ready">独立修复 DSH · 官方 Web 界面</string>
+    <string name="repair_agent_start_failed">独立修复引擎启动失败或超时。可以关闭本页，继续使用原生诊断；原 DSH 数据未因此清除。</string>
+    <string name="repair_agent_download_blocked">修复页面不允许下载或打开外部地址。</string>
+    <string name="repair_agent_existing_session">正在使用已有修复会话；切换目标前请先关闭本页。</string>
+</resources>

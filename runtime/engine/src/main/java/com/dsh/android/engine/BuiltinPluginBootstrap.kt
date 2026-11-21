@@ -24,7 +24,7 @@ function atomic(file, text) {
   finally { fs.rmSync(temporary, { force: true }); }
 }
 function json(file, value) { atomic(file, JSON.stringify(value, null, 2) + '\n'); }
-const profileDir = path.join(input.home, 'profiles', input.profile);
+const profileDir = path.join(input.home, 'profiles', 'web');
 const manifestPath = path.join(profileDir, 'package.json');
 if (input.phase === 'init') {
   // 模板由本次 APK 解包的官方引擎提供，不能复制上一版核心包名。
@@ -32,7 +32,7 @@ if (input.phase === 'init') {
   if (!Array.isArray(bundles) || !bundles.length) throw new Error('missing official web profile template');
   if (!fs.existsSync(manifestPath)) {
     fs.mkdirSync(profileDir, { recursive: true });
-    json(manifestPath, { name: 'dsh-profile-' + input.profile, private: true, dependencies: {}, dsh: { profile: { bundles: [...bundles] } } });
+    json(manifestPath, { name: 'dsh-profile-web', private: true, dependencies: {}, dsh: { profile: { bundles: [...bundles] } } });
   }
   // 仅初始化 pnpm 设置；用户 patch 仍交给 seedDefaultSettings 首次播种。
   const patch = path.join(profileDir, 'cordis.patch.yml');

@@ -24,6 +24,6 @@ bash tools/check-architecture.sh
 
 ## 按需查阅
 
-- [开发分册索引](docs/agents/README.md)：构建、双内核、真机调试、插件、日志和救援。
+- [开发分册索引](docs/agents/README.md)：构建、双内核、真机调试、插件、日志和故障处理。
 - [架构规范](docs/architecture/conventions.md) · [所有权及运行路径](docs/architecture/current-architecture.md) · [实施状态](docs/architecture/execution-status.md)：设计、现行边界与实际验证结果分别看。
 - [资产重建](docs/agents/regen-assets.md) · [版本戳](docs/agents/asset-stamps.md) · [插件更新](docs/agents/plugin-updates.md) · [远程插件来源](docs/architecture/remote-plugin-provenance.md)：以独立仓库为远程插件生产入口；不从旧副本发包，不恢复已退休的 keyinject。

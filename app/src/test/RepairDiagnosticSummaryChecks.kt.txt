@@ -1,0 +1,43 @@
+package com.dsh.android.repair
+
+import com.dsh.android.repair.contract.RepairProtocol
+
+fun main() {
+    val boot = """{"bootId":"current","uiLoaded":false}"""
+    fun event(name: String, id: String = "current") =
+        """{"bootId":"$id","name":"$name","fields":{"reason":"SECRET_API_KEY /private/config.json"}}"""
+    val filtered = RepairDiagnosticSummary.summarize(boot, listOf(
+        event("engine.ready", "old"), event("engine.failed"), event("SECRET_EVENT"),
+    ).joinToString("\n"))
+    check("引擎报告启动失败" in filtered)
+    check("就绪" !in filtered && "SECRET" !in filtered && "/private" !in filtered && "current" !in filtered)
+
+    val missing = RepairDiagnosticSummary.summarize(null, event("engine.failed"))
+    check("未找到可读" in missing && "失败" !in missing)
+    check(RepairDiagnosticSummary.summarize("broken", event("engine.failed")) == missing)
+
+    val corrupted = RepairDiagnosticSummary.summarize(boot,
+        "broken\n${"x".repeat(9000)}\n${event("termux.failed")}\n{\"bootId\":\"current\",\"name\":false}")
+    check("Termux 引导报告失败" in corrupted)
+    check(corrupted.count { it == '•' } == 1)
+
+    val capped = RepairDiagnosticSummary.summarize(boot,
+        (1..100).joinToString("\n") { event(if (it == 100) "renderer.gone" else "engine.start") })
+    check(capped.count { it == '•' } == 12)
+    check("Web 渲染进程退出" in capped && capped.length <= RepairProtocol.MAX_REPORT_CHARS)
+
+    val loaded = RepairDiagnosticSummary.summarize("""{"bootId":"current","uiLoaded":true}""", null)
+    check("不代表当前仍可用" in loaded && "未记录已加载" !in loaded)
+    check("此轮未记录已加载" in filtered)
+    val typed = RepairDiagnosticSummary.summarize("""{"bootId":"current","uiLoaded":"true"}""", null)
+    check("正式界面：无记录" in typed)
+
+    val suspicious = """{"bootId":"current","name":"engine.failed","padding":"${"{".repeat(129)}"}"""
+    check("启动失败" !in RepairDiagnosticSummary.summarize(boot, suspicious))
+    check(RepairDiagnosticSummary.summarize(" ", null) == missing)
+
+    val empty = RepairDiagnosticSummary.summarize(boot, event("unknown"))
+    check("没有可用的近期诊断事件" in empty)
+    check("•" !in empty && empty.length <= RepairProtocol.MAX_REPORT_CHARS)
+    println("passed 7 production behavior checks")
+}

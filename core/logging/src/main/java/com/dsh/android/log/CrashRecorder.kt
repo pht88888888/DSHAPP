@@ -1,18 +1,12 @@
 package com.dsh.android.log
 
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.util.Log as AndroidLog
 import java.io.File
-import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /**
- * 崩溃现场捕获 —— 四类「进程非正常消失」各留一份带上下文的现场。
+ * 记录未捕获异常、渲染进程退出和引擎异常等现场。
  *
  * ## 为什么必须自己抓
  *
@@ -22,8 +16,7 @@ import java.util.concurrent.TimeUnit
  *
  * ## 分别抓，因为「谁死了」决定了「怎么查」
  *
- * 现场文件统一命名 `yyyyMMdd-HHmmss-<kind>.txt`，`<kind>` 的**全部取值**如下
- * （这是权威清单，对着 [writeScene] 的每个调用点逐个抄的）：
+ * 现场文件统一命名 `yyyyMMdd-HHmmss-<kind>.txt`，常用类别如下：
  *
  * | 类型 | 捕获点 | `<kind>` | 等级 | 硬崩溃？ |
  * |---|---|---|---|---|
@@ -32,17 +25,7 @@ import java.util.concurrent.TimeUnit
  * | 渲染进程被回收 | 同上（`didCrash = false`） | `renderer-reclaimed` | W | 否 |
  * | 引擎进程意外退出 | `EngineManager` 的 stdout EOF | `engine-exit` | W | 否 |
  * | 引擎进程被我们停掉 | 同上（`expected = true`） | `engine-exit-expected` | I | 否 |
- * | 主线程卡死 | 自建 watchdog | `main-thread-stall` | E | 是 |
- * | 整个进程被冻结 | 自建 watchdog（超过上界） | `process-freeze` | W | 否 |
  * | 引擎起不来 | `EngineManager` 启动超时 | `engine-start-failed` | E | 否 |
- *
- * ⚠️ **这张表原先写的四个文件名（`<ts>-uncaught.txt` / `-renderer.txt` /
- *   `-engine-exit.txt` / `-anr.txt`）一个都不存在**（2026-10-14 自检发现）——
- *   它们既不是 [writeScene] 产出的名字，也不在 `crash/` 目录里出现过。照着它去
- *   `crash/` 找「ANR 现场」的分析者会认定「这台机器没有过 ANR」，而真机
- *   `main-thread-stall` 现场是指纹之外另有其人。这正是本项目记录的第 15 次
- *   同族缺陷：**文档描述的总体与实际的总体不是同一个**。
- *   写文件名的表必须对着调用点抄，不能凭「应该叫什么」推。
  *
  * ⚠️ **不能合并成一种**：WebView 渲染进程崩溃时**本进程还活着**，能继续跑、
  * 能弹提示、能重载（`MainActivity` 已有这套恢复逻辑）。把它记成「App 崩溃」会
@@ -88,57 +71,6 @@ object CrashRecorder {
      */
     private const val LOCK_WAIT_MS = 200L
 
-    /** 主线程 watchdog 的 ping 间隔与判定阈值。 */
-    private const val WATCHDOG_PING_MS = 5_000L
-    private const val WATCHDOG_STALL_MS = 15_000L
-
-    /**
-     * 抓主线程栈时最多等多久（ms）。见 [mainThreadStack]。
-     *
-     * 1 秒的依据：主线程正常时抓栈是**微秒级**（走到一次 safepoint 就拍完），
-     * 1 秒是三个数量级的余量；而卡在 native 里的主线程**永远**等不到，多等只是
-     * 让现场文件晚落盘 —— 崩溃路径总共只有几秒预算，不能再多。
-     */
-    private const val MAIN_STACK_WAIT_MS = 1_000L
-
-    /**
-     * 「主线程卡死」与「整个进程被冻结」的分界。
-     *
-     * ⚠️ **这不只是措辞问题，是本判据能不能信的问题**（真机 44 份现场实测过）。
-     *
-     * ## 为什么必须有这条线
-     *
-     * watchdog 是**每 [WATCHDOG_PING_MS] 醒一次**再看 `lastPing` 的。所以：
-     *
-     * - 若真的是**主线程**卡住、watchdog 线程照常跑 ⇒ `gap` 只可能落在
-     *   `(WATCHDOG_STALL_MS, WATCHDOG_STALL_MS + WATCHDOG_PING_MS]`
-     *   = **15～20 秒**这个窗口里。它必然 >15 秒才发现，又必然 ≤20 秒，
-     *   因为下一次醒来（+5 秒）就会记录。**这是硬上界，不是经验值。**
-     * - 若 `gap` **远超** 20 秒 ⇒ 连 watchdog 线程自己都没在跑 ⇒ 那是**整个进程
-     *   被系统冻住**（后台/锁屏被冻结、被 swap 出去），主线程根本没「卡」。
-     *
-     * 实测 44 份现场里 36 份的 `gap` 是 60 秒～888 秒（最大 14.8 分钟），
-     * 而每一份的窗口内**整个进程一条日志都没有** —— 与「整进程冻结」完全吻合，
-     * 与「主线程卡死」完全矛盾（真卡死时 watchdog 线程还会继续写 `app.log`）。
-     *
-     * 判错的代价是双向的：把冻结记成卡死 ⇒ 现场里一半是假警报，真问题被淹掉；
-     * 而按「冻结」记下来正好解释了用户口中的「它自己卡住了」。
-     *
-     * ⚠️ **上界就是 [WATCHDOG_STALL_MS] + [WATCHDOG_PING_MS]，不是再乘 2**
-     *   （2026-10-14 对抗式审查查出）。上面那段的推理是：watchdog 每
-     *   [WATCHDOG_PING_MS] 醒一次，第一次发现 `gap > WATCHDOG_STALL_MS` 时，
-     *   这次醒来距上次醒来至多 [WATCHDOG_PING_MS] —— 所以 `gap` 必然 ≤
-     *   `WATCHDOG_STALL_MS + WATCHDOG_PING_MS` = **20 秒**。原值 `+ PING * 2`
-     *   = 25 秒，把 `(20s, 25s]` 这一段判成了 `main-thread-stall`（`level='E'`，
-     *   且被 `isHardCrash()` 算作真崩溃、界面标红）—— 而按本 KDoc 自己的论证，
-     *   这个区间**不可能**是主线程卡死。也就是说 KDoc 说「硬上界」，代码给了
-     *   5 秒的额外余量，恰好把要避免的「假警报标红」放回来了。
-     *
-     *   影响窗口很窄（只有 `(20s, 25s]`）：真机 44 份现场里 36 份的 `gap` 是
-     *   60~888 秒，那些仍走 freeze 分支，不受影响。
-     */
-    private const val WATCHDOG_FREEZE_MS = WATCHDOG_STALL_MS + WATCHDOG_PING_MS
-
     /**
      * 系统 Web 内核抛出的未捕获异常，在 `reason` 前加的归因前缀。
      *
@@ -154,26 +86,10 @@ object CrashRecorder {
     @Volatile
     private var handlerInstalled = false
 
-    /** watchdog 是否已启动（幂等判据）。 */
-    @Volatile
-    private var watchdogStarted = false
-
-    /** 主线程最后一次回 ping 的时间。由主线程更新，watchdog 读。 */
-    @Volatile
-    private var lastPing = 0L
-
-    /** 本次启动是否已经写过 ANR 现场 —— 卡死是持续状态，不要每 15 秒写一个文件。 */
-    @Volatile
-    private var anrRecordedThisBoot = false
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    private val pingRunnable = Runnable { lastPing = System.currentTimeMillis() }
-
     // ── 安装 ──────────────────────────────────────────────────────────────────
 
     /**
-     * 装上未捕获异常处理器与主线程 watchdog。
+     * 装上未捕获异常处理器。
      *
      * ⚠️ 必须在 `attachBaseContext()` 里调用，**越早越好** —— 晚于第一次崩溃
      * 就等于没装。
@@ -181,7 +97,6 @@ object CrashRecorder {
     fun install(logDir: File) {
         crashDir = File(logDir, "crash").apply { runCatching { mkdirs() } }
         installUncaughtHandler()
-        startWatchdog()
     }
 
     private fun installUncaughtHandler() {
@@ -276,7 +191,7 @@ object CrashRecorder {
         return stack.contains("TrichromeLibrary") || stack.contains("libmonochrome")
     }
 
-    // ── 四类现场的写入入口 ────────────────────────────────────────────────────
+    // ── 现场写入入口 ────────────────────────────────────────────────────
     /**
      * 记录**渲染进程崩溃**（WebView 的 `onRenderProcessGone` / GeckoView 的 `onCrash`）。
      *
@@ -315,8 +230,7 @@ object CrashRecorder {
      * 而 V8 打这行 FATAL 时是往 **stdout/stderr** 写的，正好落在
      * `EngineManager.logLines` 那个 400 行环形缓冲里 —— 但没人把它写进现场。
      *
-     * 结果：用户每天撞 2–3 次这个崩溃（真机上连续 6 天都是这个节奏），
-     * 每次自动重启要 27 秒，而**每次的根因证据都随进程消失**。
+     * 旧版反复退出时，根因证据会随进程消失；现在把引擎日志尾部一并写入现场。
      *
      * @param engineTail 引擎 stdout/stderr 的尾部行；由调用方从
      *   `EngineManager.logLines` 快照而来。传空列表等价于修复前的行为。
@@ -338,166 +252,9 @@ object CrashRecorder {
     }
 
     /**
-     * 记录**主线程卡死**（ANR 形态）。
-     *
-     * ⚠️ 拿不到系统 ANR 的完整堆栈（`ApplicationExitInfo` 需 API 30，本工程
-     * `targetSdk = 28`），所以这里记的是「主线程超过 N 秒没响应」这个**事实**，
-     * 外加**自建 watchdog 抓的一次快照**（主线程 Java 栈 + Looper 消息队列，
-     * 见 [mainThreadStack]）。不要伪造成「系统 ANR 堆栈」—— 那是编造证据；
-     * 快照里每一段都如实标注了它是谁抓的、以及抓不到时意味着什么。
-     *
-     * ⚠️ **超过 [WATCHDOG_FREEZE_MS] 的不要走这里**，那是整进程被冻结，
-     * 见 [recordProcessFreeze] 的注释。分错类会让「真卡死」被假警报淹掉。
-     */
-    fun recordMainThreadStall(stalledMs: Long) {
-        if (stalledMs > WATCHDOG_FREEZE_MS) {
-            recordProcessFreeze(stalledMs)
-            return
-        }
-        writeScene(
-            kind = "main-thread-stall",
-            reason = "主线程超过 ${stalledMs}ms 未响应（自建 watchdog 判定，非系统 ANR）",
-            stack = mainThreadStack(),
-            threadName = "main",
-            level = 'E',
-        )
-    }
-
-    /**
-     * 抓**主线程此刻在哪**——卡死现场里唯一能定位的那段。
-     *
-     * ## 为什么必须补这一段
-     *
-     * 原先 `recordMainThreadStall` 传的是 `stack = null`，于是「主线程卡死」这类
-     * 现场**只有**元信息 + 最后 200 行日志 + 时间线。而这三段在卡死场景下几乎
-     * 没有信息量：卡死期间主线程**本来就不打日志**，所以「最后 200 行」停在卡住
-     * 之前的那一刻，只能证明「它是在这里之后卡住的」，说不出卡在哪。
-     *
-     * 真机实测（服务器侧真实用户包，`debuggable:false`，v21）：4 次独立的
-     * `main-thread-stall`（`20261014-225014` / `-225538` / `20261015-010934` /
-     * `-012538`），`gap` 分别是 15070 / 19248 / 19622ms —— **全部落在
-     * `(WATCHDOG_STALL_MS, WATCHDOG_FREEZE_MS]` 这个硬上界窗口里**，即
-     * watchdog 线程自己照常每 5 秒醒来（否则会走 `process-freeze` 分支）。
-     * 也就是说**主线程真的卡了 15~19 秒**，可 4 份现场一份堆栈都没有，
-     * 定位只能靠猜。补这一段就是为了让下一次有据可查。
-     *
-     * ## 为什么是这两样，以及它们的诚实边界
-     *
-     * ① **主线程 Java 栈**：`Thread.getStackTrace()` 对**另一个**线程调用时，
-     *    VM 需要等目标线程走到 safepoint 才能拍栈。主线程若卡在 native 里
-     *    （本 App 大量回调都是 WebView/GV 经 JNI 进来的），它可能**永远**
-     *    到不了 safepoint ⇒ 抓栈调用自己会无限阻塞。所以这里**放到独立线程里
-     *    并限时 [MAIN_STACK_WAIT_MS]**，超时就如实写「超时」——宁可没有，
-     *    也不能让 watchdog 线程陪着一起卡死（watchdog 死了就再也发现不了卡死）。
-     * ② **主线程 Looper 的消息队列**：`Looper.dump()` 就是系统 ANR trace 用的
-     *    同一套机制，它会打印出队列里**正在分派**的那条消息
-     *    （`>>>>> Dispatching to Handler (…) {…}`）。它不依赖主线程配合，
-     *    所以即便 ① 超时，这一段通常仍能回答「卡在哪条消息上」。
-     *
-     *    ⚠️ **两处坑，都踩过**：
-     *    - `Looper.dump(Printer, String)` 在 SDK 里是 **`@hide`**，编译期直接
-     *      引用会 `Unresolved reference`。必须走反射。
-     *    - 它内部要拿 `MessageQueue` 的**监视器锁**。主线程若正好卡在那把锁上
-     *      （本 App 主线程大量 `post`/`removeCallbacks` 都碰它），反射调用会
-     *      把 watchdog 线程一起卡死 —— 而 watchdog 死了就再也发现不了卡死。
-     *      所以这一段**同样放到独立线程里并限时**，与 ① 一个规格。
-     *
-     * ⚠️ **这不是系统 ANR 堆栈，不要伪造成那个样子**。它是「自建 watchdog 抓的
-     *   一次快照」，与 `reason` 里那句「非系统 ANR」是同一个诚实口径。
-     * ⚠️ 栈里的字符串同样要过脱敏网 —— 它可能含用户路径、`?token=`。
-     *   `writeScene` 已经对 `stack` 统一脱敏（见那里的注释），这里不必重复。
-     */
-    private fun mainThreadStack(): String {
-        val sb = StringBuilder()
-
-        // ① 主线程 Java 栈 —— 限时，见上面 ①。
-        sb.append("--- main thread stack (watchdog snapshot) ---\n")
-        sb.append(boundedDump("dsh-main-stack-dump") { out ->
-            val t = Looper.getMainLooper().thread
-            out.append("main thread state: ").append(t.state).append('\n')
-            val st = t.stackTrace
-            if (st.isEmpty()) {
-                out.append("(主线程栈为空 —— 它多半正阻塞在 native 里，")
-                    .append("或还没走到任何 Java 帧)\n")
-            } else {
-                st.forEach { out.append("    at ").append(it).append('\n') }
-            }
-        })
-
-        // ② Looper 消息队列 —— 见上面 ②（反射 + 限时）。
-        sb.append("\n--- main looper queue ---\n")
-        sb.append(boundedDump("dsh-main-looper-dump") { out ->
-            val dump = Looper::class.java.getMethod(
-                "dump", android.util.Printer::class.java, String::class.java,
-            )
-            val printer = android.util.Printer { line -> out.append(line).append('\n') }
-            dump.invoke(Looper.getMainLooper(), printer, "")
-        })
-
-        return sb.toString()
-    }
-
-    /**
-     * 在独立线程里跑 [body]，最多等 [MAIN_STACK_WAIT_MS]；超时就返回一句**如实的
-     * 结论**而不是空串。
-     *
-     * 抽出来是因为抓栈与抓 Looper 队列**有同一个规格**：都可能无限阻塞，都
-     * 不能连累 watchdog 线程，超时的措辞也应当一致。见 [mainThreadStack]。
-     *
-     * ⚠️ 超时的文案必须说清「这意味着什么」——「抓栈超时」本身对读日志的人没有
-     *   意义，而「主线程到不了 safepoint」把「卡在 Java 代码里」这一整类**排除**
-     *   掉了，那是可用的结论。
-     */
-    private fun boundedDump(tag: String, body: (StringBuilder) -> Unit): String {
-        val out = StringBuilder()
-        val worker = Thread({
-            runCatching { body(out) }
-                .onFailure { out.append("($tag 失败: ${it.javaClass.simpleName}: ${it.message})\n") }
-        }, tag).apply { isDaemon = true }
-        worker.start()
-        // ⚠️ `join` 而不是轮询：join 有 happens-before 保证，`out` 在这里读到的
-        //   一定是子线程写完的内容（或者它压根没写完 —— 那种情况下面如实标注）。
-        runCatching { worker.join(MAIN_STACK_WAIT_MS) }
-        return if (worker.isAlive) {
-            "(抓取超时 ${MAIN_STACK_WAIT_MS}ms —— 主线程到不了 safepoint，" +
-                "通常意味着它阻塞在内核/native 调用或 MessageQueue 锁上)\n"
-        } else {
-            out.toString()
-        }
-    }
-
-    /**
-     * 记录**整个进程被系统冻结**（不是主线程卡死）。
-     *
-     * 判据见 [WATCHDOG_FREEZE_MS]：`gap` 超过 watchdog 心跳能解释的上界，
-     * 就只能是 watchdog 线程自己也被挂起了 —— 即进程整体失去 CPU，
-     * 而不是主线程在某个同步调用里转不出来。
-     *
-     * ⚠️ **等级记 `W` 而不是 `E`**，且**不算硬崩溃**（见 [isHardCrash]）：
-     * 被冻结是 Android 对后台进程的**正常治理**，不是我们的 bug。把它标红会让
-     * 用户看到一片「崩溃」，而真崩溃反而找不到。
-     *
-     * ⚠️ 但仍要记下来，因为它**解释了用户抱怨的那个现象**（「它自己卡住了、
-     * 回来就白屏」）。不记的话这类投诉在日志里完全无迹可寻。
-     */
-    fun recordProcessFreeze(frozenMs: Long) {
-        writeScene(
-            kind = "process-freeze",
-            reason = "进程被系统冻结约 ${frozenMs}ms（watchdog 线程自身也停跑了，故非主线程卡死；" +
-                "常见于后台被冻结或整机休眠）",
-            stack = null,
-            threadName = "dsh-log-watchdog",
-            level = 'W',
-        )
-        // 也进时间线：现场文件按时间戳单独命名，翻时间线时看不到「这里冻过一次」，
-        // 而冻结正是「切回来白屏/要重进」这类现象的直接解释。
-        runCatching { EventLog.record("process.freeze", mapOf("ms" to frozenMs.toString())) }
-    }
-
-    /**
      * 通用入口：记一次「本进程之外的问题」。
      *
-     * 给 `EngineManager` 的启动前体检、资产解包失败等**不至于崩溃但需要现场**的
+     * 给 `EngineManager` 的启动或资产安装失败等**不至于崩溃但需要现场**的
      * 场景用。写出来的文件与崩溃现场同构，分析方式一致。
      */
     fun recordAnomaly(kind: String, reason: String, level: Char = 'W') {
@@ -677,72 +434,6 @@ object CrashRecorder {
         runCatching { LogStore.withLockOrSkip(LOCK_WAIT_MS, block) }
     }
 
-    // ── 主线程 watchdog ───────────────────────────────────────────────────────
-
-    /**
-     * 主线程 watchdog。
-     *
-     * ## 为什么需要（本项目特有）
-     *
-     * 本 App 的主线程要干不少同步活：WebView 的 `evaluateJavascript` 回包、
-     * 引擎状态回调、`FloatingBubble` 的窗口操作、SharedPreferences 读写。
-     * 任何一处卡住，界面就整个冻住 —— 而用户描述成「卡死不动」时，我们手上
-     * 什么都没有（logcat 里没有、文件里也没有）。
-     *
-     * ## 判定方式与它的诚实边界
-     *
-     * 每 [WATCHDOG_PING_MS] 让主线程回一个 ping；超过 [WATCHDOG_STALL_MS] 没回
-     * 就判定卡死并写现场。
-     *
-     * ⚠️ **这是「主线程没响应」，不是系统的 ANR**。系统的 ANR 有完整堆栈
-     * （在 `/data/anr/traces.txt`，需要 root 或 `READ_LOGS`），本工程 `targetSdk=28`
-     * 拿不到。所以现场里如实写成「自建 watchdog 判定，非系统 ANR」——
-     * **不伪造证据**。分析者据此知道「这里有个卡死，但堆栈要另想办法」。
-     *
-     * ⚠️ 一次启动只记一次：卡死是**持续状态**，不记的话每 15 秒产出一个文件，
-     * 一分钟就把 `crash/` 配额撑满、把真正的崩溃现场挤掉。
-     */
-    private fun startWatchdog() {
-        if (watchdogStarted) return
-        watchdogStarted = true
-        lastPing = System.currentTimeMillis()
-
-        val t = Thread({
-            while (true) {
-                try {
-                    Thread.sleep(WATCHDOG_PING_MS)
-                    // 让主线程回 ping。post 成功不代表它跑了 —— 那正是我们要测的。
-                    mainHandler.post(pingRunnable)
-                    val gap = System.currentTimeMillis() - lastPing
-                    if (gap > WATCHDOG_STALL_MS && !anrRecordedThisBoot) {
-                        anrRecordedThisBoot = true
-                        recordMainThreadStall(gap)
-                    }
-                } catch (_: InterruptedException) {
-                    return@Thread
-                } catch (_: Throwable) {
-                    // watchdog 自己绝不能死 —— 死了就再也发现不了卡死。
-                }
-            }
-        }, "dsh-log-watchdog").apply { isDaemon = true }
-        t.start()
-    }
-
-    /**
-     * 等主线程回一次 ping。**测试与自检用**，业务路径不调。
-     *
-     * 返回 true = 主线程在 [timeoutMs] 内响应了。
-     */
-    fun pingMainThread(timeoutMs: Long): Boolean {
-        val latch = CountDownLatch(1)
-        mainHandler.post { latch.countDown() }
-        return try {
-            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
     // ── 读取 ──────────────────────────────────────────────────────────────────
 
     /**
@@ -763,40 +454,13 @@ object CrashRecorder {
     fun sceneCount(): Int = listScenes().size
 
     /**
-     * 判断某个现场文件是不是「真崩溃」（界面要标红的那几类）。
-     *
-     * 判据是**三个 kind**：`uncaught-exception`、`renderer-crash`、`main-thread-stall`
-     * —— 都用 [kindOf] 会认的名字（这里用 `contains` 而不是相等，因为文件名前面
-     * 还有时间戳）。
-     *
-     * ⚠️ **KDoc 原先写的是「有堆栈的那两类」，那是错的**（2026-10-14 自检发现）：
-     *   它描述的是一个**不存在的总体**。三类里只有 `uncaught-exception` 带
-     *   **真正的异常栈** —— [recordRendererGone] 把 `stack` 显式传 `null`，
-     *   而 [recordMainThreadStall] 传的是 [mainThreadStack] 抓的**快照**
-     *   （`--- main thread stack (watchdog snapshot) ---` + Looper 队列），
-     *   它不是异常栈、也没有「谁抛了什么」。
-     *   照「有堆栈」去理解，分析者会以为 `renderer-crash` 里有内核栈可读，翻遍
-     *   现场文件找不到，进而怀疑现场写坏了。实测 `20261014-054414-renderer-crash.txt`
-     *   （13,031 字节）确实**没有** `--- stack trace ---` 段。
-     *   更要紧的是：**判据是 kind，不是有没有堆栈** —— 有没有堆栈是记录能力问题，
-     *   是不是「真崩溃」是分类问题，两者独立。写 KDoc 时把实现里那个 `||` 表达式
-     *   如实描述出来即可，不要替它编一条更好懂的理由。
-     *
-     * 界面据此决定标红还是标黄 —— 渲染进程被回收、引擎（正常/意外）退出、
-     * 进程被冻结、引擎起不来都不该是红色。
-     *
-     * ⚠️ `process-freeze` **刻意不在此列**：进程被系统冻结是后台治理的正常结果，
-     * 不是本 App 的崩溃。它由 watchdog 记下来是为了解释「回来就白屏」这类现象，
-     * 但标红会把真崩溃的比例冲淡（实测 44 份里 36 份是冻结，标红后满屏红）。
-     *
-     * ⚠️ `engine-start-failed` **也刻意不在此列**：它确实是本 App 最严重的故障
-     * （界面直接不可用，见 `引擎宿主`），但它是**启动失败、
-     * 没有崩溃过**。标红会让「崩溃现场」这个计数失去意义 —— 用户看到的是
-     * 「有 70 份崩溃」而非「引擎反复起不来」。
+     * 按现场类别判定是否需要标红。引擎启动失败有独立诊断，不算硬崩溃。
+     * 历史 `main-thread-stall` 文件沿用旧分类；历史 `process-freeze` 文件仅作为普通现场读取。
      */
-    fun isHardCrash(f: File): Boolean =
-        f.name.contains("uncaught-exception") || f.name.contains("renderer-crash") ||
-            f.name.contains("main-thread-stall")
+    fun isHardCrash(f: File): Boolean = when (kindOf(f)) {
+        "uncaught-exception", "renderer-crash", "main-thread-stall" -> true
+        else -> false
+    }
 
     /**
      * 从现场文件名里取出类别（`kind`），取不到就返回 `"unknown"`。

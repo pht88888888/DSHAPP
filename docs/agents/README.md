@@ -15,7 +15,7 @@
 | [ripgrep.md](ripgrep.md) | ⑤ @vscode/ripgrep 没有 android 包 | 补一个静态 rg 二进制 |
 | [pnpm.md](pnpm.md) | ⑥ Termux 里没有 pnpm | 装 pnpm 11 纯 JS 版；为什么不能用 12；core-memory 是例外 |
 | [asset-stamps.md](asset-stamps.md) | 资产版本规则 | 插件内容摘要、兼容产物与其它运行时二进制的版本戳 |
-| [startup-performance.md](startup-performance.md) | 冷启动慢 | 启动前体检缓存、跳过降级前端、prefix/bundle 记账、node 编译缓存与实测数字 |
+| [startup-performance.md](startup-performance.md) | 冷启动慢 | 兼容前端按需安装、prefix/bundle 记账、Node 编译缓存与历史实测 |
 | [ui-jank.md](ui-jank.md) | 使用中卡顿 | 面板页进入慢的采样手法、两处同步布局读、出厂包指纹漏算 |
 | [plugin-updates.md](plugin-updates.md) | 内置插件与更新 | 出厂离线可用、标准 bundle、市场直接更新、状态归属与统一构建 |
 | [webview-basics.md](webview-basics.md) | ⑦ 文件选择器 / ⑦.5 下载器 | WebView 默认实现静默失败，必须自己接 |
@@ -38,8 +38,9 @@
 | [keep-alive.md](keep-alive.md) | 后台保活与通知栏实时状态 | 任务切后台不能断；键盘升起遮挡 |
 | [mobile-ui.md](mobile-ui.md) | 移动端 UI 插件 | 为什么解到 $DSH_HOME/mobile-ui、别名桥接、+ 菜单时序、安全键盘 |
 | [debug-device.md](debug-device.md) | 调试真机 | adb 基本手法 |
-| [rescue-mode.md](rescue-mode.md) | 插件改坏导致 App 打不开 | 启动前体检 + 安全模式 |
-| [node-selfheal.md](node-selfheal.md) | $PREFIX/bin/node 会坏 | 自校验 + 自愈、$PREFIX 并发写互斥 |
+| [repair-assistant.md](repair-assistant.md) | 独立修复助手首阶段 | 原生入口、同签名握手与授权只读诊断；AI 编辑尚未实现 |
+| [rescue-mode.md](rescue-mode.md) | 引擎或页面启动失败 | 手动操作、诊断与备份边界 |
+| [node-selfheal.md](node-selfheal.md) | $PREFIX/bin/node 会坏 | 安装校验与 `$PREFIX` 写入互斥 |
 | [boundaries.md](boundaries.md) | 已知边界 | 明确不做 / 做不到的事 |
 | [regen-assets.md](regen-assets.md) | 重新生成资产 | 各资产从哪来、怎么打 |
 | [desktop-relation.md](desktop-relation.md) | 与 DSH 桌面端的关系 | 哪些东西两端共用、哪些各管各的 |

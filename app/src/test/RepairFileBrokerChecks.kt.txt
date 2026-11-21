@@ -1,0 +1,253 @@
+package com.dsh.android.repair.files
+
+import org.json.JSONObject
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.attribute.PosixFilePermissions
+import java.security.MessageDigest
+
+/** Host adapter exercises the exact production broker state machine, not an implementation copy. */
+private class HostIo : RepairFileIo {
+    var beforeTargetPublication = false
+    var afterTargetPublication = false
+    var afterRollbackPublication = false
+    var publications = 0
+    var failSpace = false
+    var failArtifact: String? = null
+    var failCleanup = false
+    override fun statNoFollow(file: File): RepairFileIo.Stat? {
+        val p = file.toPath()
+        if (!Files.exists(p, NOFOLLOW_LINKS)) return null
+        val mode = (Files.getAttribute(p, "unix:mode", NOFOLLOW_LINKS) as Int) and 511
+        return RepairFileIo.Stat(Files.isDirectory(p, NOFOLLOW_LINKS),
+            Files.isRegularFile(p, NOFOLLOW_LINKS) && Files.getAttribute(p, "unix:nlink", NOFOLLOW_LINKS) == 1, mode,
+            Files.size(p), "${Files.getAttribute(p, "unix:dev", NOFOLLOW_LINKS)}:${Files.getAttribute(p, "unix:ino", NOFOLLOW_LINKS)}")
+    }
+    override fun read(file: File, limit: Int): ByteArray {
+        if (statNoFollow(file)?.regular != true) reject("unsafe_file", "Not regular")
+        if (file.length() > limit) reject("file_too_large", "Too large")
+        return file.readBytes().also { if (it.size > limit) reject("file_too_large", "Grew") }
+    }
+    override fun <T> input(file: File, action: (java.io.InputStream) -> T): T {
+        if (statNoFollow(file)?.regular != true) reject("unsafe_file", "Not regular")
+        return file.inputStream().use(action)
+    }
+    override fun write(file: File, mode: Int, expectedSha256: String?, action: (java.io.OutputStream) -> Unit) {
+        if (file.name == failArtifact) { failArtifact = null; throw RepairIoException("write", 13) }
+        val isTarget = !file.path.contains("/repair-candidates/")
+        if (expectedSha256 == ABSENT) {
+            if (statNoFollow(file) != null) reject("hash_conflict", "Exists")
+        } else if (expectedSha256 != null && digest(file).sha != expectedSha256) reject("hash_conflict", "Changed")
+        if (isTarget && beforeTargetPublication) { beforeTargetPublication = false; throw java.io.IOException("before") }
+        val tmp = Files.createTempFile(file.parentFile.toPath(), ".repair-", ".tmp").toFile()
+        try {
+            tmp.outputStream().use(action); mode(tmp, mode)
+            if (expectedSha256 == ABSENT) { Files.createLink(file.toPath(), tmp.toPath()); Files.delete(tmp.toPath()) }
+            else Files.move(tmp.toPath(), file.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+            if (isTarget) {
+                publications++
+                if (afterTargetPublication) { afterTargetPublication = false; throw java.io.IOException("after") }
+                if (afterRollbackPublication) { afterRollbackPublication = false; throw java.io.IOException("after rollback") }
+            }
+        } finally { Files.deleteIfExists(tmp.toPath()) }
+    }
+    override fun mkdir(file: File, mode: Int) { Files.createDirectory(file.toPath()); mode(file, mode) }
+    override fun remove(file: File, expectedSha256: String) {
+        if (failCleanup) { failCleanup = false; throw java.io.IOException("private-secret-in-cleanup") }
+        if (digest(file).sha != expectedSha256) reject("hash_conflict", "Changed"); Files.delete(file.toPath())
+    }
+    override fun rmdir(file: File, identity: String) { if (statNoFollow(file)?.identity != identity) reject("hash_conflict", "Changed"); Files.delete(file.toPath()) }
+    override fun availableBytes(directory: File): Long {
+        if (failSpace) { failSpace = false; throw RepairIoException("space_query", 13) }
+        return Files.getFileStore(directory.toPath()).usableSpace
+    }
+    override fun children(directory: File) = directory.list()!!.toList()
+    override fun replace(file: File, bytes: ByteArray, mode: Int, expectedSha256: String?) {
+        if (file.name == failArtifact) { failArtifact = null; throw RepairIoException("write", 13) }
+        val isTarget = file.path.contains("/lib/")
+        if (expectedSha256 != null) {
+            val actual = MessageDigest.getInstance("SHA-256").digest(read(file, RepairFileBroker.MAX_FILE_BYTES))
+                .joinToString("") { "%02x".format(it) }
+            if (actual != expectedSha256) reject("hash_conflict", "Changed before publication")
+        }
+        if (isTarget && beforeTargetPublication) {
+            beforeTargetPublication = false
+            throw java.io.IOException("simulated pre-publication crash")
+        }
+        val temp = Files.createTempFile(file.parentFile.toPath(), ".repair-", ".tmp").toFile()
+        temp.writeBytes(bytes); mode(temp, mode)
+        Files.move(temp.toPath(), file.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+        if (isTarget) {
+            publications++
+            if (afterTargetPublication) { afterTargetPublication = false; throw java.io.IOException("simulated apply crash") }
+            if (afterRollbackPublication) { afterRollbackPublication = false; throw java.io.IOException("simulated rollback crash") }
+        }
+    }
+    private fun mode(file: File, bits: Int) {
+        val text = buildString { for (shift in listOf(6, 3, 0)) {
+            append(if (bits and (4 shl shift) != 0) 'r' else '-')
+            append(if (bits and (2 shl shift) != 0) 'w' else '-')
+            append(if (bits and (1 shl shift) != 0) 'x' else '-')
+        } }
+        Files.setPosixFilePermissions(file.toPath(), PosixFilePermissions.fromString(text))
+    }
+}
+
+fun main() {
+    val root = Files.createTempDirectory("repair-file-kotlin-").toFile()
+    val path = "engine/node_modules/@deepseek-ai/dsh/lib/bin.js"
+    val target = File(root, path)
+    target.parentFile.mkdirs()
+    val initial = "#!/usr/bin/env node\nexport const value = 1;\n"
+    val changed = "#!/usr/bin/env node\nexport const value = 2;\n"
+    target.writeText(initial)
+    Files.setPosixFilePermissions(target.toPath(), PosixFilePermissions.fromString("rwxr-x---"))
+    val io = HostIo()
+    var broker = RepairFileBroker(root, io)
+    val grant = "repair-grant-00000001"
+    fun args(vararg pairs: Pair<String, Any>) = JSONObject().apply { pairs.forEach { put(it.first, it.second) } }
+    fun hash(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+    fun call(method: String, body: JSONObject = JSONObject(), g: String = grant) = broker.dispatch(method, body, g)
+    fun good(value: JSONObject) = value.also { check(it.getBoolean("ok")) { it.toString() } }
+    fun bad(value: JSONObject, code: String) { check(!value.getBoolean("ok") && value.getString("error") == code) { value.toString() } }
+    fun stage(content: String = changed) = good(call("stage_edit", args("path" to path, "expected_sha256" to hash(target.readText()), "content" to content))).getString("change_id")
+    fun currentStatus(id: String): String = good(broker.previewChange(id, grant)).getString("status")
+    var checks = 0
+    try {
+        val read = good(call("read_file", args("path" to path)))
+        check(read.getString("sha256") == hash(initial) && read.getString("content") == initial); checks++
+
+        for (name in listOf("../keys.json", "/etc/passwd", "unknown/package.json", "${path}/../bin.js", "engine//invalid.js")) {
+            bad(call("read_file", args("path" to name)), "path_out_of_scope")
+        }
+        bad(call("read_file", args("path" to path, "extra" to true)), "invalid_argument")
+        bad(call("shell", JSONObject()), "unsupported_method")
+        bad(call("list_changes", JSONObject(), "bad"), "invalid_grant"); checks++
+
+        bad(call("stage_edit", args("path" to path, "expected_sha256" to "0".repeat(64), "content" to changed)), "hash_conflict")
+        val id = stage()
+        check(target.readText() == initial)
+        val preview = good(broker.previewChange(id, grant))
+        check(preview.getString("candidate_content") == changed && preview.getString("original_content") == initial)
+        check(good(call("list_changes")).getJSONArray("changes").length() == 1); checks++
+
+        val applied = good(call("apply_changes", args("change_id" to id)))
+        check(applied.getBoolean("requires_verification") && target.readText() == changed)
+        check(io.statNoFollow(target)!!.mode == 488)
+        val count = io.publications
+        good(call("apply_changes", args("change_id" to id)))
+        check(io.publications == count)
+        good(call("rollback", args("change_id" to id)))
+        good(call("rollback", args("change_id" to id)))
+        check(target.readText() == initial && io.statNoFollow(target)!!.mode == 488); checks++
+
+        val conflict = stage()
+        target.writeText("export const someoneElse = 4;\n")
+        bad(call("apply_changes", args("change_id" to conflict)), "hash_conflict")
+        check(target.readText().contains("someoneElse")); target.writeText(initial); checks++
+
+        val rollbackConflict = stage()
+        good(call("apply_changes", args("change_id" to rollbackConflict)))
+        target.writeText("export const newerWork = 5;\n")
+        bad(call("rollback", args("change_id" to rollbackConflict)), "hash_conflict")
+        bad(call("apply_changes", args("change_id" to rollbackConflict)), "hash_conflict")
+        check(target.readText().contains("newerWork")); target.writeText(initial); checks++
+
+        val beforeCrash = stage()
+        io.beforeTargetPublication = true
+        bad(call("apply_changes", args("change_id" to beforeCrash)), "io_error")
+        broker = RepairFileBroker(root, io)
+        check(currentStatus(beforeCrash) == "staged" && target.readText() == initial)
+        good(call("apply_changes", args("change_id" to beforeCrash)))
+        good(call("rollback", args("change_id" to beforeCrash))); checks++
+
+        val afterCrash = stage()
+        io.afterTargetPublication = true
+        bad(call("apply_changes", args("change_id" to afterCrash)), "io_error")
+        broker = RepairFileBroker(root, io)
+        check(currentStatus(afterCrash) == "applied_pending_verification" && target.readText() == changed)
+        io.afterRollbackPublication = true
+        bad(call("rollback", args("change_id" to afterCrash)), "io_error")
+        broker = RepairFileBroker(root, io)
+        check(currentStatus(afterCrash) == "rolled_back" && target.readText() == initial); checks++
+
+        val ambiguous = stage()
+        io.afterTargetPublication = true
+        bad(call("apply_changes", args("change_id" to ambiguous)), "io_error")
+        target.writeText("export const competingWriter = 9;\n")
+        check(currentStatus(ambiguous) == "conflict")
+        bad(call("rollback", args("change_id" to ambiguous)), "invalid_state")
+        check(target.readText().contains("competingWriter")); target.writeText(initial); checks++
+
+        val symlink = File(target.parentFile, "link.js")
+        Files.createSymbolicLink(symlink.toPath(), target.toPath())
+        bad(call("read_file", args("path" to path.replace("bin.js", "link.js"))), "unsafe_file")
+        val linkDirectory = File(target.parentFile, "linked")
+        Files.createSymbolicLink(linkDirectory.toPath(), target.parentFile.toPath())
+        bad(call("read_file", args("path" to path.replace("bin.js", "linked/bin.js"))), "unsafe_path")
+        val hardlink = File(target.parentFile, "hard.js")
+        Files.createLink(hardlink.toPath(), target.toPath())
+        bad(call("read_file", args("path" to path)), "unsafe_file")
+        Files.delete(hardlink.toPath()); checks++
+
+        target.writeBytes(byteArrayOf(0xc3.toByte(), 0x28))
+        bad(call("read_file", args("path" to path)), "invalid_utf8")
+        target.writeText("a".repeat(RepairFileBroker.MAX_FILE_BYTES + 1))
+        bad(call("read_file", args("path" to path)), "file_too_large")
+        target.writeText(initial)
+        bad(call("stage_edit", args("path" to path, "expected_sha256" to hash(initial), "content" to "a".repeat(RepairFileBroker.MAX_FILE_BYTES + 1))), "file_too_large")
+        val nul = good(call("stage_edit", args("path" to path, "expected_sha256" to hash(initial), "content" to "binary\u0000text")))
+        check(nul.getString("status") == "staged"); checks++
+
+        val other = good(call("list_changes", JSONObject(), "repair-grant-00000002"))
+        check(other.getJSONArray("changes").length() == 0)
+        check(!broker.previewChange(id, "repair-grant-00000002").getBoolean("ok"))
+        check(target.readText() == initial); checks++
+
+        val corrupt = stage()
+        val grantDir = File(root, "repair-candidates").listFiles()!!.single { File(it, corrupt).exists() }
+        File(grantDir, "$corrupt/candidate.bin").writeText("tampered")
+        bad(call("apply_changes", args("change_id" to corrupt)), "candidate_corrupt")
+        check(target.readText() == initial); checks++
+        // New grant avoids old deliberately corrupt artifacts and isolates phase diagnostics.
+        val diagnosticGrant = "repair-grant-diagnostics-01"
+        fun diagnosticStage() = call("stage_edit", args("path" to path, "expected_sha256" to hash(initial), "content" to changed), diagnosticGrant)
+        fun expectDiagnostic(value: JSONObject, phase: String, operation: String) {
+            bad(value, "io_error")
+            val detail = value.getJSONObject("diagnostic")
+            check(detail.getString("implementation") == "app_files_041")
+            check(detail.getString("phase") == phase && detail.getString("io_operation") == operation && detail.getInt("errno") == 13) { value.toString() }
+            check(!value.toString().contains("private-secret") && !value.toString().contains(root.path))
+        }
+        io.failSpace = true
+        expectDiagnostic(diagnosticStage(), "storage_preflight", "space_query")
+        check(good(call("list_changes", JSONObject(), diagnosticGrant)).getJSONArray("changes").length() == 0); checks++
+        io.failArtifact = "original.bin"
+        expectDiagnostic(diagnosticStage(), "original_backup", "write")
+        check(good(call("list_changes", JSONObject(), diagnosticGrant)).getJSONArray("changes").length() == 0); checks++
+        io.failArtifact = "candidate.bin"
+        io.failCleanup = true
+        expectDiagnostic(diagnosticStage(), "candidate_write", "write")
+        check(good(call("list_changes", JSONObject(), diagnosticGrant)).getJSONArray("changes").length() == 0)
+        check(target.readText() == initial); checks++
+        io.failArtifact = "journal.json"
+        expectDiagnostic(diagnosticStage(), "journal_publish", "write")
+        check(good(call("list_changes", JSONObject(), diagnosticGrant)).getJSONArray("changes").length() == 0)
+        check(target.readText() == initial); checks++
+        val control = File(root, "repair-control").apply { mkdirs() }
+        File(control, "task.json").writeText("{\"phase\":\"validating\"}")
+        bad(call("read_file", args("path" to "app/${root.name}/repair-control/task.json")), "protected_path"); checks++
+        val reconciliation = good(broker.reconcileForShutdown())
+        check(reconciliation.getInt("checked") > 0 && reconciliation.getInt("unresolved") >= 0)
+        check(!reconciliation.toString().contains("change_id") && !reconciliation.toString().contains("candidate_sha256")); checks++
+        check(checks == 19)
+        println("passed $checks production behavior checks")
+    } finally {
+        // Only this harness-created exact temporary root may be removed.
+        check(root.canonicalPath.startsWith(File(System.getProperty("java.io.tmpdir")).canonicalPath + "/repair-file-kotlin-"))
+        root.deleteRecursively()
+    }
+}

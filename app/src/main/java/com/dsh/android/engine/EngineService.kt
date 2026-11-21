@@ -46,11 +46,15 @@ class EngineService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        if (com.dsh.android.repair.RepairRuntimeGate.blocked(this)) { stopSelf(); return }
         createChannel()
         acquireWakeLock()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (com.dsh.android.repair.RepairRuntimeGate.blocked(this)) {
+            alive = false; releaseWakeLock(); stopSelf(startId); return START_NOT_STICKY
+        }
         alive = true
         // 服务重建时清掉上一轮的状态，避免通知里残留旧会话的文案
         lastStatus = null
@@ -155,6 +159,7 @@ class EngineService : Service() {
         private var lastStatus: EngineStatus? = null
 
         fun start(context: Context) {
+            if (com.dsh.android.repair.RepairRuntimeGate.blocked(context)) return
             val intent = Intent(context, EngineService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

@@ -1,0 +1,176 @@
+package com.dsh.android.repair
+
+import com.dsh.android.engine.EngineFailureProjection
+import com.dsh.android.engine.EngineRepairLock
+import com.dsh.android.repair.contract.RepairJsonLimits
+import com.dsh.android.repair.contract.RepairProtocol
+import java.io.File
+import org.json.JSONArray
+import org.json.JSONObject
+
+fun main(args: Array<String>) {
+    if (args.firstOrNull() == "probe-lock") {
+        val lock = EngineRepairLock.tryAcquire(File(args[1]))
+        println(if (lock == null) "LOCK_BUSY" else "LOCK_ACQUIRED")
+        lock?.close()
+        return
+    }
+    val directory = File(args[0])
+    val rawOutput = File(args[1]).readText()
+    var passed = 0
+    fun scenario(name: String, action: () -> Unit) { action(); passed++; println("PASS $name") }
+    val start = 100_000L
+    val duration = 30 * 60 * 1000L
+    val original = RepairConsentWindow(start + duration, 6, "target-install:assistant-install")
+    fun accepts(window: RepairConsentWindow, now: Long, boot: Int = 6, install: String = original.install) =
+        window.accepts(now, boot, install)
+    scenario("lease uses exact thirty minute boundary") {
+        check(RepairProtocol.IDLE_TIMEOUT_MS == duration)
+        check(accepts(original, start)); check(accepts(original, start + duration - 1))
+        check(!accepts(original, start + duration)); check(!accepts(original, start + duration + 1))
+    }
+    scenario("live activity renews repeatedly beyond initial grant deadline") {
+        var current = original
+        for (minute in 1..120) {
+            val now = start + minute * 60_000L
+            current = checkNotNull(current.renew(now, 6, original.install))
+            check(current.until == now + duration)
+        }
+        check(accepts(current, start + 120 * 60_000L + duration - 1))
+        check(!accepts(current, start + 120 * 60_000L + duration))
+    }
+    scenario("idle reads and expired activity cannot resurrect grant") {
+        repeat(50) { check(accepts(original, start + duration - 1)) }
+        check(original.until == start + duration)
+        check(original.renew(start + duration, 6, original.install) == null)
+    }
+    scenario("negative or rollback monotonic time fails closed") {
+        check(!accepts(original, -1)); check(!accepts(original, start - 1))
+        check(original.renew(start - 1, 6, original.install) == null)
+    }
+    scenario("reboot or either package replacement invalidates renewal") {
+        for ((boot, identity) in listOf(7 to original.install, 6 to "target-new:assistant-install", 6 to "target-install:assistant-new")) {
+            check(!accepts(original, start, boot, identity))
+            check(original.renew(start, boot, identity) == null)
+        }
+    }
+    scenario("JSON depth has exact bounded nesting") {
+        check(RepairJsonLimits.accepts("[".repeat(16) + "0" + "]".repeat(16)))
+        check(!RepairJsonLimits.accepts("[".repeat(17) + "0" + "]".repeat(17)))
+        check(!RepairJsonLimits.accepts("[".repeat(100_000)))
+    }
+    scenario("JSON source string brackets and escaped quotes are not nesting") {
+        val json = JSONObject().put("source", "[".repeat(100) + "\\\"quoted\\\"" + "]".repeat(100)).toString()
+        check(RepairJsonLimits.accepts(json)); check(JSONObject(json).has("source"))
+        check(!RepairJsonLimits.accepts("\"unterminated")); check(!RepairJsonLimits.accepts("["))
+        check(!RepairJsonLimits.accepts("]")); check(!RepairJsonLimits.accepts("\"trailing\\"))
+    }
+    scenario("native ticket is single use") {
+        val token = RepairChangeApproval.issue("grant-a", "apply_changes", "change-a", start)
+        check(RepairChangeApproval.consume(token, "grant-a", "apply_changes", "change-a", start))
+        check(!RepairChangeApproval.consume(token, "grant-a", "apply_changes", "change-a", start))
+    }
+    scenario("wrong grant method or change consumes but never accepts ticket") {
+        for ((grant, method, change) in listOf(Triple("grant-b", "apply_changes", "change-a"), Triple("grant-a", "rollback", "change-a"), Triple("grant-a", "apply_changes", "change-b"))) {
+            val token = RepairChangeApproval.issue("grant-a", "apply_changes", "change-a", start)
+            check(!RepairChangeApproval.consume(token, grant, method, change, start))
+            check(!RepairChangeApproval.consume(token, "grant-a", "apply_changes", "change-a", start))
+        }
+    }
+    scenario("ticket expiration exact deadline and rollback time fail closed") {
+        fun ticket() = RepairChangeApproval.issue("grant-a", "rollback", "change-a", start)
+        check(RepairChangeApproval.consume(ticket(), "grant-a", "rollback", "change-a", start + 59_999))
+        check(!RepairChangeApproval.consume(ticket(), "grant-a", "rollback", "change-a", start + 60_000))
+        check(!RepairChangeApproval.consume(ticket(), "grant-a", "rollback", "change-a", start - 1))
+        check(!RepairChangeApproval.consume("unknown", "grant-a", "rollback", "change-a", start))
+    }
+    scenario("cross-process lock excludes overlap and releases normally") {
+        fun probe(): String {
+            val proc = ProcessBuilder(File(System.getProperty("java.home"), "bin/java").path, "-cp", System.getProperty("java.class.path"),
+                "com.dsh.android.repair.RepairNativePolicyChecksKt", "probe-lock", directory.path).redirectErrorStream(true).start()
+            check(proc.waitFor(10, java.util.concurrent.TimeUnit.SECONDS))
+            val output = proc.inputStream.bufferedReader().readText().trim()
+            check(proc.exitValue() == 0) { output }
+            return output
+        }
+        val held = checkNotNull(EngineRepairLock.tryAcquire(directory))
+        try {
+            check(probe() == "LOCK_BUSY") { "Held lock did not exclude independent process" }
+            check(EngineRepairLock.tryAcquire(directory) == null) { "Overlapping same-JVM lease was accepted" }
+            check(probe() == "LOCK_BUSY") { "Rejected same-JVM contender released original POSIX lock" }
+        }
+        finally { held.close(); held.close() }
+        check(probe() == "LOCK_ACQUIRED")
+        checkNotNull(EngineRepairLock.tryAcquire(directory)).close()
+    }
+    val boot = JSONObject().put("bootId", "current-boot").put("uiLoaded", false).toString()
+    val projected = EngineFailureProjection.fields(rawOutput)
+    fun event(fields: JSONObject, id: String = "current-boot", name: String = "engine.failed") =
+        JSONObject().put("bootId", id).put("name", name).put("fields", fields).toString()
+    scenario("real damaged shebang check output projects only bounded parser fields") {
+        check(projected["error_class"] == "SyntaxError")
+        check(projected["error_path"] == "engine/node_modules/@deepseek-ai/dsh/lib/bin.js")
+        check(projected["error_line"] == "2")
+        check(projected["error_message"] == "Invalid or unexpected token")
+        check(projected.keys == setOf("error_class", "error_path", "error_line", "error_message", "error_code", "error_summary", "safe_stack"))
+        check(projected["error_code"] == "syntax_invalid_token")
+        check(projected["error_summary"] == "Invalid or unexpected token")
+        check(projected["safe_stack"]?.contains("engine/node_modules/@deepseek-ai/dsh/lib/bin.js:2") == true)
+        check(projected.values.none { "fixture-secret" in it || "/data/" in it || "#!/" in it })
+    }
+    scenario("projected parser event survives JSON to current boot evidence line two") {
+        val evidence = RepairFailureEvidence.extract(boot, event(JSONObject(projected)))
+        check(evidence.getString("engine_state") == "engine.failed")
+        check(evidence.getString("error_class") == "SyntaxError")
+        val location = evidence.getJSONArray("error_locations").getJSONObject(0)
+        check(location.getString("path") == projected["error_path"]); check(location.getLong("line") == 2L)
+        check(!evidence.getBoolean("ui_loaded"))
+        check(!evidence.toString().contains("fixture-secret"))
+    }
+    scenario("legacy reason projects known class location but never arbitrary content") {
+        val evidence = RepairFailureEvidence.extract(boot, event(JSONObject().put("reason", rawOutput)))
+        check(evidence.getString("error_class") == "SyntaxError")
+        check(evidence.getJSONArray("error_locations").getJSONObject(0).getLong("line") == 2L)
+        check(!evidence.toString().contains("fixture-secret"))
+    }
+    scenario("other boot errors cannot contaminate evidence") {
+        val evidence = RepairFailureEvidence.extract(boot, event(JSONObject(projected), "previous-boot"))
+        check(evidence.getString("engine_state") == "unknown")
+        check(evidence.getJSONArray("error_locations").length() == 0); check(!evidence.has("error_class"))
+    }
+    scenario("later engine ready suppresses old failure evidence") {
+        val evidence = RepairFailureEvidence.extract(boot, event(JSONObject(projected)) + "\n" + event(JSONObject(), name = "engine.ready"))
+        check(evidence.getString("engine_state") == "engine.ready")
+        check(evidence.getJSONArray("error_locations").length() == 0); check(!evidence.has("error_class"))
+    }
+    scenario("other engine packages and binaries project bounded locations without source text") {
+        for (path in listOf("engine/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js", "engine/node_modules/plugin/lib/addon.node", "engine/runtime.json")) {
+            val output = "/data/user/0/com.dsh.android/files/$path:1\nError: fixture-secret"
+            val projection = EngineFailureProjection.fields(output)
+            check(projection["error_path"] == path && projection["error_class"] == "Error")
+            val evidence = RepairFailureEvidence.extract(boot, event(JSONObject(projection)))
+            check(evidence.getJSONArray("error_locations").getJSONObject(0).getString("path") == path)
+            check(!evidence.toString().contains("fixture-secret"))
+        }
+    }
+    scenario("outside-engine and traversal locations never cross automatic evidence projection") {
+        for (path in listOf("/data/user/0/com.dsh.android/files/profile/credentials.js:2", "/data/user/0/com.dsh.android/files/engine/node_modules/@deepseek-ai/dsh/lib/../secrets.js:2")) {
+            check("error_path" !in EngineFailureProjection.fields(path))
+            val fields = JSONObject().put("reason", "SyntaxError: fixture-secret\n$path")
+                .put("error_path", "engine/node_modules/@deepseek-ai/dsh/lib/../secrets.js").put("error_line", "2")
+            val evidence = RepairFailureEvidence.extract(boot, event(fields))
+            check(evidence.getJSONArray("error_locations").length() == 0)
+            check(!evidence.toString().contains("fixture-secret"))
+        }
+    }
+    scenario("malformed missing and oversized evidence remains safe") {
+        for ((state, events) in listOf(null to null, "{" to "{", boot to "[".repeat(65_537))) {
+            val result = RepairFailureEvidence.extract(state, events)
+            check(result.getBoolean("ok")); check(result.getJSONArray("error_locations").length() == 0)
+            check(!result.has("error_class"))
+        }
+        val result = RepairFailureEvidence.extract(boot, event(JSONObject().put("error_class", "UnexpectedSecretError")))
+        check(!result.has("error_class"))
+    }
+    println("passed $passed production native-policy behavior checks")
+}

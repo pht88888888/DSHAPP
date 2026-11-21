@@ -7,7 +7,7 @@ import org.json.JSONObject
 import java.nio.file.Files
 
 /** 拥有平台兼容产物及其安装状态，不参与引擎起停决定。 */
-internal class EngineCompatibilityInstaller(
+class EngineCompatibilityInstaller(
     private val assets: android.content.res.AssetManager,
     private val filesDir: File,
     private val engineDir: File,
@@ -300,11 +300,7 @@ internal class EngineCompatibilityInstaller(
     fun ensureKeyInject(): File? {
         // ⚠️ 号池改为服务端网关后，本方法**不再解出注入库**，恒返回 null。
         //
-        // 保留这个函数（而不是删掉调用点）有两个原因：
-        //   1. 调用点有三处（start / rescue / LD_PRELOAD 拼接），删函数要连带
-        //      改多处控制流，风险大于收益；
-        //   2. 老安装的 `filesDir/libkeyinject.so` 需要顺手清掉 —— 留着它虽然
-        //      不会再被 LD_PRELOAD 加载，但会让人误以为注入层还在。
+        // 清理老安装的 `filesDir/libkeyinject.so`；不再放入 LD_PRELOAD。
         //
         // 真正删掉的是：assets/keyinject.bin（不再打进 APK）、
         // app/src/main/jni/keyinject.c、tools/build-keyinject.ps1 的产物链路。

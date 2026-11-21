@@ -190,45 +190,15 @@ class SystemWebHost(
                 callbacks.onPageFinished(url)
             }
 
-            /**
-             * 渲染进程死了。
-             *
-             * ## ⚠️ 不覆写这个方法，默认行为是**杀掉整个 App**
-             *
-             * 官方文档写得很直白：`onRenderProcessGone` 的默认实现返回 `false`，
-             * 于是框架把**宿主应用的整个进程**一并终止。用户看到的就是「App 突然
-             * 自己退了」，且没有任何日志能指向真正的死因（进程都没了）。
-             *
-             * 覆写并返回 `true` = 「这个 WebView 的坏状态我认了，我自己收拾」，
-             * 框架就不会杀进程。
-             *
-             * ## 两种触发，都不是 App 的 bug
-             *
-             * - `didCrash = true`：渲染进程自己崩了（内核 bug、OOM）。
-             * - `didCrash = false`：**被系统回收**。低内存时系统会主动收掉后台
-             *   WebView 的渲染进程以省内存，这是正常的资源管理，不是错误。
-             *
-             * 两种情况下这个 WebView 都已经画不出东西了，界面必须重载才会回来
-             * （见 `MainActivity.onRendererGone`）。
-             *
-             * ⚠️ 返回 `true` 之后**必须**用 `destroy()` 或重载来收拾这个 WebView：
-             *   官方要求「不再使用它」。这里走重载 —— 同一个 `WebView` 实例在
-             *   `onRenderProcessGone` 之后重新 `loadUrl` 是可行的，内核会为它
-             *   拉起一个新的渲染进程（这正是「恢复」的实现方式）。
-             */
-            override fun onRenderProcessGone(
-                view: WebView,
-                detail: RenderProcessGoneDetail,
-            ): Boolean {
-                if (destroyed) return true
-                Log.w(
-                    Log.TAG,
-                    "WebView 渲染进程已终止（didCrash=${detail.didCrash()}，" +
-                        "rendererPriorityAtExit=${detail.rendererPriorityAtExit()}）",
-                )
-                callbacks.onRendererGone(detail.didCrash())
-                // true = 已处理，别杀我的进程（见上面的 ⚠️）
-                return true
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (!destroyed) {
+                    val crashed = detail.didCrash()
+                    Log.w(Log.TAG, "WebView 渲染进程已终止（didCrash=$crashed）")
+                    destroy()
+                    runCatching { callbacks.onRendererGone(crashed) }
+                        .onFailure { Log.w(Log.TAG, "无法上报渲染进程退出", it) }
+                }
+                return true // Android requires us to dispose the invalid view instead of reloading it.
             }
         }
 
@@ -580,6 +550,12 @@ class SystemWebHost(
                 // 授权过程会依次跳到 DeepSeek 的多个域，最后回到本地引擎完成登录。
                 // 在这里**不拦 URL**（拦了就会把授权链打断），只做跳转放行。
                 popup.webViewClient = object : WebViewClient() {
+                    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                        (view.parent as? android.view.ViewGroup)?.removeView(view)
+                        view.destroy()
+                        return true
+                    }
+
                     override fun shouldOverrideUrlLoading(
                         v: WebView,
                         request: WebResourceRequest,
@@ -702,6 +678,7 @@ class SystemWebHost(
         webView.webChromeClient = null
         webView.webViewClient = WebViewClient()
         webView.setDownloadListener(null)
+        (webView.parent as? android.view.ViewGroup)?.removeView(webView)
         webView.destroy()
     }
 

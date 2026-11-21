@@ -1,0 +1,148 @@
+package android.system
+
+import java.io.FileDescriptor
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.OpenOption
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.StandardOpenOption
+
+/** Narrow JVM OS simulation using real host files/FDs. NOT Android/SELinux validation.
+ * NOFOLLOW is checked before host opens: this fixture does not model a kernel race. */
+class ErrnoException(val functionName: String, val errno: Int) : Exception("$functionName errno=$errno")
+class StructStat(val st_mode: Int, val st_nlink: Long, val st_size: Long, val st_dev: Long, val st_ino: Long)
+class StructStatVfs(val f_frsize: Long, val f_bavail: Long)
+object OsConstants {
+    const val O_RDONLY = 0; const val O_WRONLY = 1; const val O_CREAT = 64
+    const val O_EXCL = 128; const val O_NONBLOCK = 2048; const val O_DIRECTORY = 65536
+    const val O_NOFOLLOW = 131072; const val O_CLOEXEC = 524288
+    const val ENOENT = 2; const val EACCES = 13; const val EIO = 5
+    const val ELOOP = 40; const val ENOTDIR = 20; const val EEXIST = 17
+    const val EPERM = 1; const val EOPNOTSUPP = 95; const val ENOSYS = 38; const val EINVAL = 22
+    fun S_ISDIR(mode: Int) = mode and 61440 == 16384
+    fun S_ISREG(mode: Int) = mode and 61440 == 32768
+}
+object Os {
+    data class OpenCall(val path: String, val flags: Int)
+    val opens = mutableListOf<OpenCall>()
+    val deniedAncestors = mutableSetOf<String>()
+    var deniedAttempts = 0
+    var failOperation: String? = null
+    var failAfterMatchingCalls = 0
+    var failErrno = OsConstants.EIO
+    var beforeLink: ((String) -> Unit)? = null
+    var linkCalls = 0
+    var renameCalls = 0
+    var fstatvfsCalls = 0
+    var statvfsCalls = 0
+    var requireFdSpaceQuery = false
+    var statCalls = 0
+    var fstatCalls = 0
+    val noHardlinkRoots = mutableSetOf<String>()
+    val deniedHardlinkRoots = mutableSetOf<String>()
+    var deniedHardlinkAttempts = 0
+    val ignoredChmodRoots = mutableSetOf<String>()
+    private fun below(path: String, roots: Set<String>): Boolean {
+        val actual = Path.of(path).toRealPath().toString()
+        return roots.any { actual == it || actual.startsWith(it + "/") }
+    }
+    private val channels = java.util.IdentityHashMap<FileDescriptor, FileChannel>()
+    private val fdField = FileDescriptor::class.java.getDeclaredField("fd").apply { isAccessible = true }
+    private val channelFd = Class.forName("sun.nio.ch.FileChannelImpl").getDeclaredField("fd").apply { isAccessible = true }
+    val liveDescriptors: Int get() = channels.size
+    fun number(fd: FileDescriptor) = fdField.getInt(fd)
+    private fun fault(operation: String) {
+        if (failOperation == operation) {
+            if (failAfterMatchingCalls > 0) { failAfterMatchingCalls--; return }
+            failOperation = null
+            val errno = failErrno; failErrno = OsConstants.EIO
+            throw ErrnoException(operation, errno)
+        }
+    }
+    private inline fun <T> translated(operation: String, action: () -> T): T = try { action() }
+        catch (e: ErrnoException) { throw e }
+        catch (e: java.nio.file.NoSuchFileException) { throw ErrnoException(operation, OsConstants.ENOENT) }
+        catch (e: java.nio.file.FileAlreadyExistsException) { throw ErrnoException(operation, OsConstants.EEXIST) }
+        catch (e: IOException) { throw ErrnoException(operation, OsConstants.EIO) }
+    fun open(path: String, flags: Int, mode: Int): FileDescriptor = translated("open") {
+        opens += OpenCall(path, flags)
+        fault("open")
+        val p = Path.of(path)
+        if (p.toAbsolutePath().normalize().toString() in deniedAncestors) {
+            deniedAttempts++; throw ErrnoException("open", OsConstants.EACCES)
+        }
+        if (flags and OsConstants.O_NOFOLLOW != 0 && Files.isSymbolicLink(p)) throw ErrnoException("open", OsConstants.ELOOP)
+        if (flags and OsConstants.O_DIRECTORY != 0 && !Files.isDirectory(p)) throw ErrnoException("open", OsConstants.ENOTDIR)
+        val options = mutableSetOf<OpenOption>(if (flags and OsConstants.O_WRONLY != 0) StandardOpenOption.WRITE else StandardOpenOption.READ)
+        if (flags and OsConstants.O_CREAT != 0) options += if (flags and OsConstants.O_EXCL != 0) StandardOpenOption.CREATE_NEW else StandardOpenOption.CREATE
+        // Passing NOFOLLOW to the host provider also protects the final component at open time.
+        if (flags and OsConstants.O_NOFOLLOW != 0) options += NOFOLLOW_LINKS
+        val channel = FileChannel.open(p, options)
+        val fd = channelFd.get(channel) as FileDescriptor
+        channels[fd] = channel
+        if (flags and OsConstants.O_CREAT != 0) Files.setAttribute(p, "unix:mode", mode)
+        fd
+    }
+    fun dup(fd: FileDescriptor): FileDescriptor {
+        fault("dup")
+        // Reopen the real procfd only in this test stub; production duplication uses Android PFD.
+        return open("/proc/self/fd/${number(fd)}", 0, 0)
+    }
+    fun close(fd: FileDescriptor) { channels.remove(fd)?.close() ?: error("double close/unknown FD") }
+    fun lstat(path: String): StructStat = translated("lstat") {
+        statCalls++; fault("lstat"); attributes(Path.of(path), false)
+    }
+    fun fstat(fd: FileDescriptor): StructStat = translated("fstat") {
+        fstatCalls++; fault("fstat"); attributes(Path.of("/proc/self/fd/${number(fd)}"), true)
+    }
+    private fun attributes(path: Path, follow: Boolean): StructStat {
+        val options = if (follow) emptyArray() else arrayOf(NOFOLLOW_LINKS)
+        val attrs = Files.readAttributes(path, "unix:mode,nlink,size,dev,ino", *options)
+        return StructStat(attrs["mode"] as Int, (attrs["nlink"] as Number).toLong(), (attrs["size"] as Number).toLong(),
+            (attrs["dev"] as Number).toLong(), (attrs["ino"] as Number).toLong())
+    }
+    fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, count: Int): Int {
+        fault("read"); return channels.getValue(fd).read(ByteBuffer.wrap(bytes, offset, count))
+    }
+    fun write(fd: FileDescriptor, bytes: ByteArray, offset: Int, count: Int): Int {
+        fault("write"); return channels.getValue(fd).write(ByteBuffer.wrap(bytes, offset, count))
+    }
+    fun mkdir(path: String, mode: Int) = translated("mkdir") {
+        fault("mkdir"); Files.createDirectory(Path.of(path)); Files.setAttribute(Path.of(path), "unix:mode", mode); Unit
+    }
+    fun fchmod(fd: FileDescriptor, mode: Int) { fault("fchmod"); val path = "/proc/self/fd/${number(fd)}"; if (!below(path, ignoredChmodRoots)) Files.setAttribute(Path.of(path), "unix:mode", mode) }
+    fun fsync(fd: FileDescriptor) { fault("fsync"); channels.getValue(fd).force(true) }
+    fun rename(from: String, to: String) = translated("rename") {
+        renameCalls++; fault("rename"); Files.move(Path.of(from), Path.of(to), ATOMIC_MOVE, REPLACE_EXISTING); Unit
+    }
+    fun remove(path: String) = translated("remove") { fault("remove"); Files.delete(Path.of(path)); Unit }
+    fun unlink(path: String) = translated("unlink") { fault("unlink"); Files.delete(Path.of(path)); Unit }
+    fun link(from: String, to: String) = translated("link") {
+        linkCalls++
+        beforeLink?.also { beforeLink = null; it(to) }
+        fault("link")
+        if (below(from, deniedHardlinkRoots)) {
+            deniedHardlinkAttempts++; throw ErrnoException("link", OsConstants.EACCES)
+        }
+        if (below(from, noHardlinkRoots)) throw ErrnoException("link", OsConstants.EOPNOTSUPP)
+        Files.createLink(Path.of(to), Path.of(from)); Unit
+    }
+    fun rmdir(path: String) = translated("rmdir") {
+        fault("rmdir"); check(Files.isDirectory(Path.of(path), NOFOLLOW_LINKS)); Files.delete(Path.of(path)); Unit
+    }
+    fun statvfs(path: String): StructStatVfs {
+        statvfsCalls++; fault("statvfs")
+        if (requireFdSpaceQuery) throw ErrnoException("statvfs", OsConstants.EACCES)
+        return StructStatVfs(1, Files.getFileStore(Path.of(path)).usableSpace)
+    }
+    fun fstatvfs(fd: FileDescriptor): StructStatVfs = translated("fstatvfs") {
+        fstatvfsCalls++; fault("fstatvfs")
+        check(channels.containsKey(fd)) { "fstatvfs requires a live owned descriptor" }
+        StructStatVfs(1, Files.getFileStore(Path.of("/proc/self/fd/${number(fd)}")).usableSpace)
+    }
+}

@@ -1,0 +1,11 @@
+package android.os
+class Bundle {
+    private val values = mutableMapOf<String, Any>()
+    fun putString(k: String, v: String) { values[k] = v }
+    fun getString(k: String): String? = values[k] as? String
+    fun putLong(k: String, v: Long) { values[k] = v }
+    fun getLong(k: String, default: Long = 0): Long = values[k] as? Long ?: default
+    fun putBoolean(k: String, v: Boolean) { values[k] = v }
+    fun getBoolean(k: String, default: Boolean = false) = values[k] as? Boolean ?: default
+}
+object SystemClock { var elapsed = 1000L; fun elapsedRealtime() = elapsed }

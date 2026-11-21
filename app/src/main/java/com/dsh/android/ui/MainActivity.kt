@@ -11,9 +11,8 @@ package com.dsh.android.ui
  *  按你要做的事找入口：
  *
  *    WebView 装配        setupWebView()        设置项、内核回调、JS 桥注入
- *    启动层与超时        BootOverlayPresenter  两级提示：12 秒中性、27 秒红字
- *    真首帧与展示兜底    FirstFrameAwaiter     真实首帧与超时分别记账
- *    内核恢复            WebRecoveryController 去重、退避、重试与停止
+ *    启动层与等待提示    BootOverlayPresenter  等待页面，不重启或重载
+ *    首帧交接            FirstFrameAwaiter     真实首帧后收起启动动画
  *    键盘预判            ImeLayoutController   高度学习、朝向缓存和交接
  *    页面返回            PageBackNavigation    单次探针、超时与迟到隔离
  *    系统栏帧序列        SystemBarFlashSequence 只负责帧与圈数
@@ -78,8 +77,6 @@ import com.dsh.android.log.CrashRecorder
 import com.dsh.android.log.EventLog
 import com.dsh.android.log.LogStore
 import com.dsh.android.log.LogUploader
-import com.dsh.android.log.RescueBoot
-import com.dsh.android.log.SafeDateFormat
 import com.dsh.android.web.CapabilityChannel
 import com.dsh.android.web.RuntimePermissionCapability
 import com.dsh.android.web.WebCapability
@@ -91,13 +88,12 @@ import com.dsh.android.web.WebHostCallbacks
 import com.dsh.android.web.createWebHost
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
-import java.util.Date
-import java.util.Locale
 import rikka.shizuku.Shizuku
 import com.dsh.android.bubble.BubbleA11yService
 import com.dsh.android.bubble.BubbleAppearance
@@ -131,15 +127,29 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var engine: EngineManager
+    private var repairAssistant: com.dsh.android.repair.RepairAssistantHost? = null
+    private var repairPermit: com.dsh.android.repair.RepairRuntimeGate.Permit? = null
+    private var runtimeUiInitialized = false
+    private var repairUiReady = false
+    private var repairFrameReady = false
+    private var repairReportJob: Job? = null
+    private var repairWatchdog: Job? = null
+    private val repairStopReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            if (intent?.action != com.dsh.android.repair.RepairRuntimeGate.ACTION_STOP) return
+            lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                if (::engine.isInitialized) engine.stopForRepair()
+                runOnUiThread { finishAndRemoveTask() }
+            }
+        }
+    }
+    private var repairStopRegistered = false
 
-    /**
-     * 当前 flavor 的 Web 内核宿主（system = 系统 WebView / gecko = 内置 GeckoView）。
-     *
-     * ⚠️ `lateinit` 而不是 `by lazy`：它必须在 `onCreate` 里、`setupWebView()`
-     *   之前建好（那时 `binding` 已就绪），而 `by lazy` 会在第一次访问时才建，
-     *   时序上不可控。
-     */
-    private lateinit var web: WebHost
+    /** Renderer 死亡后为空；不能在失效的 WebHost 上重载。 */
+    private var web: WebHost? = null
+    private var webOwner = 0L
+    private var webFailure: String? = null
+    private var engineBoot: Job? = null
 
     /** 资产版本戳：改了引擎内容就改这里，App 会重新解包（`-2`：engine.bin/bootstrap 经 trim-runtime-assets 裁剪）。 */
     private val assetStamp = "0.2.2-rc.5-3"
@@ -156,7 +166,7 @@ class MainActivity : AppCompatActivity() {
      *   且 `postToPage` 是 lambda，捕获的是 `this`，真正取值时才碰 `web`。
      */
     private val nativeUploader: NativeUploader by lazy {
-        NativeUploader { script -> web.evaluateJavascript(script, null) }
+        NativeUploader { script -> web?.evaluateJavascript(script, null) }
     }
 
     /**
@@ -201,7 +211,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /** 启动层超时的 handler 与 runnable（见 [armOverlayTimeout]）。 */
+    /** 启动层的页面等待提示与首帧交接。 */
     private val overlayHandler = Handler(Looper.getMainLooper())
 
     private val bootOverlay by lazy {
@@ -213,7 +223,7 @@ class MainActivity : AppCompatActivity() {
             pageError = { webError },
             render = ::renderOverlay,
             onTimeout = {
-                Log.w(DshApplication.TAG, "界面就绪回调超时（WebView 内核 $webViewMajor，页面错误: ${webError.ifEmpty { "无" }}）")
+                Log.w(DshApplication.TAG, "仍在等待界面就绪（WebView 内核 $webViewMajor）")
             },
         )
     }
@@ -246,13 +256,7 @@ class MainActivity : AppCompatActivity() {
     private val effectiveMinWebViewMajor: Int
         get() = if (engine.webViewCompatApplied) MIN_WEBVIEW_MAJOR_COMPAT else MIN_WEBVIEW_MAJOR
 
-    /**
-     * 页面侧上报的第一条脚本错误（见 `webview-polyfill.js` 的错误上报）。
-     *
-     * ⚠️ 由 `ActivityPageBridge`（WebView 的 JS 线程）写、主线程读，必须 `@Volatile`。
-     * 空串 = 页面没报过错。
-     */
-    @Volatile
+    /** 当前页面报告的第一条脚本错误；仅在主线程读写。 */
     private var webError = ""
 
     private val firstFrame by lazy {
@@ -261,167 +265,79 @@ class MainActivity : AppCompatActivity() {
                 override fun postDelayed(task: Runnable, delayMs: Long) { overlayHandler.postDelayed(task, delayMs) }
                 override fun remove(task: Runnable) { overlayHandler.removeCallbacks(task) }
             },
-            requestFrame = { done -> web.awaitFirstFrame { done() } },
-            onPainted = { Log.i(DshApplication.TAG, "Web 内核已提交首帧，收起启动动画") },
-            onFallback = {
-                Log.w(DshApplication.TAG, "等待 Web 内核首帧超时，仍收起启动动画")
-                hideOverlay()
+            requestFrame = { done -> web?.awaitFirstFrame(done) },
+            onPainted = {
+                Log.i(DshApplication.TAG, "Web 内核已提交首帧，收起启动动画")
+                if (repairUiReady && !repairFrameReady) {
+                    repairFrameReady = true
+                    reportRepairEvent("frame_ready")
+                }
+            },
+            onTimeout = {
+                reportRepairEvent("validation_failed", "first_frame_timeout")
+                if (!overlayDismissed) {
+                    Log.w(DshApplication.TAG, "仍未收到 Web 内核绘制回调")
+                    showOverlay(
+                        "尚未收到界面绘制回调",
+                        hint = "可以继续等待，或手动重载界面。",
+                        isError = true,
+                        action = BootOverlayPresenter.Action.ReloadPage,
+                    )
+                }
             },
         )
     }
 
-    private val rendererHandler = Handler(Looper.getMainLooper())
-    private val webRecovery by lazy {
-        WebRecoveryController(
-            scheduler = object : UiTaskScheduler {
-                override fun postDelayed(task: Runnable, delayMs: Long) { rendererHandler.postDelayed(task, delayMs) }
-                override fun remove(task: Runnable) { rendererHandler.removeCallbacks(task) }
-            },
-            now = System::currentTimeMillis,
-            reload = ::reloadWebHost,
-            hasFirstFrame = { firstFrame.reallyArrived },
-            onEvent = ::onWebRecoveryEvent,
-        )
-    }
-
-    /**
-     * 引擎重启后，即使 URL 与上次相同也**必须**重新加载页面。
-     *
-     * ## 为什么需要它
-     *
-     * `observeEngine` 的 `Ready` 分支用 `web.currentUrl != state.url` 做去重
-     * （避免同一次加载重复触发）。而 `currentUrl` 的语义是「最近一次**发起**的
-     * URL」—— 引擎重启后若端口与 token 都没变，两者**相等**，去重就会命中，
-     * 页面于是**不会**重新加载。
-     *
-     * 后果很严重：页面还活着，但它连的是**已经死掉的那个引擎端口**。用户看到
-     * 界面完好无损，实际每一条消息都发不出去 —— 这正是 [EngineManager.State.Dead]
-     * 要解决的那个「静默失效」，只是换了一层。
-     *
-     * 所以引擎重启这条路径必须显式声明「这次就是要强制重载」。
-     */
     private var forceReloadOnReady = false
 
-    /**
-     * 已经为「引擎意外退出」自动重启过几次。
-     *
-     * ⚠️ **必须有上界**：如果引擎一起来就死（比如某个插件配置让 node 立刻 OOM），
-     *   不加限制就变成「启动 → 死 → 再启动」的无尽循环，界面永远在闪启动层，
-     *   用户既用不了也看不出原因。超过上界后改为把问题摆出来、让用户决定
-     *   （那时「安全模式」才是合适的出口 —— 反复死亡说明配置真的有问题，
-     *   与单次死亡不同）。
-     */
-    private var engineRestarts = 0
-
-    /** 上一次引擎意外退出的时刻（见 [engineRestarts] 的归零规则）。 */
-    private var lastEngineDeadAt = 0L
-
-    /**
-     * 自动进安全模式是否正在进行（P6 的重入锁）。
-     *
-     * ⚠️ 必须有：`State.Failed` 分支**每次失败都会进**，而重解包要 15 秒 ——
-     *   这期间再来一次 Failed 会叠起第二次重解包，两次 `stop()`/`start()`
-     *   交错，最终可能两个都没起来。
-     *
-     * ⚠️ 与判据里的幂等（`tier` 被记成 SAFE_MODE 后 `== RESCUE` 不再成立）**不是
-     *   一回事**：那个防的是「下一轮启动」，这个防的是「同一轮里的并发」。
-     *   两者都要有。
-     */
-    private var autoSafeModeInFlight = false
-
-    /**
-     * 「浏览器侧插件加载失败 ⇒ 降级救援」是否正在进行（[maybeRescueFromWebFailure] 的重入锁）。
-     *
-     * ⚠️ 必须有：前端加载失败后会**重复**打印 `Failed to load plugins`（它自己会重试
-     *   拉那批合并 bundle），而每次降级都是一次 `requestRestart` —— 不判重会叠起
-     *   多次重启，两次 `stop()`/`start()` 交错，最终可能两个都没起来。
-     *
-     * ⚠️ 用 `AtomicBoolean` 而不是普通 `var`：`onConsole` 由内核在自己的线程上回调，
-     *   与主线程上的降级流程不是同一个线程。
-     */
-    private val webRescueInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    /** 卡死检测的计时那一半；判据本体在 [WebClientHealth]，状态机在 [WebClientWatchdog]。 */
-    private val webClientWatchdog by lazy {
-        WebClientWatchdog(
-            handler = rendererHandler,
-            isNormalTier = { RescueBoot.tier().tier == RescueBoot.Tier.NORMAL },
-            logI = { Log.i(DshApplication.TAG, it) },
-            logE = { Log.e(DshApplication.TAG, it) },
-        ) { delayMs, why ->
-            degradeToRescue(
-                reason = "前端 ${delayMs / 1000} 秒内没有任何健康证据（$why）",
-                eventName = "web.client-silent",
-                extra = mapOf("deadlineMs" to delayMs.toString()),
-            )
+    private fun onRendererGone(owner: Long, didCrash: Boolean) {
+        runOnUiThread {
+            if (owner != webOwner || isFinishing || isDestroyed) return@runOnUiThread
+            reportRepairEvent("validation_failed", "renderer_gone")
+            val reason = if (didCrash) "界面内核崩溃" else "界面内核已停止"
+            Log.w(DshApplication.TAG, reason)
+            CrashRecorder.recordRendererGone(didCrash, reason)
+            EventLog.record("renderer.gone", mapOf("crash" to didCrash.toString()))
+            clearWebHost()
+            showWebFailure(reason)
         }
     }
 
-    /** 内核回调可来自 Gecko 线程，恢复策略只在主线程推进。 */
-    private fun onRendererGone(didCrash: Boolean) {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            rendererHandler.post { onRendererGone(didCrash) }
-            return
-        }
-        webRecovery.rendererGone(didCrash)
+    private fun clearWebHost() {
+        webOwner++
+        val previous = web
+        web = null
+        firstFrame.reset()
+        previous?.destroy()
     }
 
-    private fun onWebRecoveryEvent(event: WebRecoveryController.Event) {
-        when (event) {
-            is WebRecoveryController.Event.RendererGone -> {
-                val reason = if (event.crashed) "崩溃" else "被系统回收"
-                Log.w(DshApplication.TAG, "界面内核$reason，准备重载（第 ${event.count} 次）")
-                CrashRecorder.recordRendererGone(event.crashed, "第 ${event.count} 次重载")
-                EventLog.record("renderer.gone", mapOf("crash" to event.crashed.toString(), "n" to event.count.toString()))
-                resetFirstFrameAwait()
-            }
-            is WebRecoveryController.Event.CrashLimitReached -> {
-                val reason = if (event.crashed) "崩溃" else "被系统回收"
-                Log.e(DshApplication.TAG, "界面内核反复$reason，停止自动重载")
-                invalidateOverlayTimeout()
-                bootOverlay.reopen()
-                showOverlay("界面反复出错",
-                    hint = "Web 内核$reason 了 ${event.count} 次，已停止自动恢复。" +
-                        "点一下这里收起提示；若界面仍然空白，请重开 App", isError = true)
-            }
-            is WebRecoveryController.Event.ReloadExhausted -> {
-                Log.e(DshApplication.TAG, "界面重载 ${event.attempts} 次仍未恢复为可用状态")
-                invalidateOverlayTimeout()
-                bootOverlay.reopen()
-                if (!degradeToRescue(
-                        reason = "界面重载 ${event.attempts} 次仍无首帧（前端起不来）",
-                        eventName = "web.frame-giveup", extra = mapOf("attempts" to event.attempts.toString()),
-                    )) {
-                    showOverlay("界面没能恢复",
-                        hint = "已自动重载 ${event.attempts} 次，Web 内核仍未提交首帧。" +
-                            "点一下这里收起提示；若界面仍然空白，请重开 App", isError = true)
-                }
-            }
+    private fun showWebFailure(reason: String) {
+        webFailure = reason
+        when (engine.state.value) {
+            is EngineManager.State.Failed, is EngineManager.State.Dead -> Unit
+            else -> showStartupFailure(reason, "请手动重试；也可以查看日志。", BootOverlayPresenter.Action.ReloadPage)
         }
     }
 
-    /** 页面菜单与 UI 探针共用入口。重试控制器不持有 WebHost 或授权 URL。 */
-    private fun requestSafeReload(): Boolean {
-        if (isFinishing || isDestroyed || !::web.isInitialized) return false
-        if (webRecovery.gaveUp) {
-            Toast.makeText(this, "界面此前反复出错，已停止自动恢复。请重开 App。", Toast.LENGTH_LONG).show()
-            return false
-        }
-        if (web.currentUrl.isNullOrEmpty()) return false
-        return webRecovery.requestReload()
-    }
-
-    /** 重置首帧 → reload → 注册新首帧，顺序不能交换。 */
-    private fun reloadWebHost(attempt: Int): Boolean {
-        if (isFinishing || isDestroyed || !::web.isInitialized || web.currentUrl.isNullOrEmpty()) return false
-        Log.i(DshApplication.TAG, "重载界面（第 $attempt 次尝试）")
-        firstFrame.reset(clearActual = true)
-        web.resetFirstFrame()
-        web.reload()
-        awaitWebViewPainted {
-            Log.i(DshApplication.TAG, "界面已恢复（第 $attempt 次尝试拿到首帧）")
-        }
+    /** 原生重载保留带凭据的初始 URL。只有用户或 UI 工具明确请求时才执行。 */
+    private fun requestWebReload(): Boolean {
+        if (isFinishing || isDestroyed || webViewTooOld) return false
+        val state = engine.state.value as? EngineManager.State.Ready ?: return false
+        val host = web ?: if (attachWebHost()) web else null
+        if (host == null) return false
+        loadEnginePage(host, state.url, reload = host.currentUrl == state.url)
         return true
+    }
+
+    private fun loadEnginePage(host: WebHost, url: String, reload: Boolean = false) {
+        firstFrame.reset()
+        bootOverlay.reopen()
+        webError = ""
+        engine.resetUiStage()
+        host.resetFirstFrame()
+        showOverlay("正在加载界面…", hint = "渲染 Web GUI")
+        bootOverlay.arm()
+        if (reload) host.reload() else host.loadUrl(url)
     }
 
     /** 页面比 insets 更早通知输入焦点；实际布局修改仍在主线程。 */
@@ -430,10 +346,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setWebViewBottomMargin(px: Int) {
-        val lp = web.view.layoutParams
+        val view = web?.view ?: return
+        val lp = view.layoutParams
         if (lp is ViewGroup.MarginLayoutParams && lp.bottomMargin != px) {
             lp.bottomMargin = px
-            web.view.layoutParams = lp
+            view.layoutParams = lp
         }
     }
 
@@ -446,19 +363,111 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.action == com.dsh.android.repair.RepairRuntimeGate.ACTION_UI) {
+            setContentView(android.widget.TextView(this).apply { text = "正在核验本次维修验证许可…"; setPadding(32, 64, 32, 32) })
+            val task = intent.getStringExtra(com.dsh.android.repair.RepairRuntimeGate.EXTRA_TASK).orEmpty()
+            val attempt = intent.getStringExtra(com.dsh.android.repair.RepairRuntimeGate.EXTRA_ATTEMPT).orEmpty()
+            lifecycleScope.launch {
+                val permit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.dsh.android.repair.RepairRuntimeGate.acquire(this@MainActivity, "ui", task, attempt)?.takeIf {
+                        (application as DshApplication).ensureRuntimeInitialized(it)
+                    }
+                }
+                if (isFinishing || isDestroyed) return@launch
+                if (permit == null) { showRepairFence(); return@launch }
+                repairPermit = permit
+                initializeMainUi()
+                repairWatchdog = lifecycleScope.launch {
+                    while (!isFinishing && !isDestroyed && repairPermit == permit) {
+                        kotlinx.coroutines.delay(1000)
+                        val valid = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.dsh.android.repair.RepairRuntimeGate.valid(this@MainActivity, permit)
+                        }
+                        if (!valid) {
+                            if (!com.dsh.android.repair.RepairRuntimeGate.blocked(this@MainActivity)) {
+                                completeRepairHandoff(permit)
+                                break
+                            }
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                engine.stopForRepair()
+                                com.dsh.android.repair.RepairRuntimeGate.report(this@MainActivity, permit, "validation_failed", "permit_expired")
+                            }
+                            clearWebHost(); showRepairFence(); break
+                        }
+                    }
+                }
+            }
+            return
+        }
+        if (com.dsh.android.repair.RepairRuntimeGate.blocked(this)) { showRepairFence(); return }
+        if (!(application as DshApplication).ensureNormalRuntimeInitialized()) { showRepairFence(); return }
+        initializeMainUi()
+    }
+
+    private fun showRepairFence() {
+        setContentView(android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL; setPadding(32, 64, 32, 32)
+            addView(android.widget.TextView(this@MainActivity).apply {
+                text = "原 DSH 正在维修中。修复完成后点「重启并验证」即可正常启动原 DSH，检查是否已经恢复。"
+            })
+            addView(android.widget.Button(this@MainActivity).apply { text = "返回修复助手"; setOnClickListener {
+                runCatching { packageManager.getLaunchIntentForPackage("com.dsh.fixhelp")?.let(::startActivity) }
+                finishAndRemoveTask()
+            } })
+            addView(android.widget.Button(this@MainActivity).apply { text = "重启并验证"; setOnClickListener {
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent().setClassName(packageName, "com.dsh.android.repair.RepairAuthorizationActivity")
+                    .putExtra(com.dsh.android.repair.RepairAuthorizationActivity.EXTRA_RESTART, true), 0x5248)
+            } })
+            addView(android.widget.Button(this@MainActivity).apply { text = "关闭"; setOnClickListener { finishAndRemoveTask() } })
+        })
+    }
+
+    private fun initializeMainUi() {
+        if (runtimeUiInitialized) return
+        runtimeUiInitialized = true
+        repairUiReady = false; repairFrameReady = false
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         engine = EngineManager.get(this)
+        engine.resetUiStage()
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(repairStopReceiver, android.content.IntentFilter(com.dsh.android.repair.RepairRuntimeGate.ACTION_STOP),
+                com.dsh.android.repair.contract.RepairProtocol.permission(packageName), null, android.content.Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(repairStopReceiver, android.content.IntentFilter(com.dsh.android.repair.RepairRuntimeGate.ACTION_STOP),
+                com.dsh.android.repair.contract.RepairProtocol.permission(packageName), null)
+        }
+        repairStopRegistered = true
+        repairAssistant = com.dsh.android.repair.RepairAssistantHost.create(this)
         imeLayout.load()
 
-        // 失败浮层上的唯一出路。⚠️ Button 是 clickable 的子 View，点击不会冒泡到
-        // overlay 自己的监听器（那个只负责"点一下收起浮层"），两者不冲突。
-        binding.overlaySafeMode.setOnClickListener { enterSafeMode() }
+        binding.overlayRetry.setOnClickListener {
+            when (bootOverlay.state?.action) {
+                BootOverlayPresenter.Action.RetryEngine -> bootEngine()
+                BootOverlayPresenter.Action.ReloadPage -> {
+                    if (!requestWebReload()) {
+                        Toast.makeText(this, R.string.overlay_reload_unavailable, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                null -> Unit
+            }
+        }
+        binding.overlayShowPage.setOnClickListener { hideOverlay() }
         // 启动层上的日志入口 —— **任何状态都可用**（见布局里的说明）。
         // ⚠️ 同样要拦冒泡：不拦的话点它会先触发 overlay 自己的「点一下收起浮层」，
         //   于是启动层被收掉、白屏露出来，而日志界面还没打开。
         binding.overlayLogs.setOnClickListener { openLogViewer("overlay") }
+        binding.overlayRepair.setOnClickListener {
+            repairAssistant?.let { it.open(); return@setOnClickListener }
+            @Suppress("DEPRECATION")
+            startActivityForResult(
+                Intent().setClassName(packageName, com.dsh.android.repair.contract.RepairProtocol.AUTH_ACTIVITY),
+                0,
+            )
+        }
 
         // 导出 / 导入数据 —— 与「查看日志」同一套兜底理由，但更要紧：
         // 引擎挂了、Web GUI 打不开时，设置页进不去，而卸载重装会清掉整个
@@ -486,14 +495,7 @@ class MainActivity : AppCompatActivity() {
         //   那条路径已验证可用，不需要这个兜底。
         //   注：`openAiBrowser()` 本身**保留** —— 侧栏插件经 `PageBridge` 调它。
 
-        // 降级态常驻横幅（不变量 I4）。**入口必须在 onCreate 就装好**，不能等到
-        // 引擎就绪 —— 救援态恰恰可能在引擎起来之前用户就想退出（比如他确信
-        // 自己刚卸载了那个坏插件，想直接回正常模式试一次）。
-        binding.rescueBannerExit.setOnClickListener { exitDegradedMode() }
-        binding.rescueBannerDetail.setOnClickListener { showDegradedDetail() }
-
-        setupWebView()
-        detectWebViewVersion()
+        attachWebHost()
         setupBackNavigation()
         installBubbleBridge()
         installUiProbeBridge()
@@ -509,15 +511,17 @@ class MainActivity : AppCompatActivity() {
         observeImeInsets()   // 键盘高度自学习 + 预判交接
         // 前台服务要在引擎启动前拉起：它同时是「进程不被回收」和 WakeLock 的持有者，
         // 晚一步的话，引擎刚起就切后台仍可能被系统盯上。
-        EngineService.start(this)
-        ensureBatteryExempt()
-        ensureStorageAccess()
-        setupShizukuPermissionListener()
+        if (repairPermit == null) {
+            EngineService.start(this)
+            ensureBatteryExempt()
+            ensureStorageAccess()
+            setupShizukuPermissionListener()
+        }
         // 清一次历史截图：`ShotStore.prune` 只在**写新图时**触发，所以升级前
         // 已经攒下来的那批不会自己消失 —— 而它们正是最占地方的（老版本没有
         // 任何上限，有人可能已经攒了几十上百张全屏 PNG）。
         // 放后台线程：`listFiles` + 删几个文件不该占启动路径。
-        Thread {
+        if (repairPermit == null) Thread {
             runCatching {
                 com.dsh.android.browser.ShotStore.prune(
                     java.io.File(workspaceDir(), ".browser-shots"),
@@ -781,7 +785,7 @@ class MainActivity : AppCompatActivity() {
      * ⚠️ 读不到版本时**不做拦截**（`webViewMajor = 0`）：宁可维持原行为，
      *   也不能因为一次读取失败就把本来能用的设备挡在门外。
      */
-    private fun detectWebViewVersion() {
+    private fun detectWebViewVersion(web: WebHost) {
         // ⚠️ gecko flavor 里读到的是打进 APK 的 GeckoView 版本（编译期确定），
         //   那里永远不可能「内核过旧」——版本拦截分支不会触发，这正是内置内核要解决的问题本身。
         webViewMajor = web.engineMajor
@@ -800,16 +804,29 @@ class MainActivity : AppCompatActivity() {
      * 都在 [WebHost] 的实现里；这里只负责把它挂到容器上，并把**与内核无关**的
      * 宿主行为（DOM 就绪上报、外链交给系统、控制台转发到同一个 TAG）接起来。
      */
+    private fun attachWebHost(): Boolean = try {
+        setupWebView()
+        webFailure = null
+        true
+    } catch (e: RuntimeException) {
+        clearWebHost()
+        Log.e(DshApplication.TAG, "无法创建界面内核", e)
+        showWebFailure("无法创建界面内核")
+        false
+    }
+
     private fun setupWebView() {
-        web = createWebHost(
+        val owner = ++webOwner
+        val host = createWebHost(
             this,
             WebHostCallbacks(
                 bridge = NativePageBridgeDispatcher(
-                    activity = ActivityPageBridge(),
+                    activity = ActivityPageBridge(owner),
                     bubble = BubblePageBridge(applicationContext),
                     privilege = PrivilegePageBridge(applicationContext) { engine.rootToolMounted },
                 ),
-                onPageFinished = { url ->
+                onPageFinished = pageFinished@{ url ->
+                    if (owner != webOwner || web == null) return@pageFinished
                     Log.i(DshApplication.TAG, "Web 界面加载完成: $url")
                     // ⚠️ 记下「本次启动成功出过界面」。下一次启动靠它区分
                     //   「启动即崩」与「用了一阵才离开」—— 后者（返回键退到后台、
@@ -842,25 +859,7 @@ class MainActivity : AppCompatActivity() {
                     //   真机 72/74 个包的 `app.log` 里混着这类重复行。
                     //   落盘已由 `LogStore.web` 负责，这里只要 logcat，所以用全限定名。
                     android.util.Log.i(DshApplication.TAG, "[web] $line")
-                    // ⚠️ **第四种故障形态：引擎健康，但浏览器侧有一个插件的
-                    //   client 半加载不了。** 真机现场（OPPO PHY110）：用户在写
-                    //   插件的过程中退出 App，留下的半成品 client.js 里有一个多余
-                    //   的 `)`，于是**整批合并 bundle 解析失败** —— 一个坏段让
-                    //   `Failed to load plugins` 整页顶掉 GUI，用户进不去对话。
-                    //
-                    // ⚠️ 引擎那条路径（[RescueBoot.parseGatewayFailure]）**盖不到
-                    //   这一种**：它的判据是引擎 stdout 里的
-                    //   `typert contributor(s) failed to register`，而这次的引擎
-                    //   一切正常（`dsh-gateway-ui: 已激活`、供应商也注册上了），
-                    //   坏的是发给浏览器的 JS。所以判据必须落在浏览器 console 上。
-                    //
-                    // ⚠️ 判据用**前端自己打印的那句话**，与其它三处同一原则：
-                    //   `Failed to load plugins` 只在 client 半加载失败时出现。
-                    //   `import failed` / `did not activate` 单独都不够 ——
-                    //   `did not activate` 在正常告警里也会出现。
-                    maybeRescueFromWebFailure(line)
-                    // ⚠️ 兜底错误码的**真实原因**必须让用户在手机上看见。
-                    //   见 [surfaceWebErrorReason] 的注释。
+                    // 保留诊断，不把控制台文本用作重载或重启条件。
                     surfaceWebErrorReason(line)
                 },
                 onExternalUrl = { url ->
@@ -891,9 +890,8 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     }
                 },
-                // ⚠️ 必须接：不接的话 WebView 的默认实现会**直接杀掉本 App 进程**
-                //（见 WebHostCallbacks.onRendererGone 的说明）。
-                onRendererGone = { didCrash -> onRendererGone(didCrash) },
+                // WebHost 先释放已失效的 renderer，此回调仅撤销宿主引用并展示故障。
+                onRendererGone = { didCrash -> onRendererGone(owner, didCrash) },
                 // ⚠️ 必须接：不接的话两个内核的默认实现都是**拒绝麦克风**，
                 //   页面的语音输入永远报「权限被拒绝」（见 MicrophoneChannel）。
                 capability = RuntimePermissionCapability(this) { perm, cb -> requestRuntimePermission(perm, cb) },
@@ -963,8 +961,10 @@ class MainActivity : AppCompatActivity() {
                 },
             ),
         )
+        web = host
+        detectWebViewVersion(host)
         binding.webContainer.addView(
-            web.view,
+            host.view,
             ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1259,10 +1259,10 @@ class MainActivity : AppCompatActivity() {
         browserPane.state.visible && aiBrowser?.visibility == View.VISIBLE && aiBrowserQuiet
 
     private fun notifyBrowserPane(visible: Boolean, userClosed: Boolean = false) {
-        if (!::web.isInitialized) return
+        val host = web ?: return
         val script = "window.dispatchEvent(new CustomEvent('dsh:browser-state'," +
             "{detail:{visible:$visible,userClosed:$userClosed}}))"
-        runCatching { web.evaluateJavascript(script, null) }
+        runCatching { host.evaluateJavascript(script, null) }
             .onFailure { Log.w(DshApplication.TAG, "通知侧栏面板失败: ${it.message}") }
     }
 
@@ -1319,9 +1319,9 @@ class MainActivity : AppCompatActivity() {
 
     /** 通知前端：标注结果可取。 */
     private fun notifyAnnotateReady() {
-        if (!::web.isInitialized) return
+        val host = web ?: return
         val script = "window.dispatchEvent(new CustomEvent('dsh:browser-annotate'))"
-        runCatching { web.evaluateJavascript(script, null) }
+        runCatching { host.evaluateJavascript(script, null) }
             .onFailure { Log.w(DshApplication.TAG, "通知标注结果失败: ${it.message}") }
     }
 
@@ -1344,9 +1344,9 @@ class MainActivity : AppCompatActivity() {
      *   所以这里不等待、不回读结果。
      */
     private fun requestBrowserPane() {
-        if (!::web.isInitialized) return
+        val host = web ?: return
         val script = "window.dispatchEvent(new CustomEvent('dsh:browser-reveal'))"
-        runCatching { web.evaluateJavascript(script, null) }
+        runCatching { host.evaluateJavascript(script, null) }
             .onFailure { Log.w(DshApplication.TAG, "请求展开侧栏失败: ${it.message}") }
     }
 
@@ -1545,7 +1545,7 @@ class MainActivity : AppCompatActivity() {
                 override fun postDelayed(task: Runnable, delayMs: Long) { backHandler.postDelayed(task, delayMs) }
                 override fun remove(task: Runnable) { backHandler.removeCallbacks(task) }
             },
-            query = { done -> web.evaluateJavascript(BACK_PROBE_JS, done) },
+            query = { done -> web?.evaluateJavascript(BACK_PROBE_JS, done) ?: done(null) },
             onUnhandled = { timedOut ->
                 if (timedOut) Log.w(DshApplication.TAG, "返回键探针超时（页面未响应），按无可退层级处理")
                 else Log.i(DshApplication.TAG, "返回键：页面已无可退层级，退到后台（不结束进程）")
@@ -1625,7 +1625,7 @@ class MainActivity : AppCompatActivity() {
      *   通知交给 `EngineService.updateStatus()`（内部只走 NotificationManager），
      *   底色则 `runOnUiThread` 切回主线程再设。gecko 版由 [WebHost] 统一切主线程。
      */
-    private inner class ActivityPageBridge : ActivityPageBridgeActions {
+    private inner class ActivityPageBridge(private val owner: Long) : ActivityPageBridgeActions {
         override fun onStatus(json: String) {
             val status = EngineStatus.parse(json) ?: return
             EngineService.updateStatus(this@MainActivity, status)
@@ -1658,28 +1658,28 @@ class MainActivity : AppCompatActivity() {
          * 这是启动动画该收尾的信号：`onPageFinished` 只代表 DOM 到了，实测之后
          * 还有约 1.7 秒的插件激活期（前端要解析 5.5MB 的 client.js 并挂载）。
          *
-         * ⚠️ 运行在 WebView 的 JS 线程；`notifyUiReady` 只推一个 StateFlow，
-         *   真正的收起动作由 `lifecycleScope` 在主线程做。
+         * 系统 WebView 的桥可从 JS 线程进入，切回主线程再检查宿主代际。
          */
         override fun onUiReady() {
-            Log.i(DshApplication.TAG, "插件已激活（onUiReady）")
-            engine.notifyUiReady()
+            runOnUiThread {
+                if (owner != webOwner || web == null || engine.state.value !is EngineManager.State.Ready) return@runOnUiThread
+                Log.i(DshApplication.TAG, "插件已激活（onUiReady）")
+                engine.notifyUiReady()
+                if (!repairUiReady) { repairUiReady = true; reportRepairEvent("ui_ready") }
+            }
         }
 
         /**
          * 页面侧脚本错误上报（见 `webview-polyfill.js`）。
          *
-         * 这类失败原本在设备上完全无声：页面起不来，但宿主收不到任何回调，
-         * 只能靠 12 秒兜底超时收掉启动层，露给用户一片白屏。
-         * 有了它，启动层就能把**真实原因**摆出来（见 `BootOverlayPresenter`）。
-         *
-         * ⚠️ 运行在 WebView 的 JS 线程，只写一个 volatile 字段，不碰 View。
-         * ⚠️ 只记第一条：启动失败时后续错误多半是连锁反应。
+         * 只记录当前宿主的第一条错误。等待逾期时可显示它，但不据此推断启动失败。
          */
         override fun reportWebError(message: String) {
-            if (webError.isNotEmpty()) return
-            webError = message
-            Log.w(DshApplication.TAG, "页面脚本错误: $message")
+            runOnUiThread {
+                if (owner != webOwner || web == null || webError.isNotEmpty()) return@runOnUiThread
+                webError = message
+                Log.w(DshApplication.TAG, "页面脚本错误: $message")
+            }
         }
 
         /**
@@ -1715,15 +1715,11 @@ class MainActivity : AppCompatActivity() {
          *   正确做法是重载 `lastLoadedUrl`（带 token 的原始地址），
          *   即 [com.dsh.android.web.WebHost.reload]。
          *
-         * ⚠️ 走 [WebRecoveryController] 而不是直接 `web.reload()`：这条链路已经带上了
-         *   「重置首帧记忆 → 重载 → 等新首帧 → 失败再试一次」的完整判据
-         *   （见 [WebHost.resetFirstFrame] 的 KDoc）。绕过它会让「刷新后白屏」
-         *   重新变成不可观测的静默失败。
-         * ⚠️ 运行在 WebView 的 JS 线程上，必须切主线程 —— `reload()` 会碰 View。
+         * ⚠️ 运行在 WebView 的 JS 线程上，必须切主线程。
          */
         override fun reloadWebUi() {
-            Log.i(DshApplication.TAG, "页面菜单请求刷新界面（安全重载）")
-            runOnUiThread { requestSafeReload() }
+            Log.i(DshApplication.TAG, "页面菜单请求刷新界面")
+            runOnUiThread { if (owner == webOwner) requestWebReload() }
         }
 
         // ══ 悬浮气泡：设置页的三个接口 ══════════════════════════════════
@@ -1855,8 +1851,8 @@ class MainActivity : AppCompatActivity() {
             val themeBg = rect.optString("bg", "")
 
             runOnUiThread {
-                if (!::web.isInitialized) return@runOnUiThread
-                val webView = web.view
+                if (owner != webOwner) return@runOnUiThread
+                val webView = web?.view ?: return@runOnUiThread
                 if (webView.width <= 0 || webView.height <= 0) return@runOnUiThread
 
                 val scale = webView.width / vw
@@ -2191,7 +2187,7 @@ class MainActivity : AppCompatActivity() {
             Log.w(DshApplication.TAG, "忽略非法页面底色: $bg")
             return
         }
-        web.view.setBackgroundColor(color)
+        web?.view?.setBackgroundColor(color)
         // 根容器一起改：覆盖层隐藏与 Web 视图首次绘制之间露出的就是它
         binding.root.setBackgroundColor(color)
         // 窗口底色也跟上：DecorView 与 WebView 是两层独立的合成，窗口缩小时
@@ -2421,7 +2417,7 @@ class MainActivity : AppCompatActivity() {
         val cssPx = if (fullscreen) Math.round(statusBarHeightPx() / density) else 0
         val js = "(function(){try{document.documentElement.style.setProperty(" +
             "'--dsh-android-system-top','${cssPx}px');}catch(e){}})()"
-        web.evaluateJavascript(js, null)
+        web?.evaluateJavascript(js, null)
         Log.i(DshApplication.TAG, "页面让位变量 --dsh-android-system-top = ${cssPx}px（CSS 像素）")
     }
 
@@ -2575,255 +2571,130 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             engine.state.collect { state ->
                 when (state) {
-                    is EngineManager.State.Idle -> {
-                        showOverlay("准备中…", hint = "正在初始化本地环境")
-                    }
-                    is EngineManager.State.Extracting -> {
-                        // 首次启动唯一有真实百分比的一段（实测约 15.5s）
-                        showOverlay(
-                            "首次启动，正在解包引擎 ${state.percent}%",
-                            hint = "只需这一次，之后启动会快很多",
-                            progress = state.percent / 100f,
-                        )
-                    }
-                    is EngineManager.State.Starting -> {
-                        showOverlay("正在启动引擎…", hint = "加载 Node 运行时与本地服务")
-                    }
+                    EngineManager.State.Idle -> showBootProgress("准备中…", "正在初始化本地环境")
+                    is EngineManager.State.Extracting -> showBootProgress(
+                        "首次启动，正在解包引擎 ${state.percent}%",
+                        "只需这一次，之后启动会快很多",
+                        state.percent / 100f,
+                    )
+                    EngineManager.State.Starting -> showBootProgress("正在启动引擎…", "加载 Node 运行时与本地服务")
                     is EngineManager.State.Ready -> {
-                        // 门槛在这里才定：引擎就绪 ⇒ ensureWebViewCompat() 已经跑过，
-                        // 降级到底生效了没有此时才准（见 effectiveMinWebViewMajor）。
-                        val minMajor = effectiveMinWebViewMajor
-                        webViewTooOld = webViewMajor in 1 until minMajor
-                        if (webViewTooOld) {
-                            Log.w(
-                                DshApplication.TAG,
-                                "WebView 内核 $webViewMajor < 门槛 $minMajor" +
-                                    "（降级前端${if (engine.webViewCompatApplied) "已" else "未"}生效），" +
-                                    "前端无法解析，跳过加载",
-                            )
-                            showOverlay(
-                                "系统 WebView 内核过旧",
-                                hint = "当前内核 $webViewMajor，需要 $minMajor+；" +
-                                    "请在应用商店更新「Android System WebView」后重开 App",
-                                isError = true,
-                            )
+                        reportRepairEvent("engine_ready")
+                        val host = web
+                        if (host == null) {
+                            showWebFailure(webFailure ?: "界面内核不可用")
                             return@collect
                         }
-                        if (webViewMajor in 1 until MIN_WEBVIEW_MAJOR) {
-                            Log.i(
-                                DshApplication.TAG,
-                                "WebView 内核 $webViewMajor 低于官方门槛 $MIN_WEBVIEW_MAJOR，" +
-                                    "但降级前端已生效，继续加载",
-                            )
-                        }
-                        // ⚠️ 这里**不能**收起 overlay：引擎就绪只代表 HTTP 服务起来了，
-                        //   页面还没加载、插件更没激活。实测后面还有约 3.8 秒。
-                        showOverlay("正在加载界面…", hint = "渲染 Web GUI")
-                        // ⚠️ 引擎**重启**过时必须无视 URL 去重（见
-                        //   `forceReloadOnReady` 的说明）：端口与 token 没变时
-                        //   URL 相等，而页面连的其实是已经死掉的旧端口。
-                        if (forceReloadOnReady || web.currentUrl != state.url) {
+                        if (!checkWebViewVersion()) return@collect
+                        if (forceReloadOnReady || host.currentUrl != state.url) {
                             forceReloadOnReady = false
-                            Log.i(DshApplication.TAG, "加载 Web GUI: ${state.url}")
-                            web.loadUrl(state.url)
-                            // ⚠️ 计时必须**从这一刻**起算，不能放在 onCreate。
-                            //   引擎启动本身要 7~10 秒（首次还要先解包 15 秒），
-                            //   从 onCreate 起算会让兜底在引擎还没起来时就触发，
-                            //   把启动层提前收掉 —— 真机实测踩到过（超时 8s 触发于
-                            //   引擎就绪前 2.5s）。这里只兜「页面加载 + 插件激活」，
-                            //   实测共约 3.8 秒。
-                            armOverlayTimeout()
+                            loadEnginePage(host, state.url)
                         }
                     }
                     is EngineManager.State.Failed -> {
-                        showOverlay(
-                            "引擎启动失败",
-                            hint = state.message,
-                            isError = true,
-                        )
-                        // ── P6：连续失败够多次、且 L1/L2 都已试过 ⇒ 自动进安全模式 ──
-                        //
-                        // ⚠️ 判据全在 [EngineManager.shouldAutoEnterSafeMode] 里
-                        //   （见它的 KDoc：三个条件、为什么门槛这么高）。这里只负责
-                        //   「判据成立就执行」，不重复判断条件 —— 两处各写一份判据
-                        //   迟早漂开，而症状会是「自动触发了但理由是错的」。
-                        //
-                        // ⚠️ 这个分支会被**重复进入**（每次失败都发一次 Failed），
-                        //   所以必须有幂等保护：进安全模式会把 `tier` 记成 SAFE_MODE，
-                        //   而判据要求 `tier == RESCUE` ⇒ 第二次进来就自动关上了。
-                        //   再加一个本地的 in-flight 标记防重入（重解包要 15 秒，
-                        //   这期间再来一次 Failed 会叠起两次重解包）。
-                        if (!autoSafeModeInFlight && engine.shouldAutoEnterSafeMode()) {
-                            autoSafeModeInFlight = true
-                            autoEnterSafeMode()
-                        }
+                        reportRepairEvent("validation_failed", "engine_start_failed")
+                        showStartupFailure("引擎启动失败", state.message, BootOverlayPresenter.Action.RetryEngine)
                     }
                     is EngineManager.State.Dead -> {
-                        // ⚠️ 与 Failed **刻意不同的动作**：引擎本来跑得好好的、
-                        //   之后被系统回收或自己 OOM 了，配置是**好的** —— 原样重启
-                        //   就是正确动作，绝不该引导用户去点「安全模式」（那会推开
-                        //   他辛苦配好的插件配置）。
-                        //
-                        // 见 `EngineManager.State.Dead` 的 KDoc。
-                        //
-                        // ⚠️ 计数只统计**短时间内连续**的死亡（见 ENGINE_RESTART_WINDOW_MS）：
-                        //   一次长期运行之后的死亡（比如跑了一天被系统回收）是**正常的**，
-                        //   把它算进「反复退出」会让用户无端看到「引擎反复停止」。
-                        val now = System.currentTimeMillis()
-                        if (now - lastEngineDeadAt > ENGINE_RESTART_WINDOW_MS) engineRestarts = 0
-                        lastEngineDeadAt = now
-                        engineRestarts++
-                        Log.w(
-                            DshApplication.TAG,
-                            "引擎已退出: ${state.message}，准备自动重启（第 $engineRestarts 次）",
-                        )
-                        // ⚠️ 反复死亡 ⇒ 配置真的有问题，不能再静默重启（见
-                        //   `engineRestarts` 的说明）。此时「安全模式」才是正确出口。
-                        if (engineRestarts > MAX_ENGINE_RESTARTS) {
-                            Log.e(DshApplication.TAG, "引擎反复退出，停止自动重启")
-                            invalidateOverlayTimeout()
-                            // ⚠️ **同 [onRendererGone] 的 gaveUp 分支**：这是终态，
-                            //   刚贴上的「引擎反复停止」是**错误提示**，而在飞的
-                            //   [FirstFrameAwaiter] 到点会 `hideOverlay()` 把它收走，
-                            //   用户只看到一闪。[invalidateOverlayTimeout] 管的是另一个
-                            //   计时器（`BootOverlayPresenter`），管不到这一个。
-                            resetFirstFrameAwait()
-                            bootOverlay.reopen()
-                            showOverlay(
-                                "引擎反复停止",
-                                hint = "${state.message}（已自动重启 $MAX_ENGINE_RESTARTS 次）。" +
-                                    "可点下面的「安全模式」推开损坏的插件配置",
-                                isError = true,
-                            )
-                            return@collect
-                        }
-                        // ⚠️ 先放开「已收起」守卫，否则提示贴不上（界面早就收起过
-                        //   启动层了）。
-                        //
-                        // ⚠️ **同时作废上一轮遗留的「界面就绪」计时器。** 放开守卫
-                        //   等于让上一轮的计时器重新变得能开火 —— 而它描述的是
-                        //   **上一次**加载（往往早就成功了），到点会对着刚启动的
-                        //   新页面报「界面就绪回调超时」。真机上就是这样盖住了一次
-                        //   正常的启动过程（完整证据见 [BootOverlayPresenter] 的 KDoc）。
-                        invalidateOverlayTimeout()
-                        bootOverlay.reopen()
-                        showOverlay("引擎已停止，正在重新启动…", hint = state.message)
-                        // ⚠️ 页面此刻是**活的**，但它连的是已经没人监听的端口 ——
-                        //   必须等引擎起来后重新加载，否则界面永远连不上。
-                        // ⚠️ 清掉 firstFrame 让新一轮的「等首帧」重新生效。
-                        //   还要撤销在飞的「首帧兜底超时」—— 它到点会执行
-                        //   `hideOverlay()`，把刚贴上的「引擎已停止，正在重新启动…」
-                        //   这个**提示**（不是启动动画）收走，用户只看到一闪。
-                        //   下面那句 `invalidateOverlayTimeout()` 只管
-                        //   `BootOverlayPresenter`，管不到这一个 —— 两个计时器
-                        //   都要作废，所以走同一个入口 [resetFirstFrameAwait]。
-                        resetFirstFrameAwait()
-                        // ⚠️ 还要把页面阶段退回 None：否则 `uiStage` 停在 UiReady，
-                        //   而 StateFlow 相同值不重复发射 ⇒ 新一轮的「等首帧再收
-                        //   启动层」分支一次都跑不到 ⇒ 启动层永远收不起来。
-                        engine.resetUiStage()
-                        // ⚠️ 还要声明「这次必须重新加载」：端口与 token 没变时
-                        //   URL 与上次相等，去重会命中，页面就不会重新加载 ——
-                        //   而它连的是已经死掉的旧端口。
-                        forceReloadOnReady = true
-                        lifecycleScope.launch {
-                            try {
-                                engine.start()
-                                // 同 bootEngine()：`start()` 内部可能刚降级，
-                                // 重启完要重新刷横幅，否则显示的层级是旧的。
-                                refreshRescueBanner()
-                            } catch (c: CancellationException) {
-                                // 同 bootEngine()：Activity 被销毁时 lifecycleScope 取消，
-                                // 这不是启动失败，别记成错误、也别弹遮罩。
-                                throw c
-                            } catch (t: Throwable) {
-                                Log.e(DshApplication.TAG, "引擎自动重启失败", t)
-                                showOverlay("引擎重启失败", hint = t.message, isError = true)
-                            }
-                        }
+                        reportRepairEvent("validation_failed", "engine_stopped")
+                        showStartupFailure("引擎已停止", state.message, BootOverlayPresenter.Action.RetryEngine)
                     }
+                    is EngineManager.State.RestartRequested -> bootEngine()
                 }
             }
         }
-        // 页面阶段：引擎就绪之后还有两段，宿主原本完全感知不到
         lifecycleScope.launch {
             engine.uiStage.collect { stage ->
+                if (engine.state.value !is EngineManager.State.Ready || web?.currentUrl.isNullOrEmpty() || webViewTooOld) return@collect
                 when (stage) {
-                    is EngineManager.UiStage.None -> Unit
-                    is EngineManager.UiStage.PageLoaded -> {
-                        // 实测 onPageFinished 之后还有约 1.7s 插件激活期
-                        showOverlay("正在准备界面…", hint = "激活移动端适配插件")
-                        // 待判窗口从**页面 load 完成**起算（没 load 完属 [WebRecoveryController]）；
-                        // 这是不用任何文案判据的卡死检测，见 [WebClientWatchdog]。
-                        webClientWatchdog.reset()
-                        webClientWatchdog.arm(
-                            delayMs = WebClientHealth.CLIENT_DEADLINE_MS,
-                            why = "页面 load 后没有任何健康证据",
-                        )
+                    EngineManager.UiStage.None -> Unit
+                    EngineManager.UiStage.PageLoaded -> {
+                        if (bootOverlay.state?.isError != true) {
+                            showOverlay("正在准备界面…", hint = "激活移动端适配插件")
+                        }
                     }
-                    is EngineManager.UiStage.UiReady -> {
-                        // ⚠️ 这里**不能**撤销待判窗口：`UiReady` 只证明「插件活着」。
-                        //   真机把插件 client.js 加个 `)))` 后它照报 onUiReady，而页面
-                        //   始终停在启动页（`锚点=0`）。健康证据只认结构锚点 ≥ 1。
-                        // ⚠️ 这里**不能**直接收起 —— DOM 就绪 ≠ 像素上屏。
-                        //
-                        // 真机实测（CDP `Page.startScreencast` 抓 WebView 内部帧）：
-                        //   DOM 变成真实 UI   t=2154ms（body.innerText 已是"探索未至之境"）
-                        //   屏幕真的画出 UI   t≈541s 附近，比 DOM 晚了约 1.6 秒
-                        //   而旧代码在 onUiReady 里立刻收起 → 那一秒多里屏幕上是空的/启动页
-                        //
-                        // 所以必须等 WebView **把这一帧真正提交**再收。
-                        // `postVisualStateCallback` 正是这个语义：回调触发时，
-                        // 这一帧已经可以显示在屏幕上了。
-                        awaitWebViewPainted { hideOverlay() }
+                    EngineManager.UiStage.UiReady -> {
+                        // DOM 就绪不是像素上屏；继续等待内核提供真正的首帧。
+                        bootOverlay.invalidate()
+                        firstFrame.await(::hideOverlay)
                     }
                 }
             }
         }
     }
 
-    private fun bootEngine() {
-        lifecycleScope.launch {
-            try {
-                engine.ensureExtracted(assetStamp)
-                // ⚠️ **启动前先刷一次**：救援/隔离态是**上次**留下的，界面一起来就该
-                //   让用户看到（不能等到引擎就绪 —— 救援态恰恰可能起得很慢）。
-                refreshRescueBanner()
-                engine.start()
-                // ⚠️ **启动后再刷一次**：`start()` 内部可能刚刚发生降级（L1 二分没
-                //   收敛时会把层级改成 RESCUE，见 EngineManager.maybeIsolateBadBundles），
-                //   只刷一次的话横幅会停在旧层级上。
-                refreshRescueBanner()
-            } catch (c: CancellationException) {
-                // ⚠️ **协程取消不是异常，必须原样抛出去。**
-                //
-                // `lifecycleScope` 绑在 Activity 生命周期上：用户退出、转屏、被系统回收
-                // 时这个作用域会被 cancel，正在 `start()` 里挂起的这一刻就抛
-                // `JobCancellationException: Job was cancelled; job=SupervisorJobImpl{Cancelling}@…`。
-                //
-                // 原先这里只有 `catch (t: Throwable)`，于是把「正常取消」记成
-                // `[E] 引擎启动异常` 并 `showOverlay(..., isError = true)` ——
-                // 明明是我方主动停的，日志里却是一行错误，用户还可能瞥见一块
-                // 转瞬即逝的红色错误遮罩。
-                // 真机证据：`20261013-233625-59822e09.zip` 的 app.log，
-                // `#109 main 引擎启动异常` + `JobCancellationException`，
-                // 紧接着 `#111` 引擎自己正常输出 `1 entry did not activate` ——
-                // 引擎根本没死，是界面自己走了。
-                //
-                // 吞掉取消异常还有个更隐蔽的后果：Kotlin 协程靠异常传播来标记
-                // 取消状态，吞了它会让「这个协程已被取消」这件事在语义上丢失。
-                throw c
-            } catch (t: Throwable) {
-                Log.e(DshApplication.TAG, "引擎启动异常", t)
-                showOverlay("引擎启动异常", hint = t.message, isError = true)
+    private fun checkWebViewVersion(): Boolean {
+        val minMajor = effectiveMinWebViewMajor
+        webViewTooOld = webViewMajor in 1 until minMajor
+        if (webViewTooOld) {
+            reportRepairEvent("validation_failed", "webview_too_old")
+            Log.w(DshApplication.TAG, "WebView 内核 $webViewMajor < 门槛 $minMajor，跳过加载")
+            showStartupFailure(
+                "系统 WebView 内核过旧",
+                "当前内核 $webViewMajor，需要 $minMajor+；请在应用商店更新「Android System WebView」后重开 App",
+            )
+        }
+        return !webViewTooOld
+    }
+
+    private fun showBootProgress(text: String, hint: String, progress: Float? = null) {
+        if (webFailure == null) showOverlay(text, hint, progress)
+    }
+
+    /** UI-thread, idempotent handoff after coordinator completed the task; no permission prompts/imports. */
+    private fun completeRepairHandoff(permit: com.dsh.android.repair.RepairRuntimeGate.Permit) {
+        if (repairPermit != permit || com.dsh.android.repair.RepairRuntimeGate.blocked(this)) return
+        com.dsh.android.repair.RepairRuntimeGate.clear(permit)
+        repairPermit = null
+        repairWatchdog?.cancel()
+        EngineService.start(this)
+    }
+
+    private fun reportRepairEvent(event: String, error: String = "") {
+        val permit = repairPermit ?: return
+        val previous = repairReportJob
+        repairReportJob = lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            previous?.join()
+            if (!com.dsh.android.repair.RepairRuntimeGate.report(this@MainActivity, permit, event, error)) {
+                if (!com.dsh.android.repair.RepairRuntimeGate.blocked(this@MainActivity)) {
+                    runOnUiThread { completeRepairHandoff(permit) }
+                    return@launch
+                }
+                engine.stopForRepair()
+                runOnUiThread { if (!isFinishing && !isDestroyed) { clearWebHost(); showRepairFence() } }
             }
         }
     }
 
-    /** 内核 resetFirstFrame 必须紧挨 reload/loadUrl，由调用点保持顺序。 */
-    private fun resetFirstFrameAwait() = firstFrame.reset()
+    /** 只由首次进入、用户手动重试或明确的引擎重启请求调用。 */
+    private fun bootEngine() {
+        if (engineBoot?.isActive == true || isFinishing || isDestroyed) return
+        if (engine.state.value !is EngineManager.State.Ready) {
+            forceReloadOnReady = true
+            firstFrame.reset()
+            bootOverlay.reopen()
+            showBootProgress("正在启动引擎…", "加载 Node 运行时与本地服务")
+        }
+        engineBoot = lifecycleScope.launch {
+            try {
+                val allowed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.dsh.android.repair.RepairRuntimeGate.canRun(this@MainActivity) }
+                if (!allowed) { showRepairFence(); return@launch }
+                if (!engine.ensureExtracted(assetStamp)) return@launch
+                engine.start()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Exception) {
+                Log.e(DshApplication.TAG, "引擎启动异常", t)
+                showStartupFailure("引擎启动异常", t.message, BootOverlayPresenter.Action.RetryEngine)
+            }
+        }
+    }
 
-    private fun awaitWebViewPainted(action: () -> Unit) = firstFrame.await(action)
+    private fun showStartupFailure(text: String, hint: String?, action: BootOverlayPresenter.Action? = null) {
+        firstFrame.reset()
+        bootOverlay.reopen()
+        showOverlay(text, hint, isError = true, action = action)
+    }
 
     /**
      * 显示启动层并更新文案。
@@ -2838,8 +2709,9 @@ class MainActivity : AppCompatActivity() {
         hint: String? = null,
         progress: Float? = null,
         isError: Boolean = false,
+        action: BootOverlayPresenter.Action? = null,
     ) {
-        bootOverlay.show(BootOverlayPresenter.State(text, hint, progress, isError))
+        bootOverlay.show(BootOverlayPresenter.State(text, hint, progress, isError, action))
     }
 
     private fun renderOverlay(state: BootOverlayPresenter.State) {
@@ -2850,71 +2722,18 @@ class MainActivity : AppCompatActivity() {
             binding.overlay.visibility = View.VISIBLE
         }
         binding.overlayText.text = text
-        // 只有**错误态**才给点击出口：正常启动期不给 —— 那时界面还没渲染好，
-        // 让用户误点一下就把启动层收掉，只会提前露出白屏。
-        // 错误态下界面已经确认起不来，点一下至少能让人自己看看（或按返回退出）。
-        binding.overlay.setOnClickListener(if (isError) View.OnClickListener { hideOverlay() } else null)
         binding.overlayText.setTextColor(
             if (isError) Color.parseColor("#FF8A8A") else Color.parseColor("#8FA3C0")
         )
         binding.overlayHint.text = hint.orEmpty()
         binding.overlayHint.visibility = if (hint.isNullOrBlank()) View.GONE else View.VISIBLE
-        // 安全模式入口只在失败态给：正常启动期界面马上就出来了，多一个按钮只会
-        // 诱人误点（而它的代价是重解包 15 秒 + 推开插件配置）。
-        binding.overlaySafeMode.visibility = if (isError) View.VISIBLE else View.GONE
+        binding.overlayRetry.visibility = if (state.action != null) View.VISIBLE else View.GONE
+        binding.overlayRetry.setText(if (state.action == BootOverlayPresenter.Action.ReloadPage) R.string.overlay_reload else R.string.overlay_retry)
+        // 就绪回调缺席并非已证实白屏。只在文件确已加载时允许用户自行查看页面。
+        binding.overlayShowPage.visibility = if (state.action == BootOverlayPresenter.Action.ReloadPage &&
+            web != null && engine.uiStage.value != EngineManager.UiStage.None
+        ) View.VISIBLE else View.GONE
         binding.bootAnim.setProgress(if (isError) -1f else (progress ?: -1f))
-    }
-
-    /**
-     * P6：**自动**进入安全模式（方案 §4.5）。
-     *
-     * 与用户点击的 [enterSafeMode] 做**同一件事**（同样的推开配置 + 重解包 +
-     * 重启），差别只在文案与「谁触发的」这个事实 —— 那件事由
-     * [EngineManager.shouldAutoEnterSafeMode] 打 `[rescue-auto]` 标记记进日志。
-     *
-     * ## 为什么文案必须和用户点的那条不一样
-     *
-     * 用户点的时候他知道自己在做什么；自动触发时他**什么都没点**，界面却突然
-     * 说「正在进入安全模式…」，如果不解释原因，他会以为 App 坏了。
-     * 所以文案里必须写清「连续 N 次没能起来，所以自动推开了插件配置」。
-     *
-     * ⚠️ 必须把「用户的插件配置被推开了」讲出来，而不是含糊地说「正在修复」——
-     *   这是**破坏性**动作（虽然不删东西，但插件全部失效），用户有权当场知道。
-     */
-    private fun autoEnterSafeMode() {
-        binding.overlaySafeMode.isEnabled = false
-        invalidateOverlayTimeout()
-        // ⚠️ **这一轮之后要重新加载界面，首帧等待必须重新武装。** 见
-        //   [resetFirstFrameAwait]。少这一步就退化成「新页面 DOM 一就绪就收启动层」，
-        //   中间那段白屏（实测约 1.6 秒）又回来了 —— 正是 [awaitWebViewPainted]
-        //   存在要解决的那个问题。
-        resetFirstFrameAwait()
-        bootOverlay.reopen()
-        showOverlay(
-            "连续多次没能启动，正在自动进入安全模式…",
-            hint = "已自动推开可能损坏的插件配置并重新解包引擎（约 15 秒）。" +
-                "你的会话、凭据、工作区都不会丢；被推开的配置都改名保留着。",
-        )
-        lifecycleScope.launch {
-            try {
-                val changed = engine.enterSafeMode()
-                Log.i(DshApplication.TAG, "[rescue-auto] 安全模式：改动=$changed，重启引擎")
-                // 同 [enterSafeMode]：必须补一次重解包，否则这次 start() 之前的
-                // ensureExtracted 已经跑过去了，引擎还是用旧的坏目录起来。
-                engine.ensureExtracted(assetStamp)
-                engine.start()
-            } catch (c: CancellationException) {
-                throw c
-            } catch (t: Throwable) {
-                Log.e(DshApplication.TAG, "[rescue-auto] 安全模式启动失败", t)
-                binding.overlaySafeMode.isEnabled = true
-                showOverlay("安全模式启动失败", hint = t.message, isError = true)
-            } finally {
-                // 放开重入锁：`enterSafeMode` 已把层级记成 SAFE_MODE，判据此后
-                // 不会再成立，所以这里放开是安全的（不会导致反复触发）。
-                autoSafeModeInFlight = false
-            }
-        }
     }
 
     /**
@@ -3008,381 +2827,6 @@ class MainActivity : AppCompatActivity() {
     private var lastWebErrorAt: Long = 0L
 
     /**
-     * 浏览器侧插件加载失败 ⇒ 自动降级到救援模式（不加载任何第三方插件）。
-     *
-     * 这是第四种故障形态，前三处判据（stdout `startup failed`、`typert contributor(s)
-     * failed to register`、已降级仍失败）都盖不到：引擎**完全健康**，坏的是前端那半。
-     *
-     * 真机现场（OPPO PHY110，用户「做插件做到一半退出 App」）：引擎日志一切正常
-     * （`dsh-gateway-ui: 已激活`、`已注册供应商 wb-gateway`），但前端整页变成
-     * `Failed to load plugins` —— 一个插件的 `client.js` 里多了一个 `)`，而前端把
-     * 所有插件的 client 半**合并成一批**下发，一个坏段让整批解析失败。
-     * 救援 profile 不含任何第三方 bundle（见 [EngineManager.ensureRescueProfile]），
-     * 所以界面能正常渲染、用户进得去对话，正好让 AI 把插件修好。
-     *
-     * ⚠️ 三条守卫缺一不可：① 只推一次（[webRescueInFlight]，前端会重复打印这句话）；
-     * ② 只在 NORMAL 态推（否则横幅 `since` 每启动一次就跳一次）；③ `rescueAvailable`
-     * 为 false 时不推（profile 建不出来，推过去下次启动直接失败）。
-     * 推完**不设 Ready**、状态打 [EngineManager.State.Dead] 而非 `Failed` —— `Failed`
-     * 会把用户引向破坏性的「安全模式」按钮，而这里只需换个 profile 重启。
-     */
-    private fun maybeRescueFromWebFailure(line: String) {
-        // ⚠️ 判据全部在 [WebClientHealth]（2026-11-12 重写）：不再 grep 官方启动页
-        //   文案 `HARNESS` —— 那是「polls=1 的快照」而不是当前状态，正常启动也会带上
-        //   （真机 15:13:55 因此把健康启动降级成救援态），而用户一旦换掉启动动画 /
-        //   主题 / 加载文案，真正的卡死反而永远检测不到。事故全过程与替代判据见
-        //   `WebClientHealth` 的类注释与 `docs/agents/rescue-mode.md`。
-        //
-        //   三类事实：明确失败 ⇒ 立刻降级；健康证据（结构锚点 ≥1 最硬）⇒ 撤销待判；
-        //   超时（[WebClientHealth.CLIENT_DEADLINE_MS] 内一条健康证据都没有）⇒ 到期降级。
-        when (WebClientHealth.classify(line)) {
-            WebClientHealth.Verdict.EXPLICIT_FAILURE -> degradeToRescue(
-                reason = "浏览器侧插件加载失败（前端明确报错）",
-                eventName = "web.plugin-load-failed",
-                extra = mapOf("line" to line.take(200)),
-            )
-
-            WebClientHealth.Verdict.GAVE_UP -> {
-                // 插件自己说「等了 9 秒仍然没看到可用界面」。这**不等于**坏了
-                // （实测有 readyState 卡在 interactive 而界面可用的机型），
-                // 所以只把待判窗口缩短，到期仍无健康证据才降级。
-                Log.w(DshApplication.TAG, "[web-rescue] 插件自报超时兜底，缩短待判窗口: ${line.take(160)}")
-                webClientWatchdog.arm(
-                    delayMs = WebClientHealth.GAVE_UP_GRACE_MS,
-                    why = "插件自报超时兜底后仍无健康证据",
-                )
-            }
-
-            WebClientHealth.Verdict.HEALTHY -> webClientWatchdog.disarm("收到健康证据: ${line.take(120)}")
-
-            WebClientHealth.Verdict.NONE -> Unit
-        }
-    }
-
-    /**
-     * 把界面切到救援模式并重启引擎。**两个入口共用**：
-     *
-     * ① [maybeRescueFromWebFailure] —— 前端 console 自报 / 整批 `/plugins/??` 失败；
-     * ② [WebRecoveryController] 耗尽 —— 重载若干次仍拿不到首帧（前端根本没渲染出来）。
-     *
-     * ② 是 ① 的**兜底**：① 依赖前端把话说出来，而前端整个挂掉时它说不了话。
-     * 两条路都判「引擎是好的、坏的是 client 半」，处置完全相同 —— 所以只留一份实现，
-     * 免得两条路的守卫（判重/层级/可用性）各写一遍、日后改一处漏一处。
-     *
-     * ## 为什么救援模式能解决它
-     *
-     * 救援 profile **不含任何第三方 bundle**（见 [EngineManager.ensureRescueProfile]），
-     * 所以那批合并 bundle 里根本不会有坏段 ⇒ 界面正常渲染 ⇒ 用户进得去对话，
-     * 而对话里正好可以让 AI 把插件修好（这正是用户要的）。
-     *
-     * ## ⚠️ 三条守卫，缺一不可
-     *
-     * ① **只推一次**（[webRescueInFlight]）：前端会**重复**打印那句话（重试加载），
-     *    不判重会叠起多次重启。
-     * ② **只在 NORMAL 态推**：已是 RESCUE 还推没有意义，且会把横幅的 `since`
-     *    刷成每次启动的时刻。
-     * ③ **`rescueAvailable == false` 时不推**：那个 profile 建不出来，推过去
-     *    下次启动直接失败。
-     *
-     * ⚠️ 推完**不设 Ready**、状态打 [EngineManager.State.Dead] 而不是 `Failed` ——
-     *   `Failed` 会把用户引向**破坏性**的「安全模式」按钮（推开配置 + 重解包 15 秒），
-     *   而这里引擎是好的，只需要换个 profile 重启。与 `EngineManager` 里
-     *   gateway 那条降级路径的取舍完全一致。
-     *
-     * @return true = 已经推下降级（调用方不要再贴自己的失败提示，否则会把这轮
-     *   「正在进入救援模式…」的层顶掉）。
-     */
-    private fun degradeToRescue(
-        reason: String,
-        eventName: String,
-        extra: Map<String, String>,
-    ): Boolean {
-        // ① 判重
-        if (!webRescueInFlight.compareAndSet(false, true)) return false
-        // ② 只在 NORMAL 态推
-        val tierNow = RescueBoot.tier().tier
-        if (tierNow != RescueBoot.Tier.NORMAL) {
-            Log.w(DshApplication.TAG, "[web-rescue] $reason，但层级已是 ${tierNow.id}，不再降级")
-            return false
-        }
-        // ③ 救援 profile 必须可用
-        val engine = EngineManager.get(this)
-        if (!engine.rescueAvailable) {
-            Log.w(DshApplication.TAG, "[web-rescue] $reason，但救援 profile 不可用，无法降级")
-            webRescueInFlight.set(false)
-            return false
-        }
-
-        Log.e(
-            DshApplication.TAG,
-            "[web-rescue] $reason（引擎健康，坏的是 client 半）—— 降级到救援模式并重启界面",
-        )
-        EventLog.record(eventName, extra)
-
-        lifecycleScope.launch {
-            try {
-                showOverlay(
-                    "有插件加载不了，正在进入救援模式…",
-                    hint = "本次启动不加载任何第三方插件，界面马上就能用。" +
-                        "你的会话、凭据、工作区都不会丢。",
-                )
-                // ⚠️ 先武装首帧等待 + 清「已收起」标记：这一轮之后要重新加载界面，
-                //   同 [autoEnterSafeMode] 的两条论证。
-                resetFirstFrameAwait()
-                bootOverlay.reopen()
-                RescueBoot.setTier(RescueBoot.Tier.RESCUE, reason)
-                refreshRescueBanner()
-                engine.requestRestart("$reason，切救援模式")
-            } catch (c: CancellationException) {
-                throw c
-            } catch (t: Throwable) {
-                Log.e(DshApplication.TAG, "[web-rescue] 降级失败", t)
-                webRescueInFlight.set(false)
-                showOverlay("进入救援模式失败", hint = t.message, isError = true)
-            }
-        }
-        return true
-    }
-
-    /**
-     * 用户点了失败浮层上的「安全模式」：推开模型改坏的配置，然后重启引擎。
-     *
-     * 这是**唯一**不靠卸载重装的出路 —— 见 [EngineManager.enterSafeMode] 的 KDoc。
-     * 按钮要先禁掉：重解包要 15 秒，这期间用户再点几下会叠起多次重启。
-     */
-    private fun enterSafeMode() {
-        binding.overlaySafeMode.isEnabled = false
-        // ⚠️ 顺序：先作废旧计时器、清掉"已收起"标记，再 showOverlay —— 后者在
-        //   overlayDismissed 为真时会直接返回（那是防动画闪回的守卫），提示文案
-        //   就贴不上去了。作废计时器是同一件事的另一半：这次也要重新加载界面。
-        invalidateOverlayTimeout()
-        // ⚠️ 同 [autoEnterSafeMode]：这一轮之后要重新加载界面，首帧等待必须重新武装。
-        resetFirstFrameAwait()
-        bootOverlay.reopen()
-        showOverlay(
-            "正在进入安全模式…",
-            hint = "推开损坏的插件配置并重新解包引擎（约 15 秒）",
-        )
-        lifecycleScope.launch {
-            try {
-                val changed = engine.enterSafeMode()
-                Log.i(DshApplication.TAG, "安全模式：改动=$changed，重启引擎")
-                // ⚠️ 必须重新解包：enterSafeMode 删掉了版本戳，而这次 start() 之前的
-                //   ensureExtracted 已经跑过去了（在 bootEngine 里），不补一次的话
-                //   引擎还是用旧的坏目录起来。
-                engine.ensureExtracted(assetStamp)
-                engine.start()
-            } catch (c: CancellationException) {
-                // 同 bootEngine()：用户点完「安全模式」就退出/转屏时，
-                // 这次取消不是「安全模式启动失败」。
-                throw c
-            } catch (t: Throwable) {
-                Log.e(DshApplication.TAG, "安全模式启动失败", t)
-                binding.overlaySafeMode.isEnabled = true
-                showOverlay("安全模式启动失败", hint = t.message, isError = true)
-            }
-        }
-    }
-
-    /**
-     * 刷新降级态常驻横幅（方案 §4.4.5，不变量 I4）。
-     *
-     * ## 为什么单独抽一个函数、而不是写进 `showOverlay`
-     *
-     * 两者的生命周期**不同**：overlay 是启动期的，会淡出；横幅要在用户整个使用
-     * 过程里一直在（救援态下用户还要让 AI 慢慢修，可能十分钟）。挂在 overlay
-     * 上等于「只在打不开时提示」，而用户最需要知道的恰恰是打开之后的事。
-     *
-     * ## 三个层级的文案
-     *
-     * 文案必须说清**两件事**：发生了什么、以及**现在能做什么**。只说
-     * "已进入救援模式"而不说"让 AI 帮你修"，用户就只看到一个坏消息。
-     *
-     * ⚠️ 正常态一律 `gone`（不占一个像素）。
-     */
-    private fun refreshRescueBanner() {
-        val st = RescueBoot.tier()
-        val banner = binding.rescueBanner
-        if (st.tier == RescueBoot.Tier.NORMAL) {
-            banner.visibility = View.GONE
-            return
-        }
-        val when_ = RescueBoot.stateSinceText()?.let { "（$it 起）" }.orEmpty()
-        // ⚠️ 把「gateway 下线」这一种单独说出来。它和「起不来」是**两回事**：
-        //   引擎起来了、界面也加载了（用户看得见），但会话/模型列表/目录选择全废。
-        //   若横幅仍说「上次启动没能起来」，用户会对着一堆打不开的功能想：
-        //   「不是起来了吗？」—— 正是本项目缺陷族「结论与它描述的对象不符」。
-        val gw = RescueBoot.lastFailure()?.gatewayCulprit
-        val gatewayLine = if (gw != null) {
-            "\n启动时 typert gateway 整体下线（插件 " + (gw.ifEmpty { "（包名未解析到）" }) +
-                " 注册不上），会话、模型列表与目录选择都不可用。"
-        } else {
-            ""
-        }
-        val text = when (st.tier) {
-            RescueBoot.Tier.RESCUE ->
-                // ⚠️ 原因不同说法必须不同：反馈 `dbee25` 的截图里原因是「界面重载 2 次仍无
-                //   首帧（前端起不来）」，横幅却说「引擎没能正常启动」—— 用户被引去查引擎。
-                "⚠️ 救援模式$when_\n" +
-                    (if (st.reason.contains("首帧") || st.reason.contains("界面"))
-                        "引擎是好的，是界面没能渲染出来（插件前端加载失败），"
-                    else "引擎没能正常启动，或启动后 typert gateway 整体下线，") +
-                    "已用最小配置启动（你的插件配置没被删）。$gatewayLine\n" +
-                    "AI 可以帮你找出并修好那个插件 —— 直接问它就行。"
-            RescueBoot.Tier.ISOLATED ->
-                "⚠️ 已隔离可疑插件$when_\n" +
-                    "启动时发现 ${st.removedBundles.size} 个插件会让引擎起不来，已把它们改名隔离" +
-                    "（没有删除），其余插件照常工作。\n" +
-                    "想让 AI 复查或恢复，直接问它就行。"
-            RescueBoot.Tier.QUARANTINED ->
-                "⚠️ 已隔离坏插件$when_\n" +
-                    "启动时定位到 ${st.quarantinedNames.size} 个插件会让引擎起不来，" +
-                    "已用官方 patch 把它们禁用（文件一个没删、其余插件照常）。\n" +
-                    "想让 AI 复查或放回来，直接问它就行。"
-            RescueBoot.Tier.SAFE_MODE ->
-                "⚠️ 安全模式$when_\n" +
-                    "已推开全部第三方插件配置并重新解包引擎。"
-            RescueBoot.Tier.NORMAL -> return
-        }
-        binding.rescueBannerText.text = text
-        banner.visibility = View.VISIBLE
-    }
-
-    /**
-     * 用户点了横幅上的「退出并重试」：把层级复位成 NORMAL 然后重启引擎。
-     *
-     * ⚠️ **不删任何东西**（I5）。它只改 `rescue/state.json` 里的层级，于是下次
-     *   启动走正常 profile。用户原来的插件配置如果被 L1 摘过，恢复它走的是
-     *   `.bak-l1`（见 [showDegradedDetail] 的说明），那是**另一个显式动作** ——
-     *   不能顺手做掉，否则用户点一次"退出"就同时丢掉了隔离结论，AI 再也查不到
-     *   是哪个插件坏。
-     */
-    private fun exitDegradedMode() {
-        val st = RescueBoot.tier()
-        if (st.tier == RescueBoot.Tier.NORMAL) {
-            refreshRescueBanner()
-            return
-        }
-        Log.i(DshApplication.TAG, "用户请求退出降级态（当前 ${st.tier.id}）")
-        RescueBoot.setTier(RescueBoot.Tier.NORMAL, "用户点了横幅上的「退出并重试」")
-        engine.requestRestart("用户请求退出降级态")
-    }
-
-    /**
-     * 用户点了横幅上的「上次为什么失败」：把失败详情摆出来。
-     *
-     * 用 `AlertDialog` 而不是浮层：这时界面是**正常可用**的，弹一个全屏浮层会把
-     * 整个 GUI 盖掉（用户在救援态里正要用 AI 修，最不需要的就是界面被抢）。
-     */
-    private fun showDegradedDetail() {
-        val st = RescueBoot.tier()
-        val f = RescueBoot.lastFailure()
-        val sb = StringBuilder()
-        sb.append("当前层级：").append(st.tier.label).append('\n')
-        RescueBoot.stateSinceText()?.let { sb.append("自 ").append(it).append('\n') }
-        if (st.reason.isNotBlank()) sb.append("原因：").append(st.reason).append('\n')
-        if (st.removedBundles.isNotEmpty()) {
-            sb.append("\n已隔离的插件（").append(st.removedBundles.size).append(" 个）：\n")
-            st.removedBundles.forEach { sb.append("  · ").append(it).append('\n') }
-        }
-        if (st.quarantinedNames.isNotEmpty()) {
-            sb.append("\n已定向禁用的插件条目（").append(st.quarantinedNames.size).append(" 个）：\n")
-            st.quarantinedNames.forEach { sb.append("  · ").append(it).append('\n') }
-            sb.append("  （靠 quarantine.patch.yml 的 disabled: true 生效，")
-                .append("文件一个没删）\n")
-        }
-        st.restorePoint?.let {
-            sb.append("\n原始配置备份：").append(it)
-            sb.append("（想让 AI 恢复就告诉它这个路径）").append('\n')
-        }
-        if (f == null) {
-            val byWeb = st.reason.contains("首帧") || st.reason.contains("界面")
-            sb.append(if (byWeb) "\n（界面没能渲染，引擎本身是好的）" else "\n（没有记录到启动失败详情）")
-        } else {
-            // ⚠️ 标题按事实分岔，不写死「启动失败」：`gatewayCulprit` 非空表示
-            //   这一次引擎**起来了**（只是 gateway 废了），说「启动失败」是错的。
-            val gatewayOnly = f.gatewayCulprit != null && (f.requiredDidNotActivate ?: 0) <= 0
-            sb.append(if (gatewayOnly) "\n上次启动（引擎已就绪，但 gateway 下线）：\n" else "\n上次启动失败：\n")
-            sb.append("  时间：").append(
-                SafeDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(f.at)),
-            ).append('\n')
-            sb.append("  bootId：").append(f.bootId).append('\n')
-            sb.append("  连续失败：").append(f.consecutiveFailures).append(" 次\n")
-            f.gatewayCulprit?.let {
-                // ⚠️ 措辞必须带「如果为空 = 没解析到」，不能只说「注册不上的插件：」
-                //   后面跟一片空白 —— 那会被读成「插件名就是空的」。
-                sb.append("  ⚠️ typert gateway 整体下线，注册不上的插件：")
-                    .append(it.ifEmpty { "（引擎报了这句话，但包名没解析出来）" })
-                    .append('\n')
-                sb.append("     （会话、模型列表、目录选择都会报 " +
-                    "「its strict definition was withdrawn」）\n")
-            }
-            f.requiredDidNotActivate?.let {
-                sb.append("  引擎报「未激活的必需插件」：").append(it).append(" 个\n")
-            }
-            f.failedCountMismatch?.let {
-                sb.append("  ⚠️ 引擎报的失败数与实际列出条数不一致：").append(it).append('\n')
-            }
-            if (f.failedPlugins.isNotEmpty()) {
-                sb.append("  引擎列出的失败插件（").append(f.failedPlugins.size).append(" 个，").append(
-                    "⚠️ 这是引擎列出的，**不一定是元凶** —— 元凶常常不在这个名单里）\n",
-                )
-            }
-        }
-        sb.append("\n想修的话，直接问 AI：把上面这些告诉它就行。")
-        runOnUiThread {
-            val builder = androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("启动失败详情")
-                .setMessage(sb.toString())
-                .setPositiveButton("知道了", null)
-            // ⚠️ 「放回来」必须是**独立按钮 + 二次确认**，不能并进「知道了」：
-            //   它会让用户**回到那个打不开的状态**，是一个可能把人再坑一次的
-            //   动作。现有的「退出并重试」刻意不删任何东西（I5），这里同理 ——
-            //   动作与后果都要显式。
-            if (st.quarantinedNames.isNotEmpty()) {
-                builder.setNeutralButton("放回被禁用的插件") { _, _ ->
-                    confirmRestoreQuarantine(st.quarantinedNames.size)
-                }
-            }
-            builder.show()
-        }
-    }
-
-    /**
-     * 二次确认后清空定向隔离列表并重启（把插件**放回来**）。
-     *
-     * ⚠️ 这是唯一一个「会让用户回到坏状态」的动作，所以：
-     *   ① 必须二次确认，且文案要说清**后果**（可能又打不开）；
-     *   ② 只清 `quarantinedNames`，**不动** `removedBundles` 与 `.bak-l1`
-     *      —— 那是 L1 另一条路径的产物，混在一起清会让两种隔离的恢复语义混淆。
-     *   ③ 层级同时回 NORMAL，否则 `maybeIsolateBadBundles` 的闸门①会把
-     *      下一次启动挡在 QUARANTINED 里。
-     */
-    private fun confirmRestoreQuarantine(count: Int) {
-        runOnUiThread {
-            androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("放回 $count 个被禁用的插件？")
-                .setMessage(
-                    "放回后它们会重新加载。如果其中一个正是导致 App 打不开的那个，" +
-                        "下次启动可能又会失败（届时会自动重新禁用，但需要再等一轮）。\n\n" +
-                        "建议先让 AI 看过日志、确认插件已修好再放回。",
-                )
-                .setPositiveButton("确认放回") { _, _ ->
-                    RescueBoot.clearQuarantine()
-                    RescueBoot.setTier(
-                        RescueBoot.Tier.NORMAL,
-                        "用户显式放回被禁用的插件",
-                    )
-                    Log.i(DshApplication.TAG, "用户放回被禁用的插件（$count 个），重启引擎")
-                    engine.requestRestart("用户放回被禁用的插件")
-                    refreshRescueBanner()
-                }
-                .setNegativeButton("取消", null)
-                .show()
-        }
-    }
-
-    /**
      * 淡出并收起启动层。
      *
      * ⚠️ 必须淡出，不能直接 `GONE`：这一层是不透明的，硬切会让「深色启动页 →
@@ -3444,11 +2888,6 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
-    private fun armOverlayTimeout() = bootOverlay.arm()
-
-    /** 页面切换或进入终态时作废上一轮等待。 */
-    private fun invalidateOverlayTimeout() = bootOverlay.invalidate()
-
     // ══ 悬浮气泡：注入通道 ══════════════════════════════════════════════
     //
     // 气泡里的输入框是**原生 EditText**，而真正的会话输入框是页面里的 Lexical
@@ -3464,10 +2903,10 @@ class MainActivity : AppCompatActivity() {
     private val bubblePanelActions: BubblePanelActions by lazy {
         object : BubblePanelActions {
             override fun sendText(text: String): Boolean =
-                !isFinishing && !isDestroyed && ::web.isInitialized && sendToComposer(text)
+                !isFinishing && !isDestroyed && sendToComposer(text)
 
             override fun stopRun(): Boolean =
-                !isFinishing && !isDestroyed && ::web.isInitialized && stopComposerRun()
+                !isFinishing && !isDestroyed && stopComposerRun()
 
             override fun openApp() {
                 runOnUiThread {
@@ -3512,13 +2951,13 @@ class MainActivity : AppCompatActivity() {
             assets = assets,
             provider = {
                 // provider 与宿主操作均由 UiProbeBridge 在主线程按代际调用。
-                if (isFinishing || isDestroyed || !::web.isInitialized) null else object : UiProbeBridge.UiProbeHost {
+                if (isFinishing || isDestroyed || web == null) null else object : UiProbeBridge.UiProbeHost {
                     override fun evaluateJavascript(script: String, callback: ((String?) -> Unit)?) {
-                        web.evaluateJavascript(script, callback)
+                        web?.evaluateJavascript(script, callback) ?: callback?.invoke(null)
                     }
 
                     override fun screenGeometry(): UiProbeBridge.ScreenGeometry? {
-                        val view = if (::web.isInitialized) web.view else return null
+                        val view = web?.view ?: return null
                         if (view.width <= 0 || view.height <= 0) return null
                         val loc = IntArray(2)
                         view.getLocationOnScreen(loc)
@@ -3536,7 +2975,7 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
 
-                    override fun reload(): Boolean = requestSafeReload()
+                    override fun reload(): Boolean = requestWebReload()
                 }
             },
         )
@@ -3640,9 +3079,10 @@ class MainActivity : AppCompatActivity() {
      * 同步点按钮会点到 disabled 的那个，表现为"文字进去了但没发出去"。
      */
     private fun sendToComposer(text: String): Boolean {
+        val host = web ?: return false
         val quoted = JSONObject.quote(text)
 
-        web.evaluateJavascript(BUBBLE_INSERT_JS.replace(BUBBLE_TEXT_SLOT, quoted)) { result ->
+        host.evaluateJavascript(BUBBLE_INSERT_JS.replace(BUBBLE_TEXT_SLOT, quoted)) { result ->
             Log.i(DshApplication.TAG, "气泡注入结果: $result")
             // ⚠️ 找不到 composer 时必须让用户知道。静默失败的话，气泡会把输入框
             //   清空、看起来"发出去了"，而 App 里其实一个字都没进去。
@@ -3652,7 +3092,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         bubbleHandler.postDelayed({
-            web.evaluateJavascript(BUBBLE_SEND_JS) { result ->
+            if (web !== host) return@postDelayed
+            host.evaluateJavascript(BUBBLE_SEND_JS) { result ->
                 Log.i(DshApplication.TAG, "气泡发送结果: $result")
             }
         }, BUBBLE_SEND_DELAY_MS)
@@ -3669,7 +3110,8 @@ class MainActivity : AppCompatActivity() {
      * 页面侧会先验主按钮此刻是不是「停止生成」—— 不是就拒绝，避免把草稿误发出去。
      */
     private fun stopComposerRun(): Boolean {
-        web.evaluateJavascript(BUBBLE_STOP_JS) { result ->
+        val host = web ?: return false
+        host.evaluateJavascript(BUBBLE_STOP_JS) { result ->
             Log.i(DshApplication.TAG, "气泡停止结果: $result")
             if (result != null && result.contains("NOT_RUNNING")) {
                 Toast.makeText(this, "AI 当前没在运行", Toast.LENGTH_SHORT).show()
@@ -3678,7 +3120,24 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    @Deprecated("Native rescue authorization and one-use change approval")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (repairAssistant?.onActivityResult(requestCode, resultCode, data) != true) {
+            super.onActivityResult(requestCode, resultCode, data)
+        }
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        repairAssistant?.onUserInteraction()
+    }
+
     override fun onDestroy() {
+        repairWatchdog?.cancel()
+        if (repairStopRegistered) { runCatching { unregisterReceiver(repairStopReceiver) }; repairStopRegistered = false }
+        if (!runtimeUiInitialized) { super.onDestroy(); return }
+        repairAssistant?.close()
+        repairAssistant = null
         // 引擎跟随进程存活，这里不停止，避免转屏/重建时反复冷启动。
         // ⚠️ 先撤掉系统栏配色的窗口宿主引用：留着它，AI 后续下发配置会对着
         //   一个已销毁的 Activity 调 setStatusBarColor（静默无效）。
@@ -3700,16 +3159,12 @@ class MainActivity : AppCompatActivity() {
         //   这里再显式移除一次，双保险。
         pageBack.close()
         backHandler.removeCallbacksAndMessages(null)
-        // ⚠️ 渲染进程恢复的退避定时器同样要清：留着它会在 Activity 销毁后
-        //   继续重载一个已经拆掉的 Web 视图。
-        webRecovery.close()
-        rendererHandler.removeCallbacksAndMessages(null)
         FloatingBubble.detachPanelActions(this)
         bubbleHandler.removeCallbacksAndMessages(null)
         // ⚠️ 内核的销毁各不一样（WebView 要 destroy()，GeckoView 要关 session、
         //   拆 WebExtension），交给 [WebHost]。必须在 super 之前 ——
         //   super.onDestroy() 之后 binding 里的视图树已经被拆掉。
-        if (::web.isInitialized) web.destroy()
+        clearWebHost()
         // AI 浏览器是**第二个 WebView 实例**，不归 [WebHost] 管 —— 必须单独销毁，
         // 否则它的渲染进程与 Cookie 存储会一直挂着（每个 WebView 几十 MB）。
         // ⚠️ 放在 web.destroy() 之后：两者共享同一个 WebView 数据目录，
@@ -3755,8 +3210,29 @@ class MainActivity : AppCompatActivity() {
     // ⚠️ 转屏也会走 onStop→onStart，但那是**配置变更**，不是退到后台 ——
     //   不排除的话气泡会在转屏瞬间闪一下。
 
+    override fun onResume() {
+        super.onResume()
+        repairAssistant?.onStart()
+        if (!runtimeUiInitialized && intent?.action != com.dsh.android.repair.RepairRuntimeGate.ACTION_UI &&
+            !com.dsh.android.repair.RepairRuntimeGate.blocked(this)) { recreate(); return }
+        if (runtimeUiInitialized && repairPermit == null && com.dsh.android.repair.RepairRuntimeGate.blocked(this)) {
+            clearWebHost(); showRepairFence()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == com.dsh.android.repair.RepairRuntimeGate.ACTION_UI) {
+            // Never let an old WebHost/UiReady count toward a new user-started attempt.
+            setIntent(intent)
+            if (runtimeUiInitialized) clearWebHost()
+            recreate()
+        }
+    }
+
     override fun onStart() {
         super.onStart()
+        if (!runtimeUiInitialized) return
         FloatingBubble.onAppForeground()
         // 通知引擎「回来了」：远程插件据此立刻重连 SSE，不必干等退避到期。
         //
@@ -3782,12 +3258,15 @@ class MainActivity : AppCompatActivity() {
      *    「每次操作完就 flush」（见 BrowserBridge），这里只是多一道保险。
      */
     override fun onPause() {
+        repairAssistant?.onPause()
         super.onPause()
+        if (!runtimeUiInitialized) return
         runCatching { android.webkit.CookieManager.getInstance().flush() }
     }
 
     override fun onStop() {
         super.onStop()
+        if (!runtimeUiInitialized) return
         // ⚠️ **登录态丢失的关键一处**：WebView 的 Cookie 默认只活在内存里，
         //    只有 `CookieManager.flush()` 才落盘。而 AJAX 式登录（DeepSeek、
         //    GitHub 都是）是在 `onPageFinished` **之后**才写 Cookie 的 ——
@@ -3932,27 +3411,6 @@ class MainActivity : AppCompatActivity() {
         const val BACK_EXIT_WINDOW_MS = 2000L
 
 
-
-        /**
-         * 允许**自动**重启引擎的次数上界。
-         *
-         * 超过之后不再静默重启，改为把问题摆到界面上并提示「安全模式」。
-         * 理由见 [engineRestarts] 的说明：单次死亡是系统回收（配置没问题，
-         * 原样重启就对），反复死亡才说明配置有问题。
-         */
-        const val MAX_ENGINE_RESTARTS = 2
-
-        /**
-         * 「连续死亡」的判定窗口（ms）。
-         *
-         * 两次死亡间隔超过它 ⇒ 计数归零、重新开始数。依据是「引擎跑了好一会儿
-         * 才死」与「刚起来就死」是**两种不同的事」：前者多半是系统在内存压力下
-         * 回收（正常，重启即可），后者才说明配置有问题。
-         *
-         * 取 90 秒：远大于引擎正常启动耗时（实测 7~10 秒，首次解包 15 秒），
-         * 所以「起来就死」必定落在窗口内；又远小于用户跑一次长任务的时间。
-         */
-        const val ENGINE_RESTART_WINDOW_MS = 90_000L
 
         /**
          * 把文本写进官方 composer。

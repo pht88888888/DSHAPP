@@ -1,0 +1,130 @@
+package com.dsh.android.repair
+
+import com.dsh.android.engine.EngineFailureProjection
+import org.json.JSONObject
+
+fun main() {
+    var checks = 0
+    fun checkCase(name: String, action: () -> Unit) { action(); checks++; println("PASS $name") }
+    val boot = JSONObject().put("bootId", "boot-current").put("uiLoaded", false).toString()
+    fun row(name: String, fields: JSONObject = JSONObject(), id: String = "boot-current") =
+        JSONObject().put("bootId", id).put("name", name).put("fields", fields).toString()
+    fun engine(text: String) = RepairFailureEvidence.extract(boot, row("engine.failed", JSONObject(EngineFailureProjection.fields(text))))
+    val prefix = "/data/user/0/com.dsh.android/files/"
+    val secret = "SUPER_PRIVATE_VALUE_987654321"
+    fun absent(value: Any, vararg banned: String) { val text = value.toString(); banned.forEach { check(!text.contains(it)) { "Unexpected sensitive value in projection" } } }
+    checkCase("useful syntax message and relative stack without source lines") {
+        val p = EngineFailureProjection.fields("${prefix}engine/node_modules/@deepseek-ai/dsh/lib/bin.js:2\nconsole.log('$secret')\n ^\nSyntaxError: Invalid or unexpected token\n    at main (${prefix}engine/lib/index.js:8:4)")
+        check(p["error_class"] == "SyntaxError" && p["error_message"] == "Invalid or unexpected token")
+        check(p["safe_stack"] == "engine/node_modules/@deepseek-ai/dsh/lib/bin.js:2\nengine/lib/index.js:8:4")
+        absent(p, secret, "/data/", "console.log", "at main")
+        val sourceOnly = EngineFailureProjection.fields("console.log(\"Error: Cannot find module 'credential-value'\");\n${prefix}engine/lib/a.js:1\nSyntaxError: Unexpected token 'x'")
+        check(sourceOnly["error_code"] == "syntax_unexpected_token"); absent(sourceOnly, "credential-value", "console.log")
+        check(EngineFailureProjection.fields("Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'safe-module'")["error_message"] == "Cannot find module 'safe-module'")
+    }
+    checkCase("module absence preserves safe module identity") {
+        val p = engine("Error: Cannot find package '@deepseek-ai/dsh-app-boot' imported from ${prefix}engine/lib/index.js")
+        check(p.getString("error_message") == "Cannot find module '@deepseek-ai/dsh-app-boot'")
+        check(p.getString("error_code") == "module_not_found")
+    }
+    checkCase("plugin failure keeps action not arbitrary message") {
+        val p = engine("Failed to activate plugin because password=$secret https://host/path?token=$secret")
+        check(p.getString("error_summary") == "Plugin startup or activation failed")
+        absent(p, secret, "host", "password", "token=")
+    }
+    checkCase("unknown Error body maps source-owned generic") {
+        val p = engine("Error: User configuration password=$secret")
+        check(p.getString("error_summary") == "Engine reported an error")
+        absent(p, secret, "User configuration")
+    }
+    checkCase("URI queries fragments userinfo never pass module projection") {
+        for (value in listOf("https://user:$secret@example.test/a?token=$secret#x", "file:///data/secret?key=$secret", "foo?access_token=$secret")) {
+            val p = engine("Error: Cannot find module '$value'")
+            check(p.getString("error_message") == "Cannot find module [redacted]")
+            absent(p, secret, "example.test", "access_token", "user:")
+        }
+    }
+    checkCase("credential labels bearer and key values absent") {
+        for (body in listOf("Bearer $secret", "Authorization: Bearer $secret", "api_key=$secret", "token:$secret", "password=$secret", "secrets: $secret")) {
+            absent(engine("TypeError: $body"), secret, body)
+        }
+    }
+    checkCase("sensitive module and opaque key identities are withheld") {
+        for (name in listOf("secrets", "api-key-$secret", "sk-abcdefghijklmnopqrstuvwxyz123456789", "abcdefghijklmnopqrstuvwxyz0123456789")) {
+            val p = engine("Error: Cannot find module '$name'")
+            check(p.getString("error_message") == "Cannot find module [redacted]")
+            absent(p, secret, name)
+        }
+    }
+    checkCase("syntax token and property literal never copied") {
+        for (body in listOf("SyntaxError: Unexpected token '$secret'", "TypeError: Cannot read properties of undefined (reading '$secret')", "ReferenceError: $secret is not defined")) {
+            val p = engine(body)
+            check(p.getString("error_message").contains("[redacted]")); absent(p, secret)
+        }
+    }
+    checkCase("safe stack rejects traversals outside roots URI queries and secret paths") {
+        for (value in listOf("${prefix}profile/token.js:2", "${prefix}engine/lib/../secret.js:2", "${prefix}engine/lib/index.js?token=$secret:2", "${prefix}engine/secrets/key.js:2")) {
+            val p = EngineFailureProjection.fields("Error: failed\n at leaked ($value)")
+            check(!p.containsKey("error_path") && !p.containsKey("safe_stack")); absent(p, secret)
+        }
+    }
+    checkCase("bounded stack frames omit function names and source") {
+        val output = "Error: failed\n" + (1..40).joinToString("\n") { " at ${secret} (${prefix}engine/lib/f$it.js:$it:1)" }
+        val p = EngineFailureProjection.fields(output)
+        check(p.getValue("safe_stack").lines().size == 8); absent(p, secret, " at ")
+    }
+    checkCase("all current boot native Web safe fields retained") {
+        val events = row("termux.failed", JSONObject().put("err", "password=$secret")) + "\n" +
+            row("renderer.gone", JSONObject().put("crash", "true").put("url", "https://host?token=$secret")) + "\n" +
+            row("web.load.failed", JSONObject().put("errorCode", "-2").put("status", "503").put("isMainFrame", true).put("description", secret))
+        val p = RepairFailureEvidence.extract(boot, events)
+        val errors = p.getJSONArray("error_events")
+        check(errors.length() == 3)
+        check(errors.getJSONObject(1).getBoolean("crashed"))
+        check(errors.getJSONObject(2).getInt("web_error_code") == -2 && errors.getJSONObject(2).getInt("http_status") == 503)
+        check(errors.getJSONObject(2).getBoolean("main_frame")); absent(p, secret, "https://")
+    }
+    checkCase("unknown event fields and names cannot leak") {
+        val p = RepairFailureEvidence.extract(boot, row("unknown.$secret", JSONObject().put("reason", secret)))
+        check(p.getJSONArray("error_events").length() == 0); absent(p, secret)
+    }
+    checkCase("current boot filter and ready suppress stale engine failures") {
+        val text = row("engine.failed", JSONObject().put("reason", "SyntaxError: Unexpected token '$secret'"), "old-boot") + "\n" +
+            row("engine.failed", JSONObject().put("reason", "SyntaxError: Invalid or unexpected token")) + "\n" + row("engine.ready")
+        val p = RepairFailureEvidence.extract(boot, text)
+        check(p.getString("engine_state") == "engine.ready" && !p.has("error_class"))
+        check(p.getJSONArray("error_locations").length() == 0 && p.getJSONArray("error_events").length() == 0)
+    }
+    checkCase("legacy reason is reprojected with useful errors and locations") {
+        val p = RepairFailureEvidence.extract(boot, row("engine.failed", JSONObject().put("reason", "${prefix}engine/lib/a.js:3\nSyntaxError: Invalid or unexpected token\n$secret")))
+        check(p.getString("error_message") == "Invalid or unexpected token")
+        check(p.getJSONArray("error_locations").getJSONObject(0).getString("path") == "engine/lib/a.js")
+        absent(p, secret, prefix)
+    }
+    checkCase("forged projected summaries stack and numeric fields revalidated") {
+        val f = JSONObject().put("error_class", "Error").put("error_message", "Bearer $secret").put("error_summary", secret)
+            .put("safe_stack", "engine/secret/password.js:1\nhttps://host?token=$secret").put("error_path", "../secrets").put("error_line", "1")
+            .put("code", "99999999999999999").put("crash", secret)
+        val p = RepairFailureEvidence.extract(boot, row("engine.failed", f)); absent(p, secret, "host")
+        check(p.getJSONArray("error_locations").length() == 0)
+    }
+    checkCase("bounded rows input event count and result") {
+        val events = (1..400).joinToString("\n") { row("native.failed", JSONObject().put("message", "Error: $secret")) }
+        val p = RepairFailureEvidence.extract(boot, events)
+        check(p.getJSONArray("error_events").length() == 8 && p.toString().length < 8192); absent(p, secret)
+        check(EngineFailureProjection.fields("x".repeat(100000) + "\nSyntaxError: Invalid or unexpected token")["error_code"] == "syntax_invalid_token")
+    }
+    checkCase("malformed oversize nested inputs fail safely") {
+        for ((b, e) in listOf(null to null, "{" to "{", boot to "[".repeat(70000), boot to "{".repeat(200))) {
+            val p = RepairFailureEvidence.extract(b, e)
+            check(p.getBoolean("ok") && p.getJSONArray("error_events").length() == 0)
+        }
+    }
+    checkCase("app summary helper emits no credential prose") {
+        check(RepairEvidenceRedaction.summary("Error: $secret") == "Engine reported an error")
+        check(RepairEvidenceRedaction.summary("Error: Cannot find module 'valid-module'") == "Cannot find module 'valid-module'")
+        check(RepairEvidenceRedaction.summary("$secret") == "Failure details withheld")
+    }
+    check(checks == 18)
+    println("passed $checks production evidence-redaction checks; NOT Android/device proof")
+}

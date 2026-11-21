@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="overlay_repair_entry">修复助手授权</string>
+    <string name="repair_consent_title">DSH %1$s · 本次维修授权</string>
+    <string name="repair_consent_message">这是原 DSH 的原生授权页，不是助手或模型伪造的确认。\n\n授权一次维修任务后，配套助手可按故障需要读取本应用自身可访问的数据目录和应用专属外部目录，并自动提交程序、配置及依赖文件的修改、新建和回退；本次授权内的变更不再逐文件弹窗，你可随时结束维修撤销授权。\n\n维修会先尝试停止原 DSH 的已识别主进程和引擎，暂缓正常启动，再后台检查。正在运行的请求、终端和未保存操作会中断，尚未落盘的内容可能丢失；无法确认身份、静止、备份或事务安全时不继续提交，也不强杀无关进程。检查结果由助手在对话中说明，最终以你回到本应用点「重启并验证」的实际启动为准。\n\n代码会以原应用身份执行，修改也可能影响配置、插件、会话、数据库和二进制。读取可能包含密钥或个人数据，并可能发送给助手配置的模型，请只处理本次故障所需内容。每个被修改的文件在提交前保留原件备份，可回退对应事务；但不承诺任意数据可恢复。不会卸载或清除整个应用数据；救援授权、锁和事务备份不可通过普通文件通道改写，系统安装区仍须签名更新。\n\n真实用户或已绑定助手任务活动才续期，连续空闲 30 分钟失效。结束维修时系统须先安全停止并处理未决事务，再解除启动闸门，不能为了退出丢弃未决记录。</string>
+    <string name="repair_consent_active">当前存在有效授权。继续仅续期并接续本次维修，不代表已经修复或已经停止原任务。</string>
+    <string name="repair_consent_allow">授权并开始本次维修</string>
+    <string name="repair_consent_stop">结束维修/恢复正常启动</string>
+    <string name="repair_open_assistant">打开修复助手</string>
+    <string name="repair_consent_failed">维修请求未能安全提交。尚未确认授权、停机或恢复完成，请保留现场后重试。</string>
+    <string name="repair_companion_missing">未找到与此 DSH 签名匹配的修复助手。请安装对应助手后再授权，不需要卸载或清除 DSH 数据。结束维修入口仍可处理遗留启动闸门。</string>
+    <string name="repair_task_phase">原生任务状态：%1$s（这里只显示状态，不代表修复成功）</string>
+    <string name="repair_task_queued">已提交维修准备请求。请回助手查看停止原任务与后台检查进度。</string>
+    <string name="repair_task_end_queued">已请求结束维修。正在安全停止并核对未决事务，完成前不代表已恢复正常启动。</string>
+    <string name="repair_restart_title">重启并验证</string>
+    <string name="repair_restart_message">将结束本次维修并正常启动原 DSH，已应用的修改会保留、不会自动回退，本次授权同时失效。\n\n启动后就能检查是否已经恢复；若存在未决文件事务或仍有进程未停止，会先报告并保持维修状态。</string>
+    <string name="repair_restart_confirm">重启并验证</string>
+    <string name="repair_restart_only_end">仅结束维修</string>
+    <string name="repair_restart_cancel">取消</string>
+    <string name="repair_restart_incomplete">结束维修尚未完成（可能存在未决事务或仍有进程未停止）。仍保持维修状态，请回助手查看原因。</string>
+    <string name="repair_sensitive_title">额外确认敏感维修变更</string>
+    <string name="repair_sensitive_allow">确认本次敏感变更</string>
+    <string name="repair_sensitive_failed">候选已失效、冲突或无法读取；未批准任何改动</string>
+</resources>

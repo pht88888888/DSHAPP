@@ -35,259 +35,212 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:gravity="center_horizontal"
+            android:layout_height="match_parent"
             android:orientation="vertical"
-            android:paddingStart="40dp"
-            android:paddingEnd="40dp">
+            android:paddingTop="16dp"
+            android:paddingBottom="16dp">
 
-            <!-- 动画主体：头像 + 双层环 -->
-            <com.dsh.android.ui.BootAnimationView
-                android:id="@+id/bootAnim"
-                android:layout_width="190dp"
-                android:layout_height="190dp" />
+            <!-- 只让中间内容滚动：完整错误栈不能把底部原生自救操作挤出屏幕。
+                 fillViewport 保留短文案时头像与标题居中的启动视觉。 -->
+            <ScrollView
+                android:id="@+id/overlayContentScroll"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fillViewport="true">
 
-            <!-- 应用名。字距拉开，与头像的圆形构成视觉平衡 -->
-            <TextView
-                android:id="@+id/overlayTitle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="26dp"
-                android:letterSpacing="0.32"
-                android:text="@string/app_name"
-                android:textColor="#EAF0FA"
-                android:textSize="19sp"
-                android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:paddingStart="40dp"
+                    android:paddingEnd="40dp"
+                    android:paddingBottom="12dp">
 
-            <!-- 阶段名 -->
-            <TextView
-                android:id="@+id/overlayText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:gravity="center"
-                android:lineSpacingExtra="3dp"
-                android:text="准备中…"
-                android:textColor="#8FA3C0"
-                android:textSize="13.5sp" />
+                    <!-- 动画主体：头像 + 双层环 -->
+                    <com.dsh.android.ui.BootAnimationView
+                        android:id="@+id/bootAnim"
+                        android:layout_width="190dp"
+                        android:layout_height="190dp" />
 
-            <!-- 补充说明：解释"为什么慢"，把等待变成可理解的过程 -->
-            <TextView
-                android:id="@+id/overlayHint"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="7dp"
-                android:gravity="center"
-                android:lineSpacingExtra="3dp"
-                android:textColor="#5A6B85"
-                android:textSize="11.5sp"
-                android:visibility="gone" />
+                    <!-- 应用名。字距拉开，与头像的圆形构成视觉平衡 -->
+                    <TextView
+                        android:id="@+id/overlayTitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="26dp"
+                        android:letterSpacing="0.32"
+                        android:text="@string/app_name"
+                        android:textColor="#EAF0FA"
+                        android:textSize="19sp"
+                        android:textStyle="bold" />
 
-            <!--
-              安全模式入口：**只在失败态**显示（见 MainActivity.showOverlay）。
+                    <!-- 阶段名 -->
+                    <TextView
+                        android:id="@+id/overlayText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:gravity="center"
+                        android:lineSpacingExtra="3dp"
+                        android:text="准备中…"
+                        android:textColor="#8FA3C0"
+                        android:textSize="13.5sp" />
 
-              为什么需要它：启动前体检（EngineManager.preflight）能自动修掉四类
-              可指认的坏法，但覆盖不到的情况真实存在（坏法超出那四类、体检超时、
-              或者坏在体检看不见的地方）。那时 App 依然打不开，而用户手上没有任何
-              出路 —— 只能卸载重装，那会清掉全部会话与凭据。
+                    <!-- 补充说明 / 完整错误详情：随内容增高，由外层 ScrollView 滚动，
+                         不截断、不省略栈尾，也不把底部操作纳入滚动范围。 -->
+                    <TextView
+                        android:id="@+id/overlayHint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        android:gravity="center"
+                        android:lineSpacingExtra="3dp"
+                        android:textColor="#5A6B85"
+                        android:textSize="11.5sp"
+                        android:visibility="gone" />
 
-              文案刻意写清楚"不会丢会话"，因为这一步是破坏性的：用户需要知道
-              代价是什么才敢点。
+                    <TextView
+                        android:id="@+id/overlayRetry"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:background="@drawable/overlay_button_bg"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:minHeight="48dp"
+                        android:paddingStart="20dp"
+                        android:paddingTop="10dp"
+                        android:paddingEnd="20dp"
+                        android:paddingBottom="10dp"
+                        android:text="@string/overlay_retry"
+                        android:textColor="#DCE6F5"
+                        android:textSize="13sp"
+                        android:visibility="gone" />
 
-              ⚠️ 用 TextView 而不是 Button：主题是 `Theme.Material3.*`，它会给
-              Button 套一层自己的实心紫底，把 android:background 顶掉（真机实测
-              显示成一大块实心紫）。气泡里那几个按钮同样是 TextView，照抄既有写法。
-            -->
-            <TextView
-                android:id="@+id/overlaySafeMode"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                android:background="@drawable/overlay_button_bg"
-                android:clickable="true"
-                android:focusable="true"
-                android:letterSpacing="0.06"
-                android:paddingStart="20dp"
-                android:paddingTop="10dp"
-                android:paddingEnd="20dp"
-                android:paddingBottom="10dp"
-                android:text="@string/safe_mode_entry"
-                android:textColor="#DCE6F5"
-                android:textSize="13sp"
-                android:visibility="gone" />
+                    <TextView
+                        android:id="@+id/overlayShowPage"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:minHeight="48dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:text="@string/overlay_show_page"
+                        android:textColor="#8FA3C0"
+                        android:textSize="12sp"
+                        android:visibility="gone" />
+                </LinearLayout>
+            </ScrollView>
 
-            <!--
-              日志入口 —— **启动层上唯一一个任何状态都显示的按钮**。
-
-              ## 为什么它不能像「安全模式」那样只在失败态出现
-
-              用户报的问题有一大半是「能打开但用不了」：某个功能点了没反应、
-              插件没生效、回复报错。这时启动层早就淡出了，用户手上没有任何
-              看日志的地方 —— 而设置页在 Web GUI 里，而 Web GUI 恰恰可能就是
-              打不开的那一环。
-
-              所以这一条是**兜底通路**：只要启动层还在（引擎起不来、页面加载不出来、
-              插件把启动搞崩），它就一定在。加上设置页那条，两条路覆盖了
-              「界面能开」与「界面开不了」两种情况。
-
-              ## 为什么放在启动层最下方、且样式弱于安全模式
-
-              启动期它不该抢注意力（大多数时候用户用不上）。但在失败态，
-              它比「安全模式」更该被先点 —— 安全模式会推开插件配置，
-              是不可逆的破坏性操作；而看日志没有代价。
-
-              ⚠️ 用 TextView 而不是 Button，理由同上面的安全模式按钮：
-              `Theme.Material3.*` 会给 Button 套实心紫底。
-            -->
-            <!--
-              导出 / 导入数据 —— 与「查看日志」同一套兜底理由，但更要紧。
-
-              引擎挂了、Web GUI 打不开时，设置页进不去，而卸载重装会清掉
-              整个私有目录（会话/凭据/工作区全没）。这两个按钮是**唯一**
-              不丢数据的自救路径，所以同样**任何状态都显示**、不加
-              visibility 控制。
-
-              ⚠️ 横向并排放两个：竖着排会把启动层撑太高，小屏上挤掉标题。
-            -->
+            <!-- 原生兜底操作独立占据底部两行；引擎或 Web GUI 失败时仍然可见。
+                 等宽按钮允许大字体换行，至少 48dp 触摸高度，不限制行数。 -->
             <LinearLayout
-                android:layout_width="wrap_content"
+                android:id="@+id/overlayActions"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:orientation="horizontal">
+                android:orientation="vertical"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp">
 
-                <TextView
-                    android:id="@+id/overlayExport"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/log_chip_bg"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:letterSpacing="0.06"
-                    android:paddingStart="18dp"
-                    android:paddingTop="9dp"
-                    android:paddingEnd="18dp"
-                    android:paddingBottom="9dp"
-                    android:text="@string/overlay_export_entry"
-                    android:textColor="#8FA3C0"
-                    android:textSize="12.5sp" />
+                    android:baselineAligned="false"
+                    android:orientation="horizontal">
 
-                <TextView
-                    android:id="@+id/overlayImport"
-                    android:layout_width="wrap_content"
+                    <TextView
+                        android:id="@+id/overlayExport"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="@drawable/log_chip_bg"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:letterSpacing="0.06"
+                        android:minHeight="48dp"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="9dp"
+                        android:text="@string/overlay_export_entry"
+                        android:textColor="#8FA3C0"
+                        android:textSize="12.5sp" />
+
+                    <TextView
+                        android:id="@+id/overlayImport"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/log_chip_bg"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:letterSpacing="0.06"
+                        android:minHeight="48dp"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="9dp"
+                        android:text="@string/overlay_import_entry"
+                        android:textColor="#8FA3C0"
+                        android:textSize="12.5sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="10dp"
-                    android:background="@drawable/log_chip_bg"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:letterSpacing="0.06"
-                    android:paddingStart="18dp"
-                    android:paddingTop="9dp"
-                    android:paddingEnd="18dp"
-                    android:paddingBottom="9dp"
-                    android:text="@string/overlay_import_entry"
-                    android:textColor="#8FA3C0"
-                    android:textSize="12.5sp" />
+                    android:layout_marginTop="8dp"
+                    android:baselineAligned="false"
+                    android:orientation="horizontal">
 
+                    <TextView
+                        android:id="@+id/overlayLogs"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="@drawable/log_chip_bg"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:letterSpacing="0.06"
+                        android:minHeight="48dp"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="9dp"
+                        android:text="@string/overlay_logs_entry"
+                        android:textColor="#8FA3C0"
+                        android:textSize="12.5sp" />
+
+                    <TextView
+                        android:id="@+id/overlayRepair"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/log_chip_bg"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:minHeight="48dp"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="9dp"
+                        android:text="@string/overlay_repair_entry"
+                        android:textColor="#8FA3C0"
+                        android:textSize="12.5sp" />
+                </LinearLayout>
             </LinearLayout>
-
-            <TextView
-                android:id="@+id/overlayLogs"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/log_chip_bg"
-                android:clickable="true"
-                android:focusable="true"
-                android:letterSpacing="0.06"
-                android:paddingStart="18dp"
-                android:paddingTop="9dp"
-                android:paddingEnd="18dp"
-                android:paddingBottom="9dp"
-                android:text="@string/overlay_logs_entry"
-                android:textColor="#8FA3C0"
-                android:textSize="12.5sp" />
         </LinearLayout>
     </FrameLayout>
 
-    <!-- ── 降级态常驻横幅（不变量 I4）──────────────────────────────────────
-      
-      ## 为什么必须是**独立于 overlay** 的顶层视图
-
-      overlay 在 Web 视图加载完成后会**淡出**（见 MainActivity.hideOverlay），
-      而救援/隔离态恰恰是"界面正常、但配置是被降级的" —— 那时 overlay 早就没了。
-      把提示挂在 overlay 里，等于"只在打不开的时候提示"，而用户最需要知道的是
-      打**开之后**：我的插件少了几个、怎么退回去。
-
-      ⚠️ 方案 §4.4.5 明确要求「不许做成一句一闪而过的 toast」。常驻 + 可操作。
-
-      ## 为什么做成一条横幅而不是一个对话框
-
-      它要在用户使用 AI 修复的全过程里一直在，不能挡住 composer 与消息区。
-      一条贴在顶部的横幅是唯一不侵入的选择。
-
-      ⚠️ 默认 `gone`：正常态下这条**一个像素都不该占**。
-    -->
-    <LinearLayout
-        android:id="@+id/rescueBanner"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top"
-        android:background="#F2B45318"
-        android:orientation="vertical"
-        android:paddingStart="14dp"
-        android:paddingTop="9dp"
-        android:paddingEnd="14dp"
-        android:paddingBottom="9dp"
-        android:visibility="gone">
-
-        <TextView
-            android:id="@+id/rescueBannerText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:lineSpacingExtra="2dp"
-            android:textColor="#FFE7C2"
-            android:textSize="12.5sp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="7dp"
-            android:orientation="horizontal">
-
-            <!-- 一键退出降级态（I4）。用 TextView 而不是 Button：主题
-                 `Theme.Material3.*` 会给 Button 套实心紫底，顶掉 android:background
-                 （同 overlay 上那两个按钮的既有做法）。 -->
-            <TextView
-                android:id="@+id/rescueBannerExit"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:background="@drawable/log_chip_bg"
-                android:clickable="true"
-                android:focusable="true"
-                android:paddingStart="14dp"
-                android:paddingTop="7dp"
-                android:paddingEnd="14dp"
-                android:paddingBottom="7dp"
-                android:text="@string/rescue_banner_exit"
-                android:textColor="#FFE7C2"
-                android:textSize="12sp" />
-
-            <TextView
-                android:id="@+id/rescueBannerDetail"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="9dp"
-                android:background="@drawable/log_chip_bg"
-                android:clickable="true"
-                android:focusable="true"
-                android:paddingStart="14dp"
-                android:paddingTop="7dp"
-                android:paddingEnd="14dp"
-                android:paddingBottom="7dp"
-                android:text="@string/rescue_banner_detail"
-                android:textColor="#8FA3C0"
-                android:textSize="12sp" />
-        </LinearLayout>
-    </LinearLayout>
 </FrameLayout>

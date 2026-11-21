@@ -1,0 +1,264 @@
+package com.dsh.android.repair
+
+import android.content.Context
+import android.os.Bundle
+import android.os.SystemClock
+import org.json.JSONObject
+import java.io.File
+import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.TimeUnit
+
+private val coordinator = RepairTaskCoordinator
+private val grant = "grant-fixture-12345678"
+private lateinit var context: Context
+private fun field(name: String) = coordinator.javaClass.getDeclaredField(name).apply { isAccessible = true }
+private fun state(phase: String = "editable", level: String = "engine"): JSONObject {
+    val state = JSONObject().put("schema", 1).put("task_id", "task-001").put("phase", phase)
+        .put("revision", 0).put("change_revision", 0).put("evidence_seq", 0)
+        .put("last_attempt", JSONObject().put("attempt_id", "attempt-001").put("level", level)
+            .put("status", "queued").put("change_revision", 0).put("deadline_elapsed", 100000L)
+            .put("engine_ready", false).put("ui_ready", false).put("frame_ready", false).put("verified", false))
+    field("state").set(coordinator, state); field("taskGrant").set(coordinator, grant)
+    return state
+}
+private fun execute(method: String, args: JSONObject = JSONObject(), token: String? = null) = coordinator.execute(context, grant, method, args, token)
+private fun permit(kind: String = "engine", pid: Int = 321, start: String = "1234", id: String? = null): Bundle =
+    coordinator.runtimePermit(context, pid, start, Bundle().apply {
+        val task = coordinator.snapshot(context)
+        putString("task_id", task.optString("task_id")); putString("attempt_id", task.optJSONObject("last_attempt")?.optString("attempt_id")); putString("kind", kind)
+        id?.let { putString("permit_id", it) }
+    })
+private fun report(id: String, event: String, pid: Int = 321, start: String = "1234"): Bundle =
+    coordinator.runtimeReport(context, pid, start, Bundle().apply {
+        val task = coordinator.snapshot(context)
+        putString("task_id", task.optString("task_id")); putString("attempt_id", task.optJSONObject("last_attempt")?.optString("attempt_id"))
+        putString("permit_id", id); putString("event", event); putString("boot_id", "boot-fixture"); putString("error_code", "fixture_error")
+    })
+private fun pausedWorker(action: () -> Unit) {
+    val entered = CountDownLatch(1); val release = CountDownLatch(1)
+    val worker = field("worker").get(coordinator) as ExecutorService
+    worker.submit { entered.countDown(); release.await(10, TimeUnit.SECONDS) }
+    check(entered.await(2, TimeUnit.SECONDS))
+    try { action() } finally { release.countDown() }
+}
+private fun expectError(value: JSONObject, error: String) { check(!value.optBoolean("ok") && value.optString("error") == error) { value.toString() } }
+
+fun main(args: Array<String>) {
+    val root = Files.createTempDirectory("dsh-task-check-").toFile()
+    context = Context(File(root, "files").apply { mkdirs() })
+    RepairAuthorization.grant = grant
+    val scenario = args.single()
+    try {
+        when (scenario) {
+            "validation_permit_rejected_fails_fast" -> {
+                state()
+                RepairRuntimeGate.read = {
+                    val attempt = coordinator.snapshot(context).getJSONObject("last_attempt")
+                    JSONObject().put("task_id", "task-001").put("attempt_id", attempt.getString("attempt_id"))
+                        .put("status", "failed").put("error_code", "permit_rejected")
+                }
+                check(execute("validate_target", JSONObject().put("level", "engine")).optBoolean("ok"))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (coordinator.snapshot(context).optString("phase") == "validating" && System.nanoTime() < deadline) Thread.sleep(10)
+                val result = coordinator.snapshot(context)
+                check(result.optString("phase") == "editable") { result.toString() }
+                check(result.getJSONObject("last_attempt").optString("error") == "permit_rejected") { result.toString() }
+                check(SystemClock.now == 1000L) { "Should fail immediately, not wait for deadline" }
+            }
+            "validation_slow_handshake_does_not_fail_at_fifteen_seconds" -> {
+                state()
+                var reads = 0
+                RepairRuntimeGate.read = {
+                    reads++
+                    SystemClock.now += 16000
+                    if (reads == 1) null else {
+                        check(coordinator.snapshot(context).optString("phase") == "validating")
+                        check(permit().getBoolean("allowed"))
+                        val attempt = coordinator.snapshot(context).getJSONObject("last_attempt")
+                        JSONObject().put("task_id", "task-001").put("attempt_id", attempt.getString("attempt_id"))
+                            .put("status", "passed").put("stopped", true)
+                    }
+                }
+                check(execute("validate_target", JSONObject().put("level", "engine")).optBoolean("ok"))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (coordinator.snapshot(context).optString("phase") == "validating" && System.nanoTime() < deadline) Thread.sleep(10)
+                val result = coordinator.snapshot(context)
+                check(result.optString("phase") == "awaiting_ui") { result.toString() }
+                check(SystemClock.now == 33000L && reads == 2)
+            }
+            "validation_runtime_exit_fails_fast" -> {
+                state()
+                RepairRuntimeGate.alive = false
+                RepairRuntimeGate.read = { check(permit().getBoolean("allowed")); null }
+                check(execute("validate_target", JSONObject().put("level", "engine")).optBoolean("ok"))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (coordinator.snapshot(context).optString("phase") == "validating" && System.nanoTime() < deadline) Thread.sleep(10)
+                val result = coordinator.snapshot(context)
+                check(result.getJSONObject("last_attempt").optString("error") == "VALIDATION_RUNTIME_EXITED") { result.toString() }
+                check(SystemClock.now == 1000L)
+            }
+            "validation_foreign_success_cannot_handshake" -> {
+                state()
+                RepairRuntimeGate.read = {
+                    SystemClock.now += 301000
+                    JSONObject().put("task_id", "foreign-task").put("attempt_id", "foreign-attempt")
+                        .put("status", "passed").put("stopped", true).put("stage", "starting_engine")
+                }
+                check(execute("validate_target", JSONObject().put("level", "engine")).optBoolean("ok"))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (coordinator.snapshot(context).optString("phase") == "validating" && System.nanoTime() < deadline) Thread.sleep(10)
+                val result = coordinator.snapshot(context)
+                check(result.getJSONObject("last_attempt").optString("error") == "VALIDATION_TIMEOUT_OR_CANCELLED") { result.toString() }
+                check(!result.getJSONObject("last_attempt").has("stage"))
+            }
+            "new_grant_is_not_task" -> {
+                expectError(execute("read_file"), "TASK_AUTHORIZATION_REQUIRED")
+                check(execute("status").optBoolean("authorized"))
+            }
+            "begin_reaches_editable" -> {
+                check(coordinator.begin(context, grant).optBoolean("ok"))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                while (coordinator.snapshot(context).optString("phase") == "preparing" && System.nanoTime() < deadline) Thread.sleep(10)
+                check(coordinator.snapshot(context).optString("phase") == "editable")
+            }
+            "permit_identity_and_phase" -> {
+                state("validating")
+                val accepted = permit(); check(accepted.getBoolean("allowed")); val id = accepted.getString("permit_id")!!
+                check(permit(id = id).getString("permit_id") == id)
+                check(!permit(pid = 322, id = id).getBoolean("allowed"))
+                check(!permit(start = "different", id = id).getBoolean("allowed"))
+                check(!permit(id = "forged").getBoolean("allowed"))
+                check(!permit(kind = "ui").getBoolean("allowed"))
+                field("state").get(coordinator).let { (it as JSONObject).put("phase", "editable") }
+                check(!permit(id = id).getBoolean("allowed"))
+            }
+            "permit_deadline_and_revoke" -> {
+                state("validating"); check(permit().getBoolean("allowed"))
+                SystemClock.now = 100000; check(!permit().getBoolean("allowed"))
+                SystemClock.now = 1000; RepairAuthorization.grant = null; check(!permit().getBoolean("allowed"))
+            }
+            "report_requires_bound_identity" -> {
+                state("ui_validating", "ui"); val id = permit("ui").getString("permit_id")!!
+                check(!report(id, "engine_ready", pid = 322).getBoolean("accepted"))
+                check(!report("fake", "engine_ready").getBoolean("accepted"))
+                check(!report(id, "invented_event").getBoolean("accepted"))
+                val wrongAttempt = Bundle().apply {
+                    putString("task_id", "task-001"); putString("attempt_id", "not-this-attempt")
+                    putString("permit_id", id); putString("event", "engine_ready")
+                }
+                check(!coordinator.runtimeReport(context, 321, "1234", wrongAttempt).getBoolean("accepted"))
+                check(report(id, "engine_ready").getBoolean("accepted"))
+                check(!coordinator.snapshot(context).getJSONObject("last_attempt").optBoolean("verified"))
+                check(report(id, "ui_ready").getBoolean("accepted"))
+                check(report(id, "frame_ready").getBoolean("accepted"))
+                check(coordinator.snapshot(context).getJSONObject("last_attempt").optBoolean("verified"))
+                check(!report(id, "engine_ready").getBoolean("accepted"))
+                check(!report(id, "engine_failed").getBoolean("accepted"))
+                check(coordinator.snapshot(context).getJSONObject("last_attempt").optString("status") == "passed")
+            }
+            "failed_report_is_terminal" -> {
+                state("ui_validating", "ui"); val id = permit("ui").getString("permit_id")!!
+                check(report(id, "engine_failed").getBoolean("accepted"))
+                report(id, "engine_ready"); report(id, "ui_ready"); report(id, "frame_ready")
+                val attempt = coordinator.snapshot(context).getJSONObject("last_attempt")
+                check(attempt.optString("status") == "failed" && !attempt.optBoolean("verified")) { attempt.toString() }
+            }
+            "ordinary_apply_is_queued" -> pausedWorker {
+                state(); val value = execute("apply_changes", JSONObject().put("change_id", "change-001"))
+                check(value.optBoolean("ok") && value.optString("status") == "queued") { value.toString() }
+                check(coordinator.snapshot(context).optString("phase") == "committing")
+            }
+            "grant_covers_sensitive_apply" -> pausedWorker {
+                state(); RepairFileAccess.fixture.path = "app/shared_prefs/auth.xml"
+                // One task grant covers publication; no per-change ticket or dialog may block it.
+                val value = execute("apply_changes", JSONObject().put("change_id", "change-001"))
+                check(value.optBoolean("ok") && value.optString("status") == "queued") { value.toString() }
+                check(coordinator.snapshot(context).optString("phase") == "committing")
+            }
+            "validate_target_cannot_request_ui" -> pausedWorker {
+                state().getJSONObject("last_attempt").put("status", "passed")
+                val before = coordinator.snapshot(context).toString()
+                val result = try { execute("validate_target", JSONObject().put("level", "ui")) }
+                    catch (_: IllegalArgumentException) { null }
+                check(result == null || !result.optBoolean("ok")) { "validate_target accepted UI: $result" }
+                check(coordinator.snapshot(context).toString() == before) { "Rejected UI request mutated task state" }
+                check(!permit("ui").getBoolean("allowed"))
+            }
+            "ui_requires_fresh_engine_validation" -> pausedWorker {
+                val task = state()
+                expectError(execute("prepare_ui"), "ENGINE_VALIDATION_REQUIRED")
+                task.getJSONObject("last_attempt").put("status", "passed").put("change_revision", -1)
+                expectError(execute("prepare_ui"), "ENGINE_VALIDATION_REQUIRED")
+                task.getJSONObject("last_attempt").put("change_revision", 0)
+                check(execute("prepare_ui").optBoolean("ok"))
+                check(coordinator.snapshot(context).optString("phase") == "ui_validating")
+            }
+            "ui_success_completes_and_keeps_read_grant" -> {
+                state().getJSONObject("last_attempt").put("status", "passed")
+                check(execute("prepare_ui").optBoolean("ok"))
+                val id = permit("ui").getString("permit_id")!!
+                check(report(id, "engine_ready").getBoolean("accepted"))
+                check(report(id, "ui_ready").getBoolean("accepted"))
+                check(report(id, "frame_ready").getBoolean("accepted"))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                while (coordinator.snapshot(context).optString("phase") != "complete" && System.nanoTime() < deadline) Thread.sleep(10)
+                check(coordinator.snapshot(context).optString("phase") == "complete")
+                check(execute("status").optBoolean("verified"))
+                check(execute("read_file").optBoolean("ok"))
+                check(!execute("stage_edit").optBoolean("ok"))
+            }
+            "ticket_expiry_oneuse_and_digest" -> {
+                val task = state(); val preview = RepairFileAccess.fixture.previewChange("change-001", grant)
+                val binding = coordinator.approvalBinding(preview, task)
+                val token = RepairChangeApproval.issue(grant, "apply_changes", "change-001", SystemClock.now, binding)
+                check(RepairChangeApproval.consume(token, grant, "apply_changes", "change-001", SystemClock.now, binding))
+                check(!RepairChangeApproval.consume(token, grant, "apply_changes", "change-001", SystemClock.now, binding))
+                val expired = RepairChangeApproval.issue(grant, "apply_changes", "change-001", SystemClock.now, binding)
+                check(!RepairChangeApproval.consume(expired, grant, "apply_changes", "change-001", SystemClock.now + 60000, binding))
+                preview.put("candidate_sha256", "c".repeat(64)); check(binding != coordinator.approvalBinding(preview, task))
+                task.put("change_revision", 1); check(binding != coordinator.approvalBinding(preview, task))
+            }
+            "task_complete_grant_read_only" -> {
+                state("complete")
+                check(execute("status").optBoolean("authorized"))
+                check(execute("read_file").optBoolean("ok"))
+                check(execute("list_changes").optBoolean("ok"))
+                check(!execute("stage_edit").optBoolean("ok"))
+                check(!execute("apply_changes", JSONObject().put("change_id", "change-001")).optBoolean("ok"))
+                check(!permit().getBoolean("allowed"))
+            }
+            "restart_has_no_durable_permit" -> {
+                state("validating"); check(permit().getBoolean("allowed"))
+                // Persist via public runtime report, then simulate only volatile process fields lost.
+                val id = permit().getString("permit_id")!!; check(report(id, "engine_ready").getBoolean("accepted"))
+                field("state").set(coordinator, null); field("taskGrant").set(coordinator, null); field("permit").set(coordinator, null)
+                check(coordinator.snapshot(context).optString("phase") == "recovery_required")
+                check(!permit().getBoolean("allowed"))
+                expectError(execute("read_file"), "TASK_AUTHORIZATION_REQUIRED")
+            }
+            "stage_admission_blocks_validate_not_end" -> pausedWorker {
+                state(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+                RepairFileAccess.fixture.blockEntered = entered; RepairFileAccess.fixture.blockRelease = release
+                val thread = Thread { execute("stage_edit") }.apply { start() }
+                check(entered.await(2, TimeUnit.SECONDS))
+                try {
+                    expectError(execute("validate_target", JSONObject().put("level", "engine")), "TASK_BUSY")
+                    val start = System.nanoTime(); check(coordinator.end(context).optBoolean("ok"))
+                    check(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(1)) { "End blocked on broker IO" }
+                    check(coordinator.snapshot(context).optString("phase") == "ending")
+                } finally { release.countDown(); thread.join(2000); check(!thread.isAlive) }
+            }
+            else -> error("Unknown scenario $scenario")
+        }
+        println("PASS $scenario (production RepairTaskCoordinator)")
+    } finally {
+        val executor = field("worker").get(coordinator) as ExecutorService
+        executor.shutdownNow()
+        check(executor.awaitTermination(3, TimeUnit.SECONDS)) { "Fixture worker did not stop before cleanup" }
+        // Fixtures create only this exact temporary tree; never delete a derived unchecked path.
+        check(root.canonicalPath.startsWith(File(System.getProperty("java.io.tmpdir")).canonicalPath + "/dsh-task-check-"))
+        root.deleteRecursively()
+    }
+}

@@ -1,9 +1,9 @@
-# $PREFIX/bin/node 会坏
+# 内置 Node 的安装校验
 
 > 本文是 [AGENTS.md](../../AGENTS.md) 的分册之一，
 索引见 [docs/agents/README.md](README.md)。
 
-## `$PREFIX/bin/node` 会坏，而且坏了之后只有卸载重装一条路 —— 自校验 + 自愈
+## `$PREFIX/bin/node` 损坏排查与安装校验
 
 **症状**（粉丝截图，无日志）：启动层停在
 
@@ -12,8 +12,6 @@
 # Fatal error in , line 0
 # Check failed: magic_number_ == SerializedData::kMagicNumber
 ```
-
-底下那个「进入安全模式（不改动会话与凭据）」按钮**点了也没用**。
 
 ### 判据：这条报错**只可能**来自 node 自己
 
@@ -39,21 +37,17 @@ CHECK（`deps/v8/src/snapshot/deserializer.cc`），即在**反序列化内嵌�
 if (nodeMarker.exists() && nodeBinary.isFile) return true   // ← 内容坏掉照样命中
 ```
 
-于是坏掉的 node 永远被当成「已装好」，引擎永远起不来。而「安全模式」只推开
-profile patch 层 / 第三方 bundle / `engine/.stamp` —— **三样全在 `$DSH_HOME` 和
-`engine/` 里，一个都不碰 `$PREFIX`**。所以用户唯一的出路是卸载重装，
-而卸载会清掉整个 `$DSH_HOME`（会话、凭据、工作区）。
+旧版仅检查文件存在，导致安装校验放过坏的 Node。现行启动只走正常 APK 资产安装流程，没有独立的安全模式修复入口。
 
 ### 做法一：`nodeIsUsable()` —— 用「能不能起来」当判据
 
 跑一次 `node --version`（约 50 ms），只有**退出码 0 且 stdout 恰好等于
-`NODE_EXECUTABLE_VERSION`（`v26.4.0`）**才算可用。调它的地方三处：
+`NODE_EXECUTABLE_VERSION`（`v26.4.0`）**才算可用。有两处校验：
 
 | 位置 | 时机 |
 |---|---|
-| `installNodeRuntimeLocked()` 开头 | marker 命中时，坏了就删 marker + 删二进制，走重解包 |
-| `installNodeRuntimeLocked()` 结尾 | 装完再验一次，**验不过就不写 marker**，下次启动重来 |
-| `repairNodeRuntimeIfNeeded()` | 用户点「安全模式」时（见下） |
+| `TermuxNodeRuntime.installLocked()` 开头 | marker 命中时，坏了就删 marker + 删二进制，走重解包 |
+| `TermuxNodeRuntime.installLocked()` 结尾 | 装完再验一次，**验不过就不写 marker**，下次启动重来 |
 
 ⚠️ **必须传 `LD_LIBRARY_PATH=$PREFIX/lib`**：不传的话 node 报
 `CANNOT LINK EXECUTABLE … not found`，**一个健康的二进制会被误判成损坏**，
@@ -69,13 +63,7 @@ profile patch 层 / 第三方 bundle / `engine/.stamp` —— **三样全在 `$D
 症状相反但都是坏：漏前者 ⇒ 新 node 每次被误判成损坏、反复重解包；
 漏后者 ⇒ marker 命中、新资产永不生效。
 
-### 做法二：安全模式带上自愈
-
-`enterSafeMode()` 第 ④ 步调 `bootstrap.repairNodeRuntimeIfNeeded()`：用**与
-`installNodeRuntime` 完全相同**的判据，node 可用时零成本返回，不可用才重解包。
-这样「点安全模式」才真的能救回一个坏 node。
-
-### 做法三：`$PREFIX` 上的并发写必须互斥（这是坏 node 的来源）
+### 做法二：`$PREFIX` 上的并发写必须互斥（这是坏 node 的来源）
 
 `TermuxBootstrap` 有**两个实例**（`DshApplication` 一个、`EngineManager` 的
 `by lazy` 一个），两条路径会**同时**进来：
@@ -84,7 +72,7 @@ profile patch 层 / 第三方 bundle / `engine/.stamp` —— **三样全在 `$D
 - `EngineManager.start()`（`lifecycleScope`，调度到 IO）
 
 而两条路径都会**原地重写同一个 47 MB 的 node 二进制**。**实例级锁挡不住它们**，
-所以 `prefixLock` 挂在 **companion object**（进程级），三个入口共用：
+所以 `prefixLock` 挂在 **companion object**（进程级），安装与路径改写入口共用：
 `install()` / `installNodeRuntime()` / `ensureNodeRuntimePatched()` /
 `ensurePathsRewritten()`。实现体抽成 `*Locked()` 形式，KDoc 里写明「调用方必须已持锁」。
 
@@ -92,7 +80,7 @@ profile patch 层 / 第三方 bundle / `engine/.stamp` —— **三样全在 `$D
 
 | 函数 | 原写法 | 现写法 |
 |---|---|---|
-| `installNodeRuntimeLocked()` 解包循环 | 固定名 `<name>.part` + `renameTo` | `File.createTempFile(".<name>.", ".part", 同目录)` + `Files.move(REPLACE_EXISTING)` |
+| `TermuxNodeRuntime.installLocked()` 解包循环 | 固定名 `<name>.part` + `renameTo` | `File.createTempFile(".<name>.", ".part", 同目录)` + `Files.move(REPLACE_EXISTING)` |
 | `patchElfInPlace()` 写回 | `FileOutputStream(file).write(bytes)`（**原地截断重写**） | 唯一名临时文件 + `fd.sync()` + `Files.move(ATOMIC_MOVE)` |
 
 ⚠️ 固定临时名 `<name>.part` 本身就是个坑：两个写者会打开**同一个**临时文件。
@@ -101,7 +89,7 @@ profile patch 层 / 第三方 bundle / `engine/.stamp` —— **三样全在 `$D
 的二进制，与粉丝报的症状一致。
 ⚠️ `fd.sync()` 不能省：`close()` 只把数据交给 OS，掉电会留下大小正确、内容全零的文件。
 
-### 真机验收（2026-10-11，CDY-TN90 / Android 10，debug 包 `-r` 覆盖安装保留数据）
+### 历史真机记录（2026-10-11，CDY-TN90 / Android 10，debug 包 `-r` 覆盖安装保留数据）
 
 把 node 的 ELF magic 改成 `XXXX`（`printf "XXXX" | dd seek=0 conv=notrunc`），
 **marker 保持不动**（这正是原来短路的条件），然后启动 App：

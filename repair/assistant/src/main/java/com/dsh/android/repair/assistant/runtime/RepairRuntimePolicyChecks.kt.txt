@@ -1,0 +1,25 @@
+package com.dsh.android.repair.assistant.runtime
+
+/** Standalone JVM checks, compiled with production RepairRuntimePolicy.kt. */
+fun main() {
+    val token = "a".repeat(32)
+    check(RepairRuntimePolicy.readyUrl("dsh web: http://127.0.0.1:3456/?token=$token") == "http://127.0.0.1:3456/?token=$token")
+    for (bad in listOf(
+        "dsh web: http://0.0.0.0:3456/?token=$token",
+        "dsh web: http://127.0.0.1:0/?token=$token",
+        "dsh web: http://127.0.0.1:65536/?token=$token",
+        "dsh web: http://127.0.0.1:3456/?token=short",
+        "prefix dsh web: http://127.0.0.1:3456/?token=$token",
+        "dsh web: http://127.0.0.1:3456/?token=$token&leak=yes"
+    )) check(RepairRuntimePolicy.readyUrl(bad) == null)
+    check(RepairRuntimePolicy.allowsNavigation("http://127.0.0.1:3456/sessions/x", 3456))
+    check(RepairRuntimePolicy.allowsNavigation("http://127.0.0.1:3456/?token=$token", 3456))
+    for (bad in listOf("https://127.0.0.1:3456/", "http://localhost:3456/", "http://127.0.0.1:3457/", "file:///data/user/0/com.dsh.fixhelp/files/x", "content://x", "javascript:alert(1)", "http://127.0.0.1:3456@evil.example/", "http://user@127.0.0.1:3456/", "intent://x")) {
+        check(!RepairRuntimePolicy.allowsNavigation(bad, 3456))
+    }
+    check(RepairRuntimePolicy.allowsResource("blob:http://127.0.0.1:3456/id", 3456))
+    check(RepairRuntimePolicy.allowsResource("data:image/png;base64,xxx", 3456))
+    check(!RepairRuntimePolicy.allowsResource("blob:https://example.com/id", 3456))
+    check(!RepairRuntimePolicy.allowsResource("https://analytics.example/x", 3456))
+    println("PASS 21 runtime URL/navigation/resource checks")
+}

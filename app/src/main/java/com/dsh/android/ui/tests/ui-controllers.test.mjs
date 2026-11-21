@@ -52,14 +52,14 @@ test('production UI controllers, browser coordination and bridge dispatch', () =
     const web = path.join(checkout, 'web/contract/src/main/java/com/dsh/android/web');
     run(runtime.java, ['-cp', runtime.classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
       '-no-stdlib', '-no-reflect', '-classpath', classpath, '-d', output,
-      ...['RuntimePermissionQueue', 'SessionDownloadService', 'SystemBarFlashSequence', 'WebRecoveryController',
+      ...['RuntimePermissionQueue', 'SessionDownloadService', 'SystemBarFlashSequence',
         'ImeLayoutController', 'PageBackNavigation', 'BootOverlayPresenter', 'FirstFrameAwaiter',
         'BrowserPaneCoordinator', 'NativePageBridgeActions', 'NativePageBridgeDispatcher', 'BrowserActivityPill']
         .map(name => path.join(root, `${name}.kt`)),
       ...['PageBridge', 'BridgeProtocol'].map(name => path.join(web, `${name}.kt`)), appearanceFile, harness]);
     const result = run(runtime.java, ['--add-modules', 'jdk.httpserver', '-cp', [output, classpath].join(path.delimiter),
       'com.dsh.android.ui.UiControllersChecksKt']);
-    assert.match(result, /passed 34 production behavior checks/);
+    assert.match(result, /passed 30 production behavior checks/);
     console.log(result.trim());
   } finally {
     rmSync(temp, { recursive: true, force: true });

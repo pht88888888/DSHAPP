@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <permission
+        android:name="${applicationId}.permission.REPAIR"
+        android:protectionLevel="signature" />
+    <queries>
+        <package android:name="com.dsh.fixhelp" />
+    </queries>
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -129,6 +136,41 @@
         </activity>
 
 
+
+        <provider
+            android:name="com.dsh.android.repair.RepairProvider"
+            android:authorities="${applicationId}.repair"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:permission="${applicationId}.permission.REPAIR"
+            android:process=":repair" />
+        <activity
+            android:name="com.dsh.android.repair.RepairAuthorizationActivity"
+            android:exported="true"
+            android:permission="${applicationId}.permission.REPAIR"
+            android:process=":repair"
+            android:theme="@style/Theme.DSH" />
+
+        <activity
+            android:name="com.dsh.android.repair.RepairChangeApprovalActivity"
+            android:exported="true"
+            android:permission="${applicationId}.permission.REPAIR"
+            android:process=":repair"
+            android:theme="@style/Theme.DSH" />
+
+        <service
+            android:name="com.dsh.android.repair.RepairTaskService"
+            android:exported="false"
+            android:process=":repair"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-authorized maintenance task" />
+        </service>
+        <service
+            android:name="com.dsh.android.repair.RepairValidationService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Bounded user-authorized engine validation" />
+        </service>
 
         <service
             android:name="com.dsh.android.engine.EngineService"

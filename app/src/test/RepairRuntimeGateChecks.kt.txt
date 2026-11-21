@@ -1,0 +1,106 @@
+package com.dsh.android.repair
+
+import android.content.Context
+import android.os.Bundle
+import android.os.SystemClock
+import java.io.File
+import java.nio.file.Files
+
+fun main(args: Array<String>) {
+    val root = File(args.single()); val context = Context(root)
+    val control = File(root, "repair-control").apply { mkdirs() }
+    val task = File(control, "task.json")
+    var checks = 0
+    fun test(name: String, fn: () -> Unit) { fn(); checks++; println("PASS $name") }
+    test("absent task permits normal startup") { check(!RepairRuntimeGate.blocked(context)) }
+    for (phase in listOf("preparing", "editable", "committing", "validating", "awaiting_ui", "ui_validating", "ending", "failed", "recovery_required", "ended", "")) {
+        test("phase $phase fences runtime") { task.writeText("{\"phase\":\"$phase\"}"); check(RepairRuntimeGate.blocked(context)) }
+    }
+    test("complete alone releases fence") { task.writeText("{\"phase\":\"complete\"}"); check(!RepairRuntimeGate.blocked(context)) }
+    test("malformed state fails closed") { task.writeText("{"); check(RepairRuntimeGate.blocked(context)) }
+    test("oversize state fails closed") { task.writeText(" ".repeat(65537)); check(RepairRuntimeGate.blocked(context)) }
+    test("atomic backup without base remains fenced") {
+        task.renameTo(File(control, "task.json.bak")); check(RepairRuntimeGate.blocked(context))
+        File(control, "task.json.bak").delete()
+    }
+    test("atomic new without base remains fenced") {
+        File(control, "task.json.new").writeText("{}"); check(RepairRuntimeGate.blocked(context)); File(control, "task.json.new").delete()
+    }
+    test("task final symlink fails closed") {
+        val outside = File(root, "outside").apply { writeText("{\"phase\":\"complete\"}") }
+        Files.createSymbolicLink(task.toPath(), outside.toPath()); check(RepairRuntimeGate.blocked(context)); task.delete()
+    }
+    task.writeText("{\"phase\":\"validating\"}")
+    fun response(input: Bundle) = Bundle().apply {
+        putBoolean("allowed", true); putString("kind", input.getString("kind")!!)
+        putString("task_id", input.getString("task_id")!!); putString("attempt_id", input.getString("attempt_id")!!)
+        putString("permit_id", "permit-1"); putLong("deadline_elapsed", 5000)
+    }
+    test("state is not execution authority") { check(!RepairRuntimeGate.canRun(context)) }
+    test("no provider reply rejects permit") { check(RepairRuntimeGate.acquire(context, "engine", "task-1", "attempt-1") == null) }
+    context.contentResolver.callback = { _, input -> response(input) }
+    var permit: RepairRuntimeGate.Permit? = null
+    test("current provider permit permits engine") {
+        permit = RepairRuntimeGate.acquire(context, "engine", "task-1", "attempt-1")
+        check(permit != null && RepairRuntimeGate.canRun(context))
+    }
+    test("revalidation happens every execution") {
+        val n = context.contentResolver.calls; check(RepairRuntimeGate.canRun(context)); check(context.contentResolver.calls > n)
+    }
+    test("deadline expiry rejects previously valid permit") {
+        SystemClock.elapsed = 5000; check(!RepairRuntimeGate.canRun(context)); SystemClock.elapsed = 1000
+    }
+    test("provider revocation rejects cached permit") {
+        context.contentResolver.callback = { _, _ -> Bundle().apply { putBoolean("allowed", false) } }
+        check(!RepairRuntimeGate.canRun(context))
+    }
+    test("incorrect echoed attempt rejects permit") {
+        context.contentResolver.callback = { _, input -> response(input).apply { putString("attempt_id", "other") } }
+        check(RepairRuntimeGate.acquire(context, "engine", "task-1", "attempt-2") == null)
+    }
+    test("blank permit rejected") {
+        context.contentResolver.callback = { _, input -> response(input).apply { putString("permit_id", "") } }
+        check(RepairRuntimeGate.acquire(context, "engine", "task-1", "attempt-2") == null)
+    }
+    test("invalid input never reaches provider") {
+        val n = context.contentResolver.calls
+        check(RepairRuntimeGate.acquire(context, "bootstrap", "task-1", "attempt-2") == null)
+        check(RepairRuntimeGate.acquire(context, "engine", "../escape", "attempt-2") == null)
+        check(context.contentResolver.calls == n)
+    }
+    test("attempt evidence identity must match") {
+        val dir = File(control, "validation").apply { mkdirs() }
+        File(dir, "attempt-1.json").writeText("{\"attempt_id\":\"other\",\"status\":\"passed\"}")
+        check(RepairRuntimeGate.readAttempt(context, "attempt-1") == null)
+    }
+    test("attempt evidence symlink rejected") {
+        val file = File(control, "validation/attempt-2.json")
+        Files.createSymbolicLink(file.toPath(), File(root, "outside").toPath())
+        check(RepairRuntimeGate.readAttempt(context, "attempt-2") == null)
+    }
+    test("safe attempt evidence accepted") {
+        File(control, "validation/attempt-3.json").writeText("{\"attempt_id\":\"attempt-3\",\"status\":\"passed\"}")
+        check(RepairRuntimeGate.readAttempt(context, "attempt-3")?.getString("status") == "passed")
+    }
+    test("dead runtime identity fails closed") { check(!RepairRuntimeGate.runtimeAlive(context, Int.MAX_VALUE, "1")) }
+    test("invalid runtime identity fails closed") { check(!RepairRuntimeGate.runtimeAlive(context, -1, "x")) }
+    test("foreign main process name is not accepted") {
+        check(!RepairRuntimeGate.runtimeAlive(context, ProcessHandle.current().pid().toInt(), "1"))
+    }
+    test("engine launch requires foreground service") {
+        check(RepairRuntimeGate.launchEngine(context, "task-1", "attempt-4")); check(context.foregroundStarts == 1)
+    }
+    test("foreground rejection fails closed") {
+        context.rejectForeground = true; check(!RepairRuntimeGate.launchEngine(context, "task-1", "attempt-4")); context.rejectForeground = false
+    }
+    test("invalid launch identity never starts service") {
+        val starts = context.foregroundStarts
+        check(!RepairRuntimeGate.launchEngine(context, "../bad", "attempt-4")); check(context.foregroundStarts == starts)
+    }
+    test("assistant remains independent") {
+        com.dsh.android.BuildConfig.IS_REPAIR_ASSISTANT = true
+        check(!RepairRuntimeGate.blocked(context)); com.dsh.android.BuildConfig.IS_REPAIR_ASSISTANT = false
+    }
+    RepairRuntimeGate.clear(permit!!)
+    println("passed $checks production repair gate checks")
+}

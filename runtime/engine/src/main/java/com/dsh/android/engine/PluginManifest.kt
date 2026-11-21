@@ -25,8 +25,8 @@ import java.io.File
  * ① **只动 `dsh.profile.bundles` 这一个数组**，其余字段原样保留。
  *    `package.json` 里还有 `dependencies`（插件从哪来），摘 bundle 不碰它 ——
  *    这样「装回去」只是把名字写回数组，不需要重新下载。
- * ② **写之前必须能读回来**。`package.json` 非法 JSON 是引擎起不来的头号原因
- *    （见 `EngineManager` 的启动前体检），所以：先备份、写临时文件、**回读校验**、
+ * ② **写之前必须能读回来**。无效的 `package.json` 会令引擎无法启动，所以：
+ *    先备份、写临时文件、**回读校验**、
  *    再原子替换。任一步失败就还原，绝不留下半份文件。
  * ③ **官方 bundle 不可摘**（「@deepseek-ai/」开头的那些）。摘掉 `dsh-web-app`
  *    等于把界面本身删了，那不是「修」是「毁」。由 [isProtected] 判定。
@@ -164,15 +164,4 @@ object PluginManifest {
         }
     }
 
-    /**
-     * 从 `profiles/web/package.json` 推导**上一个**坏 bundle 的候选。
-     *
-     * 用于「一键摘掉刚装的插件」：插件是用户最后装的那个，所以取清单**末尾**
-     * 的非官方项。这与 `EngineManager.isolateBadBundles` 的二分思路不同 ——
-     * 那个要试启动十几秒一轮，这个零成本且命中率极高（刚装完就坏是主要路径）。
-     *
-     * @return 候选包名；没有可摘的返回 null。
-     */
-    fun lastAddedCandidate(profileDir: File): String? =
-        read(profileDir)?.second?.lastOrNull { !it.isProtected }?.name
 }

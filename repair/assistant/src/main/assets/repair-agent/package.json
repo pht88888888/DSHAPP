@@ -1,0 +1,12 @@
+{
+  "name": "@dsh-android/repair-profile",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Original DSH Android profile with additive rescue tools and authorization settings",
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+    }
+  }
+}

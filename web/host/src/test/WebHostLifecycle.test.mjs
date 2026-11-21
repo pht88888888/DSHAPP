@@ -51,6 +51,8 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
 import android.webkit.WebViewClient
+ import android.webkit.RenderProcessGoneDetail
+ import android.view.ViewGroup
 import android.webkit.ValueCallback
 import android.net.Uri
 import java.lang.reflect.Proxy
@@ -87,7 +89,7 @@ class Recorder {
   }
  } as PageBridge
 }
-class WebHostCallbacks(val bridge: PageBridge) { val onConsole: (String) -> Unit = {} }
+class WebHostCallbacks(val bridge: PageBridge) { val onConsole: (String) -> Unit = {}; var onRendererGone: (Boolean) -> Unit = {} }
 class JSONObject {
  private val data = mutableMapOf<String, Any?>()
  fun put(key: String, value: Any?): JSONObject { data[key] = value; return this }
@@ -150,7 +152,7 @@ private class SystemFixture(val callbacks: WebHostCallbacks) {
  val context = Any()
  ${fields(system, [...commonFields, 'webView', 'filePathCallbackRef', 'paintPending', 'paintRequestId', 'staleRequestId'])}
  init { ${system.slice(wiringStart, wiringEnd)} }
- ${methods(system, ['postToUi', 'destroy', 'loadUrl', 'evaluateJavascript', 'awaitFirstFrame', 'resetFirstFrame', 'reload'])}
+ ${methods(system, ['onRenderProcessGone', 'postToUi', 'destroy', 'loadUrl', 'evaluateJavascript', 'awaitFirstFrame', 'resetFirstFrame', 'reload'])}
 }
 private class GeckoFixture(val callbacks: WebHostCallbacks) {
  val context = Any()
@@ -163,7 +165,7 @@ private class GeckoFixture(val callbacks: WebHostCallbacks) {
  fun finishDownload() { error("Not a lifecycle test input") }
  fun urlFilename(url: String) = url
  ${body(gecko, 'private val messageDelegate =').replace('private val ', 'val ')}
- ${methods(gecko, ['postToUi', 'destroy', 'installBridgeExtension', 'flushPendingUntilReady', 'handleExtensionMessage', 'dispatchInvoke', 'pushSnapshot', 'postToExtension', 'openBridgeGate', 'loadUrl', 'armTokenRedirectFollower', 'reload', 'evaluateJavascript', 'awaitFirstFrame', 'resetFirstFrame'])}
+ ${methods(gecko, ['onContentExit', 'postToUi', 'destroy', 'installBridgeExtension', 'flushPendingUntilReady', 'handleExtensionMessage', 'dispatchInvoke', 'pushSnapshot', 'postToExtension', 'openBridgeGate', 'loadUrl', 'armTokenRedirectFollower', 'reload', 'evaluateJavascript', 'awaitFirstFrame', 'resetFirstFrame'])}
 }
 private fun invokeAll(bridge: Any): Int {
  val methods = bridge.javaClass.declaredMethods.filter { it.getAnnotation(android.webkit.JavascriptInterface::class.java) != null }
@@ -290,6 +292,22 @@ fun main(args: Array<String>) {
    val fallback = GeckoFixture(WebHostCallbacks(Recorder().bridge)); fallback.installBridgeExtension(); fallback.loadUrl("fallback")
    fallback.runtime.webExtensionController.install.failure(IllegalStateException("install failed")); check(fallback.session.urls == listOf("fallback")); fallback.destroy()
   }
+  "renderer-exit" -> {
+   val callbacks = WebHostCallbacks(Recorder().bridge)
+   val h = SystemFixture(callbacks); val parent = ViewGroup(); h.webView.parent = parent
+   var reports = 0
+   callbacks.onRendererGone = { crashed ->
+    check(crashed && h.webView.parent == null && h.webView.destroys == 1); reports++
+    h.loadUrl("must not reload")
+   }
+   check(h.onRenderProcessGone(h.webView, RenderProcessGoneDetail(true)))
+   check(h.onRenderProcessGone(h.webView, RenderProcessGoneDetail(true)))
+   check(reports == 1 && parent.removals == 1 && h.webView.urls.isEmpty())
+   val g = GeckoFixture(callbacks)
+   callbacks.onRendererGone = { crashed -> check(!crashed && g.session.closes == 1); reports++; g.reload() }
+   g.onContentExit(false); g.onContentExit(true)
+   check(reports == 2 && g.session.urls.isEmpty())
+  }
   "host-isolation" -> {
    val a = GeckoFixture(WebHostCallbacks(Recorder().bridge)); val recorder = Recorder(); val b = GeckoFixture(WebHostCallbacks(recorder.bridge))
    a.dispatchInvoke("bubbleSetEnabled", JSONArray().put(true)); b.dispatchInvoke("bubbleSetEnabled", JSONArray().put(true))
@@ -319,7 +337,9 @@ class Handler(looper: Looper) {
 @Target(AnnotationTarget.FUNCTION) @Retention(AnnotationRetention.RUNTIME) annotation class JavascriptInterface
 fun interface ValueCallback<T> { fun onReceiveValue(value: T?) }
 class WebViewClient
+class RenderProcessGoneDetail(private val crashed: Boolean) { fun didCrash() = crashed }
 class WebView(context: Any) {
+  var parent: Any? = null
  var bridge: Any? = null; var webChromeClient: Any? = null; var webViewClient = WebViewClient()
  var destroys = 0; var removals = 0
  val evals = mutableListOf<String>(); val urls = mutableListOf<String>()
@@ -329,11 +349,13 @@ class WebView(context: Any) {
  fun addJavascriptInterface(bridge: Any, name: String) { this.bridge = bridge }
  fun removeJavascriptInterface(name: String) { removals++; bridge = null }
  fun setDownloadListener(listener: Any?) {}
- fun destroy() { destroys++ }
+ fun destroy() { check(parent == null); destroys++ }
  fun evaluateJavascript(script: String, callback: ((String?) -> Unit)?) { check(destroys == 0); evals.add(script); lastCallback = callback }
  fun loadUrl(url: String) { check(destroys == 0); urls.add(url) }
  fun postVisualStateCallback(id: Long, callback: VisualStateCallback) { check(destroys == 0); frame = id to callback }
 }`,
+  'ViewGroup.kt': `package android.view
+class ViewGroup { var removals = 0; fun removeView(view: android.webkit.WebView) { removals++; view.parent = null } }`,
   'Uri.kt': 'package android.net\nclass Uri',
 };
 let work, runtime;
@@ -368,6 +390,7 @@ const scenarios = [
   ['gecko-drained', 'Gecko 待发队列已经取出后遇销毁也停止继续发送'],
   ['gecko-delayed-public', 'Gecko 销毁后迟到 token 定时器及公开入口不触碰关闭 session'],
   ['gecko-live', 'Gecko 正常安装/失败放行、标注响应与 ack、eval 返回保持可用'],
+  ['renderer-exit', '双内核渲染进程退出后释放一次，拒绝复用且仅通知一次'],
   ['host-isolation', '销毁一个 Host 不清除其他 Host 的任务与标注缓存'],
 ];
 for (const [scenario, name] of scenarios) test(name, () => {

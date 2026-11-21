@@ -1,0 +1,33 @@
+package android.content
+import android.net.Uri
+import android.os.Bundle
+import java.io.File
+open class Context(val filesDir: File) {
+    val packageName = "com.dsh.android"
+    class AppInfo(val uid: Int = 0)
+    val applicationInfo = AppInfo()
+    val contentResolver = ContentResolver()
+    var foregroundStarts = 0
+    var rejectForeground = false
+    fun startService(intent: Intent): Any? = error("Validation must use foreground service")
+    fun startForegroundService(intent: Intent): Any? { if (rejectForeground) error("Foreground start rejected"); foregroundStarts++; return Any() }
+    fun stopService(intent: Intent) = true
+    fun sendBroadcast(intent: Intent, permission: String) {}
+}
+class ContentResolver {
+    var callback: (String, Bundle) -> Bundle? = { _, _ -> null }
+    var calls = 0
+    fun call(uri: Uri, method: String, arg: String?, extras: Bundle): Bundle? { calls++; return callback(method, extras) }
+}
+class Intent {
+    var action: String? = null
+    constructor()
+    constructor(value: String) { action = value }
+    constructor(context: Context, cls: Class<*>)
+    fun setAction(value: String): Intent { action = value; return this }
+    fun setClassName(pkg: String, cls: String) = this
+    fun setPackage(pkg: String) = this
+    fun putExtra(key: String, value: String) = this
+    fun addFlags(flags: Int) = this
+    companion object { const val FLAG_ACTIVITY_NEW_TASK=1; const val FLAG_ACTIVITY_CLEAR_TOP=2 }
+}

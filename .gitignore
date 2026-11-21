@@ -30,6 +30,9 @@ COMMIT_MSG.tmp
 # 真机调试输出（可能包含会话状态）
 tools/uiagent-state-snapshot.json
 
+# 夸克网盘 CLI 的 browse 查询产物
+browse/
+
 # 本机视频工作目录与中间产物
 opus-video/
 video/

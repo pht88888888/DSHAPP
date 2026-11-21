@@ -3,12 +3,6 @@
   "maxNewFileLines": 1000,
   "baselines": [
     {
-      "path": "app/src/main/java/com/dsh/android/diagnostics/DiagnosticBundle.kt",
-      "maxLines": 1203,
-      "owner": ":app",
-      "reason": "既有跨领域诊断包组装，集中管理环境快照、日志与崩溃材料、诊断结论、压缩和截断说明；已归属应用装配层，历史体积按迁移终态锁定。"
-    },
-    {
       "path": "app/src/main/java/com/dsh/android/ui/MainActivity.kt",
       "maxLines": 4055,
       "owner": ":app",
@@ -19,12 +13,6 @@
       "maxLines": 1212,
       "owner": ":core:logging",
       "reason": "既有三路日志存储底座，共有写入锁、异步队列、限流、轮转及崩溃路径收尾；不依赖应用或引擎快照，历史实现按迁移终态锁定。"
-    },
-    {
-      "path": "core/logging/src/main/java/com/dsh/android/log/RescueBoot.kt",
-      "maxLines": 1046,
-      "owner": ":core:logging",
-      "reason": "既有启动失败和救援层级记录，负责持久化证据及报告，不执行引擎降级动作；保留原记录格式与解析语义，历史体积按迁移终态锁定。"
     },
     {
       "path": "feature/browser/src/main/java/com/dsh/android/browser/AiBrowserView.kt",
@@ -48,7 +36,7 @@
       "path": "runtime/engine/src/main/java/com/dsh/android/engine/EngineManager.kt",
       "maxLines": 3450,
       "owner": ":runtime:engine",
-      "reason": "既有引擎运行装配，协调资产安装、启动快照、进程及健康救援决定；引导和探测等独立 owner 已拆出，不依赖应用具体宿主，剩余编排按迁移终态锁定。"
+      "reason": "既有引擎运行装配，协调资产安装、正常启动、退出与显式重启；救援、引导和探测等独立 owner 已拆出，不依赖应用具体宿主，剩余编排按迁移终态锁定。"
     },
     {
       "path": "web/host/src/gecko/java/com/dsh/android/web/GeckoWebHost.kt",

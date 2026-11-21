@@ -1,0 +1,2 @@
+package com.dsh.android
+object BuildConfig { var IS_REPAIR_ASSISTANT = false }

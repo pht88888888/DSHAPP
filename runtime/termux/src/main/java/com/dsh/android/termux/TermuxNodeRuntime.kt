@@ -10,7 +10,7 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
-/** Node 的安装标记、自校验和修复事务；所有入口由引导器持有 prefix 双锁后调用。 */
+/** Node 的安装标记和安装自校验；所有入口由引导器持有 prefix 双锁后调用。 */
 internal class TermuxNodeRuntime(
     private val prefixDir: File,
     private val openAsset: (String) -> InputStream,
@@ -30,11 +30,7 @@ internal class TermuxNodeRuntime(
             // 磁盘错误）都会留下一个「大小对、ELF 头也在、但内容已坏」的文件，
             // 而这里原本只看文件在不在 ⇒ 直接放行 ⇒ 引擎再也起不来。
             //
-            // 真机实测那种坏法：node 起动时在 V8 反序列化内嵌启动快照处
-            // `Check failed: magic_number_ == SerializedData::kMagicNumber`，
-            // 报错发生在**任何一行 JS 之前**，所以插件/profile 层面的所有自救
-            // 路径（含「进入安全模式」）都够不着它 —— 用户只能卸载重装，而那会
-            // 清掉整个 $DSH_HOME。见 [nodeIsUsable]。
+            // 内置 Node 的安装校验在 JS、profile 和插件加载之前发生。
             if (nodeIsUsable()) return true
             Log.w("TERMUX", "内置 Node 运行时已损坏，重新解包: ${nodeBinary.absolutePath}")
             nodeMarker.delete()
@@ -234,21 +230,6 @@ internal class TermuxNodeRuntime(
         } catch (t: Throwable) {
             Log.w("TERMUX", "node --version 校验异常: ${t.message}")
             false
-        }
-    }
-
-    /** 返回是否尝试了修复，与既有安全模式 API 的语义保持一致。 */
-    fun repairIfNeededLocked(): Boolean {
-        return if (!prefixDir.exists()) {
-            false
-        } else if (nodeMarker.exists() && nodeBinary.isFile && nodeIsUsable()) {
-            false
-        } else {
-            Log.w("TERMUX", "安全模式：内置 Node 运行时不可用，重新解包 $NODE_VERSION")
-            nodeMarker.delete()
-            nodeBinary.delete()
-            installLocked()
-            true
         }
     }
 

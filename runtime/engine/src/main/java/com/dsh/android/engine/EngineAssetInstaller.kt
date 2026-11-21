@@ -8,7 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /** 拥有引擎归档的 staging 目录与解包事务；状态展示由调用者映射。 */
-internal class EngineAssetInstaller(
+class EngineAssetInstaller(
     private val assets: AssetManager,
     private val filesDir: File,
     private val apkFile: File,
@@ -20,11 +20,12 @@ internal class EngineAssetInstaller(
      * 确保引擎资产已解包（幂等）。
      *
      * @param versionStamp 资产版本标识；与已解包版本一致时直接跳过。
+     * @return 已就绪为 true，空间不足为 false；解包异常仍向上抛出。
      */
-    suspend fun ensureExtracted(versionStamp: String, progress: (Int) -> Unit, failure: (String) -> Unit) = withContext(Dispatchers.IO) {
+    suspend fun ensureExtracted(versionStamp: String, progress: (Int) -> Unit, failure: (String) -> Unit): Boolean = withContext(Dispatchers.IO) {
         if (stampFile.isFile && stampFile.readText().trim() == versionStamp) {
             Log.i(TAG, "引擎资产已是最新（$versionStamp），跳过解包")
-            return@withContext
+            return@withContext true
         }
 
         progress(0)
@@ -55,7 +56,7 @@ internal class EngineAssetInstaller(
                         "${required / (1024 * 1024)} MB，当前可用仅 ${free / (1024 * 1024)} MB"
                     Log.e(TAG, msg)
                     failure(msg)
-                    return@withContext
+                    return@withContext false
                 }
             }
         }
@@ -103,6 +104,7 @@ internal class EngineAssetInstaller(
             }
             progress(100)
             Log.i(TAG, "引擎资产解包完成：${engineDir.absolutePath}")
+            true
         } catch (t: Throwable) {
             staging.deleteRecursively()
             failure("引擎解包失败: ${t.message}")

@@ -199,28 +199,14 @@ class GeckoWebHost(
                 action?.invoke()
             }
 
-            /**
-             * 内容进程**崩溃**了（与 WebView 的 `onRenderProcessGone(didCrash=true)` 对应）。
-             *
-             * ⚠️ 与 system 版那处不同：这里的默认实现**不会**杀宿主进程，它只是
-             *   什么都不做 —— 于是 session 停在坏状态、界面画不出东西，而用户
-             *   得不到任何提示。所以同样必须处理（见 `MainActivity.onRendererGone`）。
-             */
-            override fun onCrash(session: GeckoSession) {
-                if (destroyed) return
-                Log.w(Log.TAG, "Gecko 内容进程已崩溃")
-                callbacks.onRendererGone(true)
-            }
+            override fun onCrash(session: GeckoSession) = onContentExit(true)
+            override fun onKill(session: GeckoSession) = onContentExit(false)
 
-            /**
-             * 内容进程被系统**回收**（低内存时的正常资源管理，不是错误）。
-             *
-             * 与 [onCrash] 的区别只在日志措辞：两者都要重载界面才会回来。
-             */
-            override fun onKill(session: GeckoSession) {
+            private fun onContentExit(crashed: Boolean) {
                 if (destroyed) return
-                Log.w(Log.TAG, "Gecko 内容进程已被系统回收")
-                callbacks.onRendererGone(false)
+                Log.w(Log.TAG, "Gecko 内容进程已终止（didCrash=$crashed）")
+                destroy()
+                callbacks.onRendererGone(crashed)
             }
         }
 

@@ -120,11 +120,6 @@ class TermuxBootstrap(
         prefixLock.withLock { withPrefixFileLock { node.installLocked() } }
     }
 
-    /** 保持安全模式 API：是否尝试了修复，而非安装成功判据。 */
-    fun repairNodeRuntimeIfNeeded(): Boolean = prefixLock.withLock {
-        withPrefixFileLock { node.repairIfNeededLocked() }
-    }
-
     /**
      * 把 `$PREFIX` 下所有 ELF/shebang 里的 `/data/data/com.termux/…` 换成实际包路径。
      *

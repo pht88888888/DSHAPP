@@ -9,7 +9,7 @@
 
 ## 决定
 
-先按进程、安装事务、渲染、窗口、连接和任务的实际 owner 拆职责；管理器保留启动顺序、救援与用户停止等决策。组件通过窄端口获得所需路径、状态和动作，再迁入物理模块。
+先按进程、安装事务、渲染、窗口、连接和任务的实际 owner 拆职责；管理器保留启动顺序与用户停止等决策。组件通过窄端口获得所需路径、状态和动作，再迁入物理模块。
 
 app 负责 Application/Activity/Service 与跨领域接线。Window/View 和权限 pending 留给当前宿主，通知和 WakeLock 留给 EngineService。日志底座与 app 诊断采集分开。契约不接收万能 AppGraph，不从底层读取 app 的 R/BuildConfig 或实现类。
 

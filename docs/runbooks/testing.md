@@ -34,7 +34,7 @@ node --test tools/test-module-boundaries.mjs
 
 ## 源体积与历史例外
 
-`node tools/check-source-policy.mjs` 直接扫描固定 11 个模块的生产 Kotlin 源码，不漏掉 app 之外的目录；排除 build、Gradle 缓存、单测/设备测试与 fixture。非历史例外的手写 `.kt` 上限为 1000 行，缺失锁或基线文件明确失败，不能把缺文件计作零行。现有编号式“修复 N”注释禁令继续生效。
+`node tools/check-source-policy.mjs` 直接扫描注册的 13 个模块的生产 Kotlin 源码，不漏掉 app 之外的目录；排除 build、Gradle 缓存、单测/设备测试与 fixture。非历史例外的手写 `.kt` 上限为 1000 行，缺失锁或基线文件明确失败，不能把缺文件计作零行。现有编号式“修复 N”注释禁令继续生效。
 
 历史超线文件由 `catalogs/source-policy.lock.json` 逐文件记录 `{path,maxLines,owner,reason}`，说明真实状态所有权或原生字面量等原因。基线以结构迁移完成后的实际行数为初始值，缩短文件不要求同次立刻更新锁，后续可下调；不能为过检查抬高上限。
 
@@ -72,10 +72,21 @@ node tools/run-gates.mjs --level L2 --sdk /absolute/path/to/android-sdk --runtim
 - `:app:testSystemDebugUnitTest`、`:app:testGeckoDebugUnitTest`
 - `:app:lintSystemDebug`、`:app:lintGeckoDebug`
 - `:app:assembleSystemRelease`、`:app:assembleGeckoRelease`
+- `:repair:assistant:assembleRelease`、`:repair:assistant:lintDebug`，并检查三个新 APK 的维护通道清单和同一证书
 
 不会将 `NO-SOURCE`、任务退出码 0、旧测试 XML 或旧 APK 当作本次通过。两个 flavor 各自必须有新鲜、非零且零跳过的 JUnit 结果，lint 不得有 Error/Fatal。正式 APK 必须存在有效签名、既有 15 字符身份、targetSdk 28、正确版本配对、相同证书与插件内容，且运行资产符合锁。
 
 可用 `--system /absolute/system.apk --gecko /absolute/gecko.apk --generated-dir /absolute/generated-plugin-components --build-tools 35.0.0` 指定真实输出；APK 必须由本次任务生成。签名配置不足或构建缓存/工具缺失会失败，不自动退回 debug 包。
+
+独立修复助手当前源码 `0.4.1` 是**完整原版 DSH 加应用级救援**：直接编译原 app 源码、资源和主 Manifest，复用 System 宿主、全部模块/资产、正常启动、模型设置、原预设和通用工具，只追加救援设置入口、预设/十二工具与 native 桥。旧裁剪版 `0.2.0` 有过本地门禁通过但实际 Web 依赖失败，不能把其报告或假工具表当作当前可用证据。L1 证据投影、应用级根/流式文件 broker 等实际 Kotlin 测试显式提供 `ENGINE_TEST_JSON_JAR`；真实 rc.5 检查须验证追加后原 Host/Client/预设仍可激活、Web 所需 fileUpload/sessions/uiWorkspace 服务与完整 boot、参数/信箱及绑定 epoch 的拒绝路径，不能只 grep 未禁用。授权覆盖 30 分钟空闲、同一有效 grant 续期、撤销/替换/重启/安装身份变化；真实活动/通知另需设备证据。
+
+0.4.0用户实测读/list正常而全部stage失败，不能归因断连。0.4.1新增私有hardlink拒绝的生产adapter红绿回归（当前16场景），包括EACCES拒绝下真实appboot大文件stage/apply/rollback、四种兼容errno、EEXIST/EIO不覆盖、O_EXCL预约冲突及FD无泄漏；空间检查使用持有目录FD的fstatvfs。另有broker17场景，其中覆盖storage_preflight/original_backup/candidate_write/journal_publish固定阶段与errno、清理失败不覆盖原始异常及脱敏。主机注入拒绝只是复现条件，不是设备实际errno证据；真实目标status须有`file_broker_revision: app_files_041`，失败返回`diagnostic`固定标签，禁止把无候选视为绝无临时目录。新增修正需要目标native与助手配套更新，更新导致旧grant失效。最终新门禁和设备结果仍另行报告。
+
+L2 助手产物须核对 `com.dsh.fixhelp`/targetSdk 28/arm64、原 MainActivity launcher/DshApplication/EngineService、完整原版模块组件和权限（含用户另授 Shizuku/ADB 等原能力）、29 个原版 assets/lib 字节一致及追加资产、目标 `:repair` 原生确认页、三个 APK 同一正式证书。不再要求移除 Shizuku/ADB 或私有新 Agent Activity——那些是旧裁剪架构断言。[APK 检查器](<../../tools/check-repair-artifacts.mjs>)应按 applicationId 规范化比较完整组件/权限；AGP 自动生成 dexopt/baseline profile 可随编译变化，不能拿它当固定原版资产。中间三 release 构建及资产检查不代替最新源码最终 L1/L2。中间助手约 137,769,103 bytes、System 137,708,664 bytes，差约 60 KB；最终大小/摘要看新报告。L0 既有 mobile 定时器和 npm pack 失败保留，不宣称全绿。
+
+[repair patch](<../../repair/assistant/src/main/assets/repair-agent/repair.patch.yml>)只追加救援，不再有三 namespace 设置保护或全局封闭工具限制。原模型设置/ConfigEditor 与 shell/文件/插件工具保持可用。**安全报告必须区分 broker 与完整 Agent**：同 UID 通用工具可读助手私有信箱并仿造请求，不能声称信箱对这些工具隔离；用户另授 root/ADB 等原能力也可能绕过 broker。普通助手 UID 不可直接读取目标私有目录，跨包 broker 自身仍须 native 身份、grant、范围和确认检查。每 Agent/epoch 绑定旨在拦截无意的旧对话/旧请求跨目标，不是防恶意同 UID 代码的强制安全边界。生产授权流主机测试使用 Android 窄 stubs，包含首次点击与授权返回先于恢复；不证明实际设备 UI、通知或真实网络模型保存。
+
+必须另验应用级根/分页目录、每段 128 KiB（不是整文件上限）、任意大文件流式全摘要与字节补丁、UTF-8/base64、私有配置/插件/二进制范围、新建/删除/空目录回退与原摘要约束、符号链接与越界、原生一次性确认、整个 start/Node `waitFor` 期间的引擎排他、主进程仍在或同 UID 孤儿 Node 的拒绝、`/proc` 未知状态 fail closed、原生一次性确认后窄范围 SIGTERM 的 UID/精确 argv/可执行文件/参数及 PID 启动身份复核、无关 Node 不受影响、未保存请求/终端中断警告、关闭失败不覆盖且不自动 forceStop/SIGKILL、事务边界中断/空间不足/冲突及回退；新 grant 不应访问旧 grant 备份。当前原生策略 harness 含 1 个 Node 驱动/19 个真实 Kotlin 场景（含全引擎依赖错误定位）、零跳过的局部记录；真实 Node `--check` 对损坏/修正 shebang 的 fixture 不等于 AI 自主定位编辑或 Android 修复，最终门禁必须准确保留这种证明范围。profile、通用插件及私有 native/lib/二进制已纳入同一文件范围，但链接/硬链接及 OS 只读安装区不可就地修改，后者须签名更新。多文件原子事务、数据库/WAL 逻辑修复和隔离自动试跑未实现，不能用字节回退用例宣称这些能力。跨包权限、独立引擎、真实 AI 编辑与验证、长期有活动续租/无活动到期、通知停止以及故障隔离仍需[专门设备验收](<../agents/repair-assistant.md#不能由编译替代的设备验收>)。既有八场景、旧裁剪 APK/只读联调和本轮中间构建不能自动证明新增链路；最终源码 release/门禁、完整 Web smoke 以本轮仓库外报告为准，实际模型修复和设备结果尚无通过证据。本轮未安装或新上传，不作发布结论；冻结后不回填源码文档改变摘要。
 
 ## L3：独立设备证据
 
@@ -112,7 +123,9 @@ node tools/run-gates.mjs --level L3 --device-evidence /absolute/path/to/device-r
 }
 ```
 
-上例只是格式说明，不是可用设备报告。必须覆盖以下八个场景，每项都有真实命令和原始证据：`cold-start`、`keep-alive`、`web-permissions-system`、`web-permissions-gecko`、`recovery`、`bubble-dispose`、`browser-dispose`、`upgrade-market-state`。源码身份需与当前检出一致，摘要计算使用 `tools/release/inspect.mjs` 的 `sourceSnapshot`；验收报告存于仓库外以避免自引用。
+上例只是格式说明，不是可用设备报告。必须覆盖以下八个场景，每项都有真实命令和原始证据：`cold-start`、`keep-alive`、`web-permissions-system`、`web-permissions-gecko`、`manual-failure-actions`、`bubble-dispose`、`browser-dispose`、`upgrade-market-state`。源码身份需与当前检出一致，摘要计算使用 `tools/release/inspect.mjs` 的 `sourceSnapshot`；验收报告存于仓库外以避免自引用。
+
+`manual-failure-actions`：在两个 flavor 的测试环境分别记录引擎启动失败/意外退出、Web 渲染进程丢失；确认无自动重启、无自动重载、不改插件和用户数据。验证原生日志及备份入口可用，用户手动重试引擎或重建页面后才继续。
 
 设备报告证明范围以其原始记录为准。结构校验器无法独立证明人工记录的真实性，维护者必须核对实际设备结果。门禁不会生成成功设备记录、伪造序列号或通过本机单元 fixture 冒充 L3。
 

@@ -99,40 +99,33 @@ class UiOwnerStateTest {
         assertFalse(pane.state.embedded)
     }
 
-    @Test fun destroyedRecoveryOwnerIgnoresDequeuedCrashCallback() {
+    @Test fun destroyedFirstFrameOwnerDropsAnAlreadyDequeuedDeadline() {
         val scheduler = Scheduler()
-        val reloads = mutableListOf<Int>()
-        val events = mutableListOf<WebRecoveryController.Event>()
-        val recovery = WebRecoveryController(scheduler, { 100_000L }, { reloads.add(it); true }, { false }, events::add)
-        recovery.rendererGone(true)
-        recovery.rendererGone(true)
-        val dequeued = scheduler.tasks.single()
-        assertEquals(1, events.size)
-        recovery.close()
+        val frames = mutableListOf<() -> Unit>()
+        var timeout = 0
+        var ready = 0
+        val awaiter = FirstFrameAwaiter(scheduler, frames::add, {}, { timeout++ })
+        awaiter.await { ready++ }
+        val pending = scheduler.tasks.single()
+        awaiter.close()
         assertTrue(scheduler.tasks.isEmpty())
-        dequeued.run()
-        assertTrue(reloads.isEmpty())
-        assertFalse(recovery.requestReload())
+        pending.run()
+        frames.single()()
+        assertEquals(0, timeout)
+        assertEquals(0, ready)
     }
 
-    @Test fun explicitReloadInvalidatesOldTimeoutAndRealFrameStopsRetry() {
+    @Test fun overlayFailureButtonsAreStateSpecificAndNotTimerActions() {
         val scheduler = Scheduler()
-        val reloads = mutableListOf<Int>()
-        val events = mutableListOf<WebRecoveryController.Event>()
-        var painted = false
-        val recovery = WebRecoveryController(scheduler, { 100_000L }, { reloads.add(it); true }, { painted }, events::add)
-        assertTrue(recovery.requestReload())
-        val old = scheduler.tasks.single()
-        assertTrue(recovery.requestReload())
-        val current = scheduler.tasks.single()
-        old.run()
-        assertEquals(listOf(1, 1), reloads)
-        painted = true
-        current.run()
-        assertEquals(listOf(1, 1), reloads)
-        assertTrue(events.isEmpty())
-        assertFalse(recovery.gaveUp)
-        recovery.close()
+        val rendered = mutableListOf<BootOverlayPresenter.State>()
+        val overlay = BootOverlayPresenter(scheduler, { "" }, rendered::add, {})
+        overlay.arm()
+        val pending = scheduler.tasks.single()
+        overlay.reopen()
+        val failed = BootOverlayPresenter.State("engine failed", "details", null, true, BootOverlayPresenter.Action.RetryEngine)
+        overlay.show(failed)
+        pending.run()
+        assertEquals(listOf(failed), rendered)
     }
 
     private class Scheduler : UiTaskScheduler {

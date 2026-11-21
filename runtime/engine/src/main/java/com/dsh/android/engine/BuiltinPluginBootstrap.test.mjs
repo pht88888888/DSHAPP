@@ -11,7 +11,7 @@ import { resolveRepositoryRoot, requireKotlinTestInput } from '../../../../../..
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(directory, 'BuiltinPluginBootstrap.kt'), 'utf8');
 const script = source.match(/val script = """\n([\s\S]*?)\n"""\.trimIndent\(\)/)[1];
-// L1: run against an explicitly supplied extracted engine package only.
+// Run against an explicitly supplied extracted engine package only.
 const enginePackage = requireKotlinTestInput('DSH_ENGINE_PACKAGE');
 const engineDir = path.resolve(path.dirname(enginePackage), '../../..');
 const engineRequire = createRequire(enginePackage);
@@ -56,7 +56,7 @@ function fixture(t, android = false) {
   const legacy = android ? structuredClone(legacyComponents) : [];
   function run(phase, overrides = {}) {
     const request = path.join(root, 'request.json');
-    fs.writeFileSync(request, JSON.stringify({ phase, engineDir, home, profile: 'web', output, plugins, legacyComponents: legacy, ...overrides }));
+    fs.writeFileSync(request, JSON.stringify({ phase, engineDir, home, output, plugins, legacyComponents: legacy, ...overrides }));
     const result = spawnSync(process.execPath, ['-e', script, request], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     return phase === 'plan' ? JSON.parse(fs.readFileSync(output, 'utf8')) : undefined;
@@ -187,7 +187,7 @@ test('安装半成品不登记不落marker，重试成功才提交身份', t => 
   assert.equal(f.manifest().dependencies[f.plugin.packageName], 'link:' + pkgDir);
 });
 
-test('已有profile与用户patch原字节保留，救援模板独立于损坏web', t => {
+test('已有 web profile 与用户 patch 原字节保留，启动不生成其他 profile', t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.profileDir, 'cordis.patch.yml'), '# custom\n[]\n');
   const before = fs.readFileSync(f.manifestPath, 'utf8');
@@ -196,7 +196,7 @@ test('已有profile与用户patch原字节保留，救援模板独立于损坏we
   assert.equal(fs.readFileSync(path.join(f.profileDir, 'cordis.patch.yml'), 'utf8'), '# custom\n[]\n');
   fs.writeFileSync(f.manifestPath, '{broken');
   f.run('init', { profile: 'rescue' });
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/rescue/package.json'), 'utf8')).dsh.profile.bundles, PROFILE_TEMPLATES.web.bundles);
+  assert.deepEqual(fs.readdirSync(path.join(f.home, 'profiles')), ['web']);
   assert.equal(fs.readFileSync(f.manifestPath, 'utf8'), '{broken');
 });
 

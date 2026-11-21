@@ -121,9 +121,8 @@ flowchart TD
 | ProfileOverlayWriter | 基于明确输入生成 overlay | profile 选择与应用顺序 |
 | ProfileDefaultsInstaller | 首次默认值和明确缺项初始化 | 是否允许初始化；用户设置不可覆盖 |
 | EngineLaunchSpecBuilder | 不可变 argv/env/cwd/profile/端口/overlay 列表 | 本轮真实启动快照 |
-| EngineProbeRunner | 临时探测进程、输出上限、超时和 finally 清理 | 救援、隔离和真实启动决策 |
-| PluginIsolationTransaction | 临时清单、备份、完整恢复、隔离计算与报告 | 救援等级和最终隔离决定 |
-| EngineMemoryMonitor | 当前进程世代采样、阈值计时和建议事件 | 核对进程身份后决定重启 |
+| EngineManager | 正常启动、退出和手动重试 | 不自动隔离或恢复 |
+| Profile/plugin state | 由引擎正常加载与用户备份负责 | 不自动改写用户状态 |
 
 EngineManager 始终拥有真实子进程、用户停止意图、State/UiStage、启动顺序、重启与降级决策。不能拆出第二个与它竞争状态的 manager。
 
@@ -138,7 +137,7 @@ EngineFilePatches 继续维护锚点及应用体，管理器保留顺序与结�
 | SessionDownloadService | 连接/流、命名、临时文件、完整提交、失败取消清理 |
 | RuntimePermissionQueue | 合批、串行队列、在途请求、恰好一次派发 |
 | SystemBarFlashSequence | 帧序列、循环次数、配置快照、定时器 |
-| WebRecoveryController | 世代、退避、重试、新首帧等待 |
+| WebHost owner | 世代、销毁、手动重试与新首帧等待 |
 | BootOverlayPresenter | 启动层展示状态、错误分类和启动世代 |
 | ImeLayoutController | 键盘预判、尺寸策略、缓存 |
 | BrowserPaneCoordinator | 面板会话、嵌入/静默、待发送标注及身份 |
@@ -336,7 +335,7 @@ Android 状态和文件事务使用 JUnit、协程虚拟时间测试；JS 沿用
 | P0 基线 | 当前/目标职责、依赖图、API/资源/状态表、未提交变更归属、测试输入、缺口和 ADR | 每个对象有 owner/消费者/回退点，已有成果保留 |
 | P1 入口治理 | 真实 CI 输入、市场测试分层、移除机器路径、旧 remote 来源标记、发布步骤契约 | 干净 L0 可运行，旧来源不冒充最新版，旧发布入口不误报 |
 | P2 低耦合首批 | 下载 → 转录 → 系统栏序列 → 权限队列 | 各项独立变更，特征测试与双 flavor 构建通过 |
-| P3 引擎与依赖 | 安装/兼容 → overlay/defaults → LaunchSpec → probe → 隔离事务 → 内存监控；窄端口接线 | 唯一进程/恢复所有者，无到 UI/具体命令桥反向引用 |
+| P3 引擎与依赖 | 安装/兼容 → overlay/defaults → LaunchSpec → 正常生命周期；窄端口接线 | 唯一进程所有者，无自动隔离、恢复或阈值重启 |
 | P4 其他宿主 | Activity 恢复/启动/IME/桥；browser tab/capture/control；bubble 动画/运动/presenter；Termux/常量/外观 | 生命周期与资源测试、相关设备场景通过 |
 | P5 编译边界 | contracts/logging → termux/privilege → engine → web → browser/bubble；语义稳定后 transport | 每模块无环、独立编译、最小 API，Manifest/资源/flavor 正确 |
 | P6 插件与资产 | JS 局部模块构建与拆分、generated assets、目录迁移、清单/资产锁、旧 remote 退出生产链 | 一个顶层/14 组件、官方扫描/HMR/用户状态不变，产物可追溯 |

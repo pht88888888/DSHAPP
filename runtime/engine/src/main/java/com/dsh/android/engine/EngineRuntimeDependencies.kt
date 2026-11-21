@@ -8,10 +8,10 @@ import java.io.File
 /**
  * 安装引擎运行依赖：Android 平台绑定、搜索/图片/终端依赖、pnpm 与沙箱二进制。
  *
- * 只负责资产落盘、权限与已有安装判据，不拥有进程、profile 或救援状态。
+ * 只负责资产落盘、权限与已有安装判据，不拥有进程或 profile 状态。
  * 调用时序由 [EngineManager] 决定；system 绑定的平台补丁通过回调在原位置执行。
  */
-internal class EngineRuntimeDependencies(
+class EngineRuntimeDependencies(
     private val context: Context,
     private val engineDir: File,
     private val prefixDir: File,

@@ -1,6 +1,6 @@
 package com.dsh.android.engine.constants
 
-/** 正常与救援 profile 名称、overlay 路径和用户层默认配置。 */
+/** Web profile、overlay 路径和用户层默认配置。 */
         /**
          * 旧版内置号池 overlay 的文件名。**只用于删除**：那个写法（`- id: llm-pi-ai`
          * 的 `--patch`）会把用户新建的 provider 一起盖掉，导致 GUI 一加第三方 API
@@ -30,55 +30,8 @@ const val NPM_OFFICIAL_REGISTRY = "https://registry.npmjs.org/"
         // 只在首次安装时播种进 profile 的**用户 patch 层**，之后永不覆盖。
         // 为什么不能用 `--patch` overlay、为什么不会被引擎覆盖，见 seedDefaultSettings()。
 
-        /**
-         * 引擎启动时用的 profile 名（`--profile web`）。
-         *
-         * ⚠️ **`internal` 而不是 `private`**：`RescueCommandBridge` 的 `probe`
-         *   默认就探测这个 profile。让它自己写 `"web"` 字面量等于把这个名字
-         *   复制一份，将来改名必漏一处。
-         */
-        const val PROFILE_WEB = "web"
-
-        /** [PROFILE_WEB] 的私有别名，保持文件内既有引用不动。 */
-const val PROFILE_NAME = PROFILE_WEB
-
-        /**
-         * 救援 profile 名（`--profile rescue`）。
-         *
-         * ⚠️ **不能用引擎内置模板名**：`PROFILE_TEMPLATES` 只有
-         * `acp` / `web` / `headless` / `sdk` / `sdk-minimal` 五个，
-         * 传别的名字引擎直接抛
-         * `dsh: profile "rescue" does not exist; create it with 'dsh plugin --profile rescue add <package>'`
-         * （`dsh-app-boot/lib/index.js` L973-974）。
-         *
-         * 真机实测过（2026-10-14，CDY-TN90 / Android 10）：
-         * 手工写好 `profiles/rescue/package.json`（bundles =
-         * `["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]`）之后，
-         * `--profile rescue --dump-config` 打出完整条目表、
-         * `--profile rescue --no-open --port 0` 打出
-         * `dsh web: http://127.0.0.1:44057/?token=…` —— 完全可用。
-         *
-         * ⇒ 所以 App **自己写这个 profile 的 `package.json`**，不指望引擎初始化它。
-         * 见 [ensureRescueProfile]。
-         */
-const val RESCUE_PROFILE_NAME = "rescue"
-
-        /**
-         * 救援 profile 的 bundle 清单。
-         *
-         * 逐字取自引擎自己的 `PROFILE_TEMPLATES.web.bundles`
-         * （`dsh-app-boot/lib/index.js` L531），**不是**从用户的
-         * `profiles/web/package.json` 推导的 —— 那份文件正是可能已经坏掉的东西
-         * （用户装了 40 个插件、其中某个拖挂了核心插件）。用它当模板等于
-         * 把病灶复制进救援环境，救援就一起起不来了。
-         *
-         * ⚠️ 只放 `@deepseek-ai/…` 核心 bundle ⇒ 天然满足不变量 I1
-         * （救援启动必须比正常启动简单，不能成为第二个失败源）。
-         */
-val RESCUE_BUNDLES = listOf(
-            "@deepseek-ai/dsh-base",
-            "@deepseek-ai/dsh-web-app",
-        )
+/** 正常引擎启动使用的 profile。 */
+const val PROFILE_NAME = "web"
 
         /** profile 的用户 patch 层文件名（引擎的 `PROFILE_PATCH_FILENAME`）。 */
 const val PROFILE_PATCH_FILENAME = "cordis.patch.yml"
@@ -170,29 +123,3 @@ val DEFAULT_SETTINGS_PATCH = """
               config:
                 busyEnter: steer
         """.trimIndent() + "\n"
-
-        // ── 定向隔离层（L1.5） ────────────────────────────────────────
-        //
-        // 一个**纯禁用层**：只含 `- id: <条目 id>` + `disabled: true`，
-        // 由 `RescueBoot.quarantinedNames()` 驱动，每次启动整体重写。
-        //
-        // ⚠️ 为什么用 `disabled` 而不是删文件/改 package.json：
-        //   `cordis-plugin-include` 的 `applyEntryPatches` 把除
-        //   `id`/`insert`/`name` 之外的键**原样赋给目标条目**
-        //   （`for (const [key, value] of Object.entries(overrides)) target[key] = value`），
-        //   而 `disabled` 正是 Cordis 条目的标准字段；`auditStartupEntries` 的注释也写明
-        //   「disabled required entries are ignored」。所以这是**官方语义**，
-        //   不需要改用户的任何文件，且随时可撤销（删掉本 overlay 即可）。
-        //
-        // ⚠️ 它必须是 overlay 列表的**最后一项**：`--patch` 按顺序应用，
-        //   禁用一个由前面 `- insert:` 插入的条目，必须排在那条 insert 之后。
-const val QUARANTINE_PATCH = "quarantine.patch.yml"
-
-/**
-     * 安全模式把第三方插件包挪到这里（profile 目录下，**改名不删**）。
-     *
-     * ⚠️ 必须是点开头的名字：`node_modules` 的扫描与 pnpm 的簿记都约定忽略点目录，
-     * 万一将来有人把 `node_modules` 整个交给包管理器，它也不会被当成一个插件包。
-     */
-const val SAFE_MODE_PLUGIN_DIR = ".safe-mode-plugins"
-

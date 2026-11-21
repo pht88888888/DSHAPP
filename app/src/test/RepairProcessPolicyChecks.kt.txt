@@ -1,0 +1,64 @@
+package com.dsh.android.repair
+
+import com.dsh.android.repair.RepairEngineQuiescence.ProcessPolicy
+
+fun main() {
+    val pkg = "com.dsh.android"
+    val root = "/data/data/$pkg/files"
+    val node = "$root/termux/usr/bin/node"
+    val engine = "$root/engine"
+    val policy = ProcessPolicy(pkg, 10234, 321, node, engine)
+    val main = ProcessPolicy.Identity(111, 10234, "987654", listOf(pkg), "/system/bin/app_process64")
+    val child = ProcessPolicy.Identity(222, 10234, "987655", listOf(node, "$engine/node_modules/@deepseek-ai/dsh/lib/bin.js", "--profile", "web"), node)
+    fun stops(value: ProcessPolicy.Identity) { check(policy.select(value) == ProcessPolicy.Selection.STOP) { value.toString() } }
+    fun blocks(value: ProcessPolicy.Identity) { check(policy.select(value) == ProcessPolicy.Selection.BLOCK) { value.toString() } }
+    fun ignores(value: ProcessPolicy.Identity) { check(policy.select(value) == ProcessPolicy.Selection.IGNORE) { value.toString() } }
+    var checks = 0
+    stops(main); stops(child)
+    val alias = child.copy(argv = child.argv.map { it.replace("/data/data/$pkg/files/", "/data/user/0/$pkg/files/") },
+        executable = node.replace("/data/data/", "/data/user/0/"))
+    stops(alias)
+    check(policy.plan(listOf(child, main)) == listOf(main, child))
+    checks++
+    ignores(main.copy(pid = 321)); ignores(main.copy(uid = 99999)); checks++
+    ignores(main.copy(argv = listOf("$pkg:repair"))); ignores(main.copy(argv = listOf("$pkg:other")))
+    ignores(main.copy(argv = listOf("com.dsh.webview"))); checks++
+    blocks(child.copy(argv = listOf(node, "$root/workspace/unrelated.js")))
+    blocks(child.copy(argv = listOf(node, "-e", "console.log(1)", "$engine/fake.js")))
+    blocks(child.copy(argv = listOf(node, "--eval", "$engine/fake.js")))
+    blocks(child.copy(argv = listOf(node, "$engine-spoof/file.js")))
+    blocks(child.copy(argv = listOf(node, "$engine/../keys.js")))
+    blocks(child.copy(argv = listOf(node, "/data/user/0/com.unrelated/files/engine/run.js")))
+    val unrelated = child.copy(argv = listOf(node, "$root/workspace/unrelated.js"))
+    check(policy.plan(listOf(main, unrelated)) == null)
+    checks++
+    blocks(child.copy(executable = "/system/bin/node"))
+    blocks(child.copy(argv = listOf("/system/bin/node", "$engine/node_modules/@deepseek-ai/dsh/lib/bin.js")))
+    blocks(main.copy(argv = listOf("com.unrelated", "$engine/start.js")))
+    blocks(main.copy(argv = emptyList())); checks++
+    check(policy.sameForSignal(main, main) && policy.sameForSignal(child, child))
+    check(!policy.sameForSignal(main, main.copy(startTime = "987655")))
+    check(!policy.sameForSignal(main, main.copy(uid = 10235)))
+    check(!policy.sameForSignal(main, main.copy(pid = 333)))
+    check(!policy.sameForSignal(main, main.copy(argv = listOf("$pkg:repair"))))
+    check(!policy.sameForSignal(child, child.copy(executable = "/elsewhere/node"))); checks++
+    blocks(main.copy(pid = 0)); blocks(main.copy(startTime = "garbage")); checks++
+    val raw = "$node\u0000$engine/node_modules/@deepseek-ai/dsh/lib/bin.js\u0000--profile\u0000web\u0000"
+    check(ProcessPolicy.argv(raw) == child.argv)
+    check(ProcessPolicy.argv("unterminated") == null)
+    check(ProcessPolicy.argv("\u0000") == null)
+    check(ProcessPolicy.argv("") == null); checks++
+    val stat = "222 (node (odd) name)) S " + ((1..18).map { it.toString() } + "987655" + listOf("99", "100")).joinToString(" ")
+    check(ProcessPolicy.startTime(stat) == "987655")
+    check(ProcessPolicy.startTime("222 node S 1 2") == null)
+    check(ProcessPolicy.startTime("bad (node) S " + "1 ".repeat(30)) == null)
+    check(ProcessPolicy.startTime("222 (node) S " + "1 ".repeat(18) + "bad") == null); checks++
+    check(ProcessPolicy.relevant(pkg, listOf(pkg)))
+    check(ProcessPolicy.relevant(pkg, listOf("/tmp/node")))
+    check(ProcessPolicy.relevant(pkg, listOf("other", "$engine/something")))
+    check(!ProcessPolicy.relevant(pkg, listOf("$pkg:repair")))
+    check(!ProcessPolicy.relevant(pkg, listOf("com.dsh.webview")))
+    check(!ProcessPolicy.relevant(pkg, listOf("/tmp/nodejs"))); checks++
+    check(checks == 10)
+    println("passed $checks production process policy checks")
+}

@@ -272,39 +272,6 @@ fun main() = runBlocking {
         clock.advance(30); check(frames == listOf("a", "b"))
         sequence.stop(); clock.advance(10_000); check(frames.size == 2)
     }
-    scenario("renderer crash deduplicates queued reload and late timer is invalidated") {
-        val clock = Clock(); val attempts = mutableListOf<Int>(); val events = mutableListOf<WebRecoveryController.Event>()
-        val controller = WebRecoveryController(clock, { clock.now }, { attempts.add(it); true }, { false }, events::add)
-        controller.rendererGone(true); val old = clock.snapshot().single(); controller.rendererGone(false)
-        check(events.size == 1)
-        controller.requestReload(); old.run(); check(attempts == listOf(1))
-        controller.close(); clock.advance(100_000); check(attempts.size == 1)
-    }
-    scenario("renderer retries real loads, then stops after third timeout") {
-        val clock = Clock(); val attempts = mutableListOf<Int>(); val events = mutableListOf<WebRecoveryController.Event>()
-        val controller = WebRecoveryController(clock, { clock.now }, { attempts.add(it); true }, { false }, events::add)
-        check(controller.requestReload()); clock.advance(16_000); check(attempts == listOf(1, 2))
-        clock.advance(22_000); check(attempts == listOf(1, 2, 3))
-        clock.advance(28_000); check(controller.gaveUp && events.single() == WebRecoveryController.Event.ReloadExhausted(3))
-        controller.rendererGone(true); check(!controller.requestReload())
-    }
-    scenario("no URL does not consume retry budget and real frame ends retries") {
-        val clock = Clock(); var url = false; var frame = false; var loads = 0
-        val controller = WebRecoveryController(clock, { clock.now }, { loads++; url }, { frame }, {})
-        check(!controller.requestReload()); clock.advance(100_000); check(loads == 1 && !controller.gaveUp)
-        url = true; check(controller.requestReload()); frame = true
-        clock.advance(100_000); check(loads == 2 && !controller.gaveUp)
-    }
-    scenario("renderer counts only consecutive deaths and enforces crash limit") {
-        val clock = Clock(); val counts = mutableListOf<Int>()
-        val controller = WebRecoveryController(clock, { clock.now }, { false }, { false }, {
-            if (it is WebRecoveryController.Event.RendererGone) counts.add(it.count)
-        })
-        controller.rendererGone(true); clock.advance(400)
-        clock.advance(90_001); controller.rendererGone(false); clock.advance(400)
-        repeat(3) { controller.rendererGone(true); clock.advance(400) }
-        check(counts == listOf(1, 1, 2, 3, 4) && controller.gaveUp)
-    }
     scenario("IME learns real resize and releases preemptive margin") {
         val clock = Clock(); var saved = 0; val margins = mutableListOf<Int>()
         val ime = ImeLayoutController(clock, { 300 }, { saved = it }, { px, _ -> margins.add(px) })
@@ -337,40 +304,45 @@ fun main() = runBlocking {
         back.request(); result!!("false"); result!!("false"); check(exits == listOf(false))
         back.request(); back.close(); result!!("false"); clock.advance(1200); check(exits.size == 1)
     }
-    scenario("boot overlay emits soft then terminal hints and resets each load") {
+    scenario("boot overlay only offers manual reload after readiness deadline") {
         val clock = Clock(); val states = mutableListOf<BootOverlayPresenter.State>()
         val overlay = BootOverlayPresenter(clock, { "" }, states::add, {})
-        overlay.arm(); clock.advance(12_000); check(states.single().text == "界面加载中" && !states.single().isError)
-        clock.advance(15_000); check(states.last().isError && states.last().hint!!.contains("27"))
+        overlay.arm(); clock.advance(12_000)
+        check(states.single().text == "界面加载中" && states.single().action == null)
+        clock.advance(15_000)
+        check(states.last().isError && states.last().hint!!.contains("27"))
+        check(states.last().action == BootOverlayPresenter.Action.ReloadPage)
+        clock.advance(100_000); check(states.size == 2)
         overlay.arm(); clock.advance(12_000); check(!states.last().isError && states.size == 3)
     }
-    scenario("boot overlay invalidates stale timeout and surfaces page error") {
+    scenario("stale overlay timer cannot replace a new load; a reported script error is not failure proof") {
         val clock = Clock(); val states = mutableListOf<BootOverlayPresenter.State>(); var error = ""
         val overlay = BootOverlayPresenter(clock, { error }, states::add, {})
-        overlay.arm(); val stale = clock.snapshot().single(); overlay.reopen(); stale.run(); check(states.isEmpty())
-        error = "syntax"; overlay.arm(); clock.advance(12_000)
-        check(states.single().isError && states.single().hint!!.startsWith("syntax"))
+        overlay.arm(); val stale = clock.snapshot().single(); overlay.reopen()
+        error = "syntax"; overlay.arm(); stale.run(); check(states.isEmpty())
+        clock.advance(12_000)
+        check(!states.single().isError && states.single().hint!!.contains("syntax"))
         check(overlay.dismiss()); overlay.show(BootOverlayPresenter.State("ignored", null, null, false))
         check(states.size == 1)
         overlay.close(); clock.advance(100_000); check(states.size == 1)
     }
-    scenario("first frame fallback never becomes a real frame") {
-        val clock = Clock(); var callback: (() -> Unit)? = null; var fallback = 0; var action = 0
-        val awaiter = FirstFrameAwaiter(clock, { callback = it }, {}, { fallback++ })
+    scenario("a first frame deadline reports waiting but only the real frame completes") {
+        val clock = Clock(); var callback: (() -> Unit)? = null; var timeout = 0; var action = 0
+        val awaiter = FirstFrameAwaiter(clock, { callback = it }, {}, { timeout++ })
         awaiter.await { action++ }; clock.advance(4000)
-        check(fallback == 1 && action == 0 && !awaiter.reallyArrived)
-        callback!!(); check(awaiter.reallyArrived && action == 0)
-        awaiter.await { action++ }; check(action == 1)
+        check(timeout == 1 && action == 0)
+        callback!!(); check(action == 1)
+        awaiter.await { action++ }; check(action == 2)
     }
     scenario("first frame callback is isolated by reset and destruction") {
-        val clock = Clock(); val callbacks = mutableListOf<() -> Unit>(); var action = 0; var fallback = 0
-        val awaiter = FirstFrameAwaiter(clock, callbacks::add, {}, { fallback++ })
-        awaiter.await { action++ }; val old = callbacks.single(); awaiter.reset(true)
-        awaiter.await { action++ }; old(); check(action == 0 && !awaiter.reallyArrived)
-        callbacks.last()(); check(action == 1 && awaiter.reallyArrived)
-        clock.advance(4000); check(fallback == 0)
-        awaiter.reset(true); awaiter.await { action++ }; awaiter.close(); callbacks.last()()
-        clock.advance(4000); check(action == 1 && fallback == 0 && !awaiter.reallyArrived)
+        val clock = Clock(); val callbacks = mutableListOf<() -> Unit>(); var action = 0; var timeout = 0
+        val awaiter = FirstFrameAwaiter(clock, callbacks::add, {}, { timeout++ })
+        awaiter.await { action++ }; val old = callbacks.single(); awaiter.reset()
+        awaiter.await { action++ }; old(); check(action == 0)
+        callbacks.last()(); check(action == 1)
+        clock.advance(4000); check(timeout == 0)
+        awaiter.reset(); awaiter.await { action++ }; awaiter.close(); callbacks.last()()
+        clock.advance(4000); check(action == 1 && timeout == 0)
     }
     scenario("browser pane distinguishes user opening, quiet tools and embedding") {
         val pane = BrowserPaneCoordinator()

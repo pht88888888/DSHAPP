@@ -19,6 +19,27 @@ function fixture(fn, { deps = [], allowed = { ':low': [], ':high': [':low'] } } 
   try { fn({ put, check, root }); } finally { assert.equal(dirname(root), tmpdir()); assert.ok(root.startsWith(join(tmpdir(), 'module-boundary-'))); rmSync(root, { recursive: true, force: true }); }
 }
 
+test('assistant shared APK composition is accepted only with complete original source/resource/manifest wiring', () => {
+  const root = mkdtempSync(join(tmpdir(), 'module-boundary-'));
+  const put = (path, text) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text); };
+  try {
+    put('settings.gradle.kts', 'include(":app", ":repair:assistant")');
+    put('app/build.gradle.kts', 'android { namespace = "sample.app"; buildConfig = true }');
+    put('app/src/main/kotlin/Shared.kt', 'package sample.app\ninterface Shared');
+    const build = 'android { namespace = "sample.app"; buildConfig = true }\njava.srcDir(rootProject.file("app/src/main/java"))\nres.srcDir(rootProject.file("app/src/main/res"))\nmanifest.srcFile(rootProject.file("app/src/main/AndroidManifest.xml"))';
+    put('repair/assistant/build.gradle.kts', build);
+    put('repair/assistant/src/main/kotlin/Addon.kt', 'package sample.addon\nimport sample.app.Shared\nimport sample.app.R\nclass Addon(val shared: Shared)');
+    const check = () => checkModules({ root, modules: [':app', ':repair:assistant'], allowed: { ':app': [], ':repair:assistant': [] } });
+    assert.deepEqual(check().errors, []);
+    put('repair/assistant/build.gradle.kts', build.replace('res.srcDir', 'missing.srcDir'));
+    assert.ok(check().errors.some(e => e.includes('missing direct project dependency')));
+    assert.ok(check().errors.some(e => e.includes('Ambiguous declaration')));
+  } finally {
+    assert.equal(dirname(root), tmpdir()); assert.ok(root.startsWith(join(tmpdir(), 'module-boundary-')));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('valid direct dependency resolves retained Kotlin packages', () => fixture(({put,check}) => {
   put('high/src/main/kotlin/High.kt', 'package upper\nimport legacy.shared.Value\nclass Consumer(val value: Value)');
   assert.deepEqual(check().errors, []);

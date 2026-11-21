@@ -7,7 +7,15 @@ internal class BootOverlayPresenter(
     private val render: (State) -> Unit,
     private val onTimeout: () -> Unit,
 ) {
-    data class State(val text: String, val hint: String?, val progress: Float?, val isError: Boolean)
+    enum class Action { RetryEngine, ReloadPage }
+
+    data class State(
+        val text: String,
+        val hint: String?,
+        val progress: Float?,
+        val isError: Boolean,
+        val action: Action? = null,
+    )
     var dismissed = false
         private set
     var state: State? = null
@@ -55,18 +63,19 @@ internal class BootOverlayPresenter(
 
     private fun schedule(owner: Long, soft: Boolean, delayMs: Long) {
         timeout = Runnable {
-            timeout = null
             if (closed || dismissed || owner != generation) return@Runnable
+            timeout = null
             onTimeout()
-            val error = pageError()
-            when {
-                error.isNotEmpty() -> show(State("界面加载失败", "$error（点一下这里可继续）", null, true))
-                soft -> {
-                    show(State("界面加载中", "页面还在解析，通常再等几秒就好，不用做任何操作。", null, false))
-                    if (!closed && !dismissed && owner == generation) schedule(owner, false, 15_000L)
-                }
-                else -> show(State("界面加载较慢", "已等 27 秒仍未就绪，页面可能还在解析。稍等一下；点一下这里可继续", null, true))
-            }
+            val error = pageError().takeIf { it.isNotBlank() }?.let { "页面曾报告：$it" }
+            val hint = if (soft) "仍在等待页面就绪。" else "已等 27 秒，仍未收到界面就绪回调。"
+            show(State(
+                if (soft) "界面加载中" else "界面尚未就绪",
+                listOfNotNull(hint, error).joinToString("\n"),
+                progress = null,
+                isError = !soft,
+                action = if (soft) null else Action.ReloadPage,
+            ))
+            if (soft && !closed && !dismissed && owner == generation) schedule(owner, false, 15_000L)
         }.also { scheduler.postDelayed(it, delayMs) }
     }
 }

@@ -37,7 +37,7 @@ internal class BuiltinPluginBundles(
     /**
      * 建 profile（幂等）。
      *
-     * ## 为什么要按「引擎版本戳 + profile 名」短路
+     * ## 为什么要按「引擎版本戳」短路
      *
      * 这一步是**再起一个 node 进程**跑 `initProfile()`，真机冷启动实测 0.6~0.7 秒；
      * 而它真正会做的事只有一件 —— 按**本次 APK 那份**官方引擎的模板补 profile 清单
@@ -47,14 +47,15 @@ internal class BuiltinPluginBundles(
      * 短路条件（缺一不可）：profile 的 `package.json` 在盘上、且记账里的
      * 「引擎版本戳 + profile 名」与本次一致。引擎一升级（`.stamp` 变）就照旧真跑。
      */
-    fun initializeProfile(profile: String): File? = try {
+    fun initializeProfile(): File? = try {
+        val profile = PROFILE_NAME
         val dir = File(home, "profiles/$profile")
         val marker = File(stateDir, "init-$profile.stamp")
         val key = "$profile@${engineStamp()}"
         val fresh = dir.isDirectory && File(dir, "package.json").isFile &&
             runCatching { marker.readText().trim() }.getOrNull() == key
         if (!fresh) {
-            runScript("init", profile)
+            runScript("init")
             runCatching {
                 stateDir.mkdirs()
                 marker.writeText(key)
@@ -62,7 +63,7 @@ internal class BuiltinPluginBundles(
         }
         dir.takeIf { File(it, "package.json").isFile }
     } catch (error: Exception) {
-        Log.w(TAG, "初始化 $profile profile 失败: ${error.message}")
+        Log.w(TAG, "初始化 $PROFILE_NAME profile 失败: ${error.message}")
         null
     }
 
@@ -95,7 +96,7 @@ internal class BuiltinPluginBundles(
         val marker = File(stateDir, "ensure.stamp")
         if (marker.isFile && runCatching { marker.readText().trim() }.getOrNull() == ensureKey()) return
         val output = File(stateDir, "plan.json")
-        runScript("plan", PROFILE_NAME, output)
+        runScript("plan", output)
         val plan = JSONArray(output.readText())
         for (index in 0 until plan.length()) {
             val item = plan.getJSONObject(index)
@@ -110,7 +111,7 @@ internal class BuiltinPluginBundles(
                 }
             }
         }
-        runScript("register", PROFILE_NAME)
+        runScript("register")
         runCatching { marker.writeText(ensureKey()) }
     }
 
@@ -159,7 +160,7 @@ internal class BuiltinPluginBundles(
         }
     }.getOrDefault("-")
 
-    private fun runScript(phase: String, profile: String, output: File? = null) {
+    private fun runScript(phase: String, output: File? = null) {
         stateDir.mkdirs()
         val request = File(stateDir, "request.json")
         fun describe(spec: BuiltinPluginSpec) = JSONObject().apply {
@@ -179,7 +180,6 @@ internal class BuiltinPluginBundles(
         request.writeText(JSONObject().apply {
             put("engineDir", engineDir.absolutePath)
             put("home", home.absolutePath)
-            put("profile", profile)
             put("phase", phase)
             put("plugins", plugins)
             put("legacyComponents", legacyComponents)

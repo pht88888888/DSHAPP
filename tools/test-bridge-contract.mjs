@@ -149,7 +149,7 @@ test('非消费来源、缓存重试、身份 ack 和销毁释放的实际 Kotli
   const dispatcher = read('app/src/main/java/com/dsh/android/ui/NativePageBridgeDispatcher.kt');
   const coordinator = read('app/src/main/java/com/dsh/android/ui/BrowserPaneCoordinator.kt');
   const peek = native.slice(native.indexOf('override fun peekAnnotation()'), native.indexOf('override fun aiAnnotateResult()'));
-  assert.match(native, /bridge = NativePageBridgeDispatcher\([\s\S]*activity = ActivityPageBridge\(\)/);
+  assert.match(native, /bridge = NativePageBridgeDispatcher\(\s*activity = ActivityPageBridge\(owner\)/);
   assert.match(dispatcher, /:\s*PageBridge,\s*AnnotationSource/);
   assert.match(dispatcher, /override fun peekAnnotation\(\): String = activity.peekAnnotation\(\)/);
   assert.match(dispatcher, /override fun acknowledgeAnnotation\(annotationId: String\) = activity.acknowledgeAnnotation\(annotationId\)/);

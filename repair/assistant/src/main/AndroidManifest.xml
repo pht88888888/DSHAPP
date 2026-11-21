@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Additive overlay over the exact original application's manifest. -->
+    <uses-permission android:name="com.dsh.android.permission.REPAIR" />
+    <uses-permission android:name="com.dsh.webview.permission.REPAIR" />
+    <queries>
+        <package android:name="com.dsh.android" />
+        <package android:name="com.dsh.webview" />
+    </queries>
+    <application android:label="@string/assistant_name" tools:replace="android:label">
+        <service android:name="com.dsh.android.repair.assistant.RepairSessionService"
+            android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-authorized rescue session for another DSH application" />
+        </service>
+    </application>
+</manifest>

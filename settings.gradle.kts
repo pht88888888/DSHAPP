@@ -33,4 +33,5 @@ include(
     ":app", ":core:contracts", ":core:logging",
     ":runtime:termux", ":runtime:engine", ":platform:privilege",
     ":web:contract", ":web:host", ":feature:browser", ":feature:bubble", ":bridge:transport",
+    ":repair:contract", ":repair:assistant",
 )
